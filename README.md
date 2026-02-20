@@ -15,16 +15,16 @@ Scrapes job listings directly from company career pages using their public ATS A
 │                        Orchestrator                               │
 │   Concurrent scraping (semaphore) · Circuit breakers · Retry      │
 │                                                                    │
-│   ┌─────────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐  │
+│   ┌──────────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐  │
 │   │  Greenhouse  │  │   Lever   │  │   Ashby   │  │SmartRecr. │  │
 │   │   42 cos.    │  │  15 cos.  │  │  5 cos.   │  │  2 cos.   │  │
 │   │  Public API  │  │ Public API│  │Public API │  │Public API │  │
 │   └──────┬───────┘  └─────┬─────┘  └─────┬─────┘  └─────┬─────┘  │
-│          │                │              │              │          │
+│          │                │              │              │        │
 │   ┌──────┴───────┐  ┌─────┴──────┐  ┌────┴────┐                  │
-│   │   Workday    │  │  Big Tech   │  │ Custom  │                  │
-│   │  13 cos.     │  │  G/A/Ap/MS  │  │ Others  │                  │
-│   │  JSON SPA    │  │  Meta/BB    │  │         │                  │
+│   │   Workday    │  │  Big Tech  │  │ Custom  │                  │
+│   │  13 cos.     │  │  G/A/Ap/MS │  │ Others  │                  │
+│   │  JSON SPA    │  │  Meta/BB   │  │         │                  │
 │   └──────┬───────┘  └─────┬──────┘  └────┬────┘                  │
 │          └────────────────┴──────────────┘                        │
 │                           │                                        │
