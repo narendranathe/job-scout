@@ -1,4 +1,4 @@
-# 🎯 JobScout
+#  JobScout
 
 **Self-recovering job pipeline — 100+ companies, zero API keys, direct ATS integrations.**
 
