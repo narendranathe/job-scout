@@ -1,0 +1,119 @@
+name: CI / Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Lint
+        run: |
+          pip install ruff
+          ruff check . --select E,F,W --ignore E501
+
+      - name: Verify imports
+        run: python -c "
+          from config.settings import AppConfig
+          from config.profile import UserProfile
+          from config.company_registry import COMPANY_REGISTRY, get_companies_by_priority
+          from scrapers.factory import ScraperFactory
+          from core.relevance_engine import RelevanceEngine
+          from core.orchestrator import Orchestrator
+          from storage.database import JobDatabase
+          print(f'✅ All imports OK — {len(COMPANY_REGISTRY)} companies registered')
+          print(f'   Priority 1: {len(get_companies_by_priority(1))} companies')
+          print(f'   Priority ≤2: {len(get_companies_by_priority(2))} companies')
+          print(f'   All: {len(get_companies_by_priority(3))} companies')
+          "
+
+      - name: Test relevance engine
+        run: python -c "
+          from core.relevance_engine import RelevanceEngine
+          engine = RelevanceEngine()
+          # High-relevance job
+          result = engine.score({
+              'title': 'Senior Data Engineer',
+              'company': 'uber',
+              'location': 'Remote',
+              'description': 'Python SQL Apache Spark Kafka AWS data pipeline ETL',
+              'is_remote': True,
+          })
+          assert result.total_score > 0.7, f'Expected >0.7, got {result.total_score}'
+          print(f'✅ High-relevance test: {result.total_score:.2f}')
+
+          # Low-relevance job
+          result2 = engine.score({
+              'title': 'Junior Frontend Developer',
+              'company': 'unknown',
+              'location': 'London, UK',
+              'description': 'React JavaScript CSS HTML',
+          })
+          assert result2.total_score < 0.3, f'Expected <0.3, got {result2.total_score}'
+          print(f'✅ Low-relevance test: {result2.total_score:.2f}')
+          "
+
+      - name: Test database
+        run: python -c "
+          from pathlib import Path
+          from storage.database import JobDatabase
+          import tempfile, os
+          with tempfile.TemporaryDirectory() as td:
+              db = JobDatabase(Path(td) / 'test.db')
+              db.insert_job({
+                  'fingerprint': 'test123', 'source': 'test', 'ats': 'greenhouse',
+                  'title': 'Test Job', 'company': 'TestCo', 'relevance_score': 0.85,
+              })
+              assert db.job_exists('test123')
+              assert db.insert_job({'fingerprint': 'test123', 'source': 'test', 'ats': 'greenhouse', 'title': 'Dupe', 'company': 'TestCo'}) is None
+              stats = db.get_job_stats()
+              assert stats['total_jobs'] == 1
+              print(f'✅ Database tests passed')
+          "
+
+  # ── Deploy (uncomment the platform you use) ──
+
+  # deploy-railway:
+  #   needs: test
+  #   if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: railwayapp/cli-action@v1
+  #       with:
+  #         command: up --service job-scout
+  #       env:
+  #         RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+
+  # deploy-fly:
+  #   needs: test
+  #   if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: superfly/flyctl-actions/setup-flyctl@master
+  #     - run: flyctl deploy --remote-only
+  #       env:
+  #         FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  # deploy-render:
+  #   needs: test
+  #   if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Trigger Render deploy
+  #       run: curl -X POST "${{ secrets.RENDER_DEPLOY_HOOK }}"

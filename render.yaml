@@ -1,0 +1,23 @@
+services:
+  - type: worker
+    name: job-scout
+    runtime: docker
+    region: dallas
+    plan: starter
+    envVars:
+      - key: HEALTH_PORT
+        value: "8089"
+      - key: SCRAPE_INTERVAL
+        value: "30"
+      - key: PRIORITY_FILTER
+        value: "2"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: RECIPIENT_EMAIL
+        sync: false
+    disk:
+      name: scout-data
+      mountPath: /home/scout/.job_scout
+      sizeGB: 1

@@ -1,0 +1,25 @@
+version: "3.9"
+
+services:
+  scout:
+    build: .
+    container_name: job-scout
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${HEALTH_PORT:-8089}:${HEALTH_PORT:-8089}"
+    volumes:
+      - scout-data:/home/scout/.job_scout
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
+volumes:
+  scout-data:
