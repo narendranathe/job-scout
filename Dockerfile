@@ -10,9 +10,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/ ./backend/
 
 # Create data directory for SQLite
-RUN mkdir -p /data
+RUN mkdir -p /app/data
 
-ENV DB_PATH=/data/jobscout.db
+ENV DB_PATH=/app/data/jobscout.db
 ENV PYTHONUNBUFFERED=1
 ENV PORT=10000
 
