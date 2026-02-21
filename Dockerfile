@@ -1,21 +1,28 @@
-FROM python:3.12-slim AS builder
-WORKDIR /build
-COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
-
 FROM python:3.12-slim
-LABEL maintainer="Narendranath" description="JobScout — Self-recovering job pipeline"
 
-RUN groupadd -r scout && useradd -r -g scout -m scout
-COPY --from=builder /install /usr/local
 WORKDIR /app
-COPY --chown=scout:scout . .
-RUN mkdir -p /home/scout/.job_scout && chown -R scout:scout /home/scout/.job_scout
 
-USER scout
+# Install dependencies
+COPY backend/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-HEALTHCHECK --interval=60s --timeout=10s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${HEALTH_PORT:-8089}/health')" || exit 1
+# Copy backend code
+COPY backend/ ./backend/
 
-EXPOSE ${HEALTH_PORT:-8089}
-ENTRYPOINT ["python", "main.py"]
+# Create data directory for SQLite
+RUN mkdir -p /data
+
+ENV DB_PATH=/data/jobscout.db
+ENV PYTHONUNBUFFERED=1
+ENV PORT=10000
+
+# Gunicorn with preload so background thread starts once
+# Workers=1 is intentional: background scraper thread must be singleton
+# Timeout=120 for long-running scrape-triggered requests
+WORKDIR /app/backend
+CMD ["gunicorn", "server:app", \
+     "--bind", "0.0.0.0:10000", \
+     "--workers", "1", \
+     "--threads", "4", \
+     "--timeout", "120", \
+     "--preload"]

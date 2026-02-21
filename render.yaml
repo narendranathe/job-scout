@@ -1,23 +1,27 @@
+# render.yaml — One-click deploy: Render Dashboard → "New Blueprint" → connect repo
+#
+# Creates a web service running Flask + background scraper
+# Dashboard lives on GitHub Pages (deployed by Actions workflow)
+
 services:
-  - type: worker
-    name: job-scout
+  - type: web
+    name: jobscout-api
     runtime: docker
+    dockerfilePath: ./Dockerfile
     region: dallas
-    plan: starter
+    plan: free
+    healthCheckPath: /ping
     envVars:
-      - key: HEALTH_PORT
-        value: "8089"
-      - key: SCRAPE_INTERVAL
-        value: "30"
-      - key: PRIORITY_FILTER
-        value: "2"
-      - key: SMTP_USER
-        sync: false
-      - key: SMTP_PASSWORD
-        sync: false
-      - key: RECIPIENT_EMAIL
-        sync: false
+      - key: DB_PATH
+        value: /data/jobscout.db
+      - key: FAST_INTERVAL
+        value: "300"
+      - key: SCRAPE_DELAY
+        value: "0.3"
+      # Optional: set a secret to protect POST /api/scrape
+      # - key: API_SECRET
+      #   generateValue: true
     disk:
-      name: scout-data
-      mountPath: /home/scout/.job_scout
+      name: jobscout-data
+      mountPath: /data
       sizeGB: 1

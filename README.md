@@ -1,182 +1,248 @@
-#  JobScout
+# ⚡ JobScout — Option D: 5-Minute Latency, $0/Month
 
-**Self-recovering job pipeline — 100+ companies, zero API keys, direct ATS integrations.**
-
-Scrapes job listings directly from company career pages using their public ATS APIs (Greenhouse, Lever, Ashby, SmartRecruiters, Workday) and custom scrapers for Google, Amazon, Apple, Microsoft, Meta, and Bloomberg. Scores every listing against your profile with weighted multi-signal relevance matching, then sends you email alerts for high-relevance matches — all with circuit breakers, concurrent execution, and a live monitoring API.
-
-**No Apify. No third-party scrapers. No API keys needed for scraping.**
-
----
+Dual-engine job discovery system: **Render** scrapes your top 24 targets every 5 min, **GitHub Actions** does the full 109-company sweep hourly. Dashboard auto-switches between live and static data sources.
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                        Orchestrator                               │
-│   Concurrent scraping (semaphore) · Circuit breakers · Retry      │
-│                                                                    │
-│   ┌──────────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐  │
-│   │  Greenhouse  │  │   Lever   │  │   Ashby   │  │SmartRecr. │  │
-│   │   42 cos.    │  │  15 cos.  │  │  5 cos.   │  │  2 cos.   │  │
-│   │  Public API  │  │ Public API│  │Public API │  │Public API │  │
-│   └──────┬───────┘  └─────┬─────┘  └─────┬─────┘  └─────┬─────┘  │
-│          │                │              │              │        │
-│   ┌──────┴───────┐  ┌─────┴──────┐  ┌────┴────┐                  │
-│   │   Workday    │  │  Big Tech  │  │ Custom  │                  │
-│   │  13 cos.     │  │  G/A/Ap/MS │  │ Others  │                  │
-│   │  JSON SPA    │  │  Meta/BB   │  │         │                  │
-│   └──────┬───────┘  └─────┬──────┘  └────┬────┘                  │
-│          └────────────────┴──────────────┘                        │
-│                           │                                        │
-│                  ┌────────▼─────────┐                              │
-│                  │ Relevance Engine  │  Weighted scoring 0–100%    │
-│                  └────────┬─────────┘                              │
-│                  ┌────────▼─────────┐                              │
-│                  │  SQLite (WAL)    │  Dedup · History · Metrics   │
-│                  └────────┬─────────┘                              │
-│           ┌───────────────┼───────────────┐                        │
-│     ┌─────▼──────┐  ┌────▼────┐  ┌───────▼───────┐               │
-│     │   Email    │  │Circuit  │  │    Health     │               │
-│     │  Digest    │  │Breaker  │  │   Monitor     │               │
-│     └────────────┘  └─────────┘  └───────────────┘               │
-└──────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────┐
+│                    RENDER (FREE)                        │
+│                                                         │
+│  Flask Server + Background Thread                       │
+│  ┌───────────────────────────────────────┐              │
+│  │ Every 5 min:  Tier 1 (24 companies)   │──→ SQLite   │
+│  │ Every 60 min: All tiers (109 cos)     │    on disk   │
+│  └───────────────────────────────────────┘              │
+│                                                         │
+│  GET /api/data  → JSON (dashboard fetches this)         │
+│  GET /api/health → server status + metrics              │
+│  GET /ping       → keepalive (prevents sleep)           │
+└────────────────────┬───────────────────────────────────┘
+                     │  ← primary source (~5 min fresh)
+                     │
+┌────────────────────▼───────────────────────────────────┐
+│              REACT DASHBOARD (GitHub Pages)              │
+│                                                         │
+│  useJobData() hook:                                     │
+│    1. Try Render /api/data    → show "🟢 Live"          │
+│    2. Fallback api-data.json  → show "🟡 Static"        │
+│    3. Auto-refresh every 2 min                          │
+│                                                         │
+│  Tabs: Jobs | Analytics | Companies | Trends | Monitor  │
+└────────────────────▲───────────────────────────────────┘
+                     │  ← fallback source (~60 min fresh)
+                     │
+┌────────────────────┴───────────────────────────────────┐
+│              GITHUB ACTIONS (FREE)                      │
+│                                                         │
+│  Hourly:  Full 109-company scrape                       │
+│           Export api-data.json → commit → deploy Pages   │
+│                                                         │
+│  Every 14 min (business hours):                         │
+│           Ping Render /ping → prevent free-tier sleep    │
+└────────────────────────────────────────────────────────┘
 ```
 
-## Companies Tracked (100+)
+## End-to-End Setup (15 minutes)
 
-| ATS Platform | # Companies | API Type | Examples |
-|---|---|---|---|
-| **Greenhouse** | 42 | Free public JSON API | Uber, Stripe, Datadog, Snowflake, Databricks, Coinbase, Anthropic, OpenAI |
-| **Lever** | 15 | Free public JSON API | Netflix, Spotify, Two Sigma, Citadel, Jane Street |
-| **Ashby** | 5 | Free public JSON API | Hightouch, Prefect, Linear |
-| **SmartRecruiters** | 2 | Free public JSON API | Visa, KPMG |
-| **Workday** | 13 | Internal SPA JSON API | Disney, Capital One, American Airlines, AT&T, Goldman Sachs, JPMorgan |
-| **Custom** | 18 | Company-specific APIs | Google, Amazon, Apple, Microsoft, Meta, Bloomberg, NVIDIA |
-
-Run `python main.py --companies` to see the full list.
-
-## Self-Recovery Features
-
-| Pattern | Implementation |
-|---|---|
-| **Circuit Breaker** | Per-company: 5 consecutive failures → disabled 15 min → half-open test |
-| **Exponential Backoff** | `2^attempt` seconds between retries (3 attempts max) |
-| **Domain Rate Limiting** | 2s minimum between requests to the same domain |
-| **Concurrent Scraping** | Semaphore-bounded (default 5) — fast but respectful |
-| **Graceful Degradation** | If Uber fails, 99 other companies still scrape fine |
-| **Quiet Hours** | No scraping 11PM–6AM UTC |
-| **Health Monitoring** | `/health` endpoint, cycle metrics, per-company status |
-
-## Quick Start
+### Step 1: Create GitHub Repo
 
 ```bash
-# Clone
-git clone https://github.com/YOUR_USER/job-scout.git
-cd job-scout
+mkdir jobscout && cd jobscout
+git init
 
-# Install (only 2 dependencies: httpx, aiohttp)
+# Unzip the package
+unzip jobscout-option-d.zip
+
+git add -A
+git commit -m "init: jobscout option d"
+```
+
+### Step 2: Edit Config
+
+```bash
+# 1. Set your repo name for GitHub Pages
+# Edit frontend/vite.config.js → base: '/YOUR-REPO-NAME/'
+
+# 2. (Optional) Customize your skills/preferences
+# Edit backend/config/profile.py
+
+# 3. (Optional) Add/remove companies
+# Edit backend/config/companies.py
+```
+
+### Step 3: Test Locally
+
+```bash
+cd backend
 pip install -r requirements.txt
 
-# Configure email (optional)
-cp .env.example .env
-# Edit .env with Gmail app password
+# Quick test — Tier 1 only (24 companies, ~30 sec)
+python main.py --fast
 
-# Test single cycle
-python main.py --once
+# Full test — all 109 companies (~3 min)
+python main.py
 
-# View stats
+# Check results
 python main.py --stats
 
-# Run continuously (scrapes every 30 min)
-python main.py
+# Test the server locally
+python server.py
+# Visit http://localhost:10000/api/health
+# Visit http://localhost:10000/api/data
 ```
 
-## Deploy
+### Step 4: Deploy Render (5 min)
 
-### Fly.io (recommended — $5/mo, Dallas region)
+1. Go to [render.com](https://render.com) → Sign up with GitHub
+2. Click **"New +"** → **"Blueprint"**
+3. Connect your GitHub repo
+4. Render reads `render.yaml` → deploys automatically
+5. Wait ~2 min for first deploy
+6. Note your URL: `https://jobscout-api.onrender.com`
+
+After deploy, verify:
 ```bash
-fly launch              # Creates app from fly.toml
-fly secrets set SMTP_USER=you@gmail.com SMTP_PASSWORD=xxx RECIPIENT_EMAIL=you@gmail.com
-fly deploy
+curl https://jobscout-api.onrender.com/ping       # Should return "ok"
+curl https://jobscout-api.onrender.com/api/health  # Should show status
 ```
 
-### Docker (any VPS)
+### Step 5: Connect Dashboard to Render
+
 ```bash
-cp .env.example .env    # Edit with your settings
-docker compose up -d
+# In your repo root:
+cd frontend
+
+# Create .env file
+cp .env.example .env
+
+# Edit .env — set your Render URL:
+# VITE_RENDER_URL=https://jobscout-api.onrender.com
 ```
 
-### Railway
+### Step 6: Push to GitHub + Enable Pages
+
 ```bash
-railway init
-railway up
+cd ..  # back to repo root
+git add -A
+git commit -m "config: render url + page base"
+git remote add origin https://github.com/YOUR_USER/jobscout.git
+git push -u origin main
 ```
 
-### Render
-Push to GitHub → connect repo in Render dashboard → auto-deploys from `render.yaml`.
+Then in GitHub:
+1. **Settings** → **Pages** → **Source: GitHub Actions**
+2. **Settings** → **Secrets and variables** → **Actions** → **New repository secret**:
+   - Name: `RENDER_URL`
+   - Value: `https://jobscout-api.onrender.com`
 
-## Monitoring API
+### Step 7: Verify Everything Works
 
-Running on port `8089`:
+After ~5 minutes:
+- Dashboard: `https://YOUR_USER.github.io/jobscout/`
+- Monitor tab should show all green checks:
+  - ✅ VITE_RENDER_URL configured
+  - ✅ Render API responding
+  - ✅ Health endpoint reachable
+  - ✅ First scrape completed
+  - ✅ Jobs flowing to dashboard
 
-| Endpoint | Returns |
-|---|---|
-| `GET /health` | `{"status": "healthy"}` |
-| `GET /api/dashboard` | Full stats, runs, top jobs, circuit states |
-| `GET /api/jobs?limit=25` | Top scored jobs |
-| `GET /api/runs` | Recent scrape runs with status |
-| `GET /api/metrics?name=cycle_duration&hours=24` | Time-series metrics |
+## What Runs When
+
+| Component | Frequency | What | Platform | Cost |
+|-----------|-----------|------|----------|:----:|
+| Fast scrape | Every 5 min | 24 Tier-1 companies | Render | $0 |
+| Full sweep | Every 60 min | 109 companies (all tiers) | GitHub Actions | $0 |
+| Keepalive | Every 14 min (biz hours) | Pings Render /ping | GitHub Actions | $0 |
+| Dashboard deploy | After each full sweep | Build + deploy Pages | GitHub Actions | $0 |
+| **Total** | | | | **$0** |
+
+## GitHub Actions Minutes Budget
+
+| Workflow | Runs/Day | Min/Run | Monthly |
+|----------|----------|---------|---------|
+| Full sweep | 24 | ~4 min | ~2,880 min |
+| Keepalive (biz hours) | ~60 | ~0.1 min | ~180 min |
+| **Total** | | | **~3,060 min** |
+
+⚠️ This exceeds the 2,000 min/month free tier. Pick one solution:
+
+**Option A (recommended):** Use [UptimeRobot](https://uptimerobot.com) for keepalive instead of GitHub Actions:
+- Free plan: 50 monitors, 5-min intervals
+- Add monitor: `GET https://jobscout-api.onrender.com/ping`
+- Delete `.github/workflows/keepalive.yml`
+- This saves ~180 min/month
+
+**Option B:** Run full sweeps every 2 hours instead of hourly:
+- Change cron to `'20 */2 * * *'` in `scrape-and-deploy.yml`
+- Saves ~1,440 min/month → fits in free tier
+
+**Option C (recommended combo):** UptimeRobot + every 2 hours:
+- Total: ~1,440 min/month — comfortably within free tier
+- Render still scrapes Tier 1 every 5 min regardless
+
+## File Structure
+
+```
+jobscout/
+├── backend/
+│   ├── config/
+│   │   ├── companies.py         # 109 companies, 3 tiers, 5 ATS platforms
+│   │   └── profile.py           # Your skills & preferences
+│   ├── scrapers/
+│   │   ├── greenhouse.py        # 87 companies
+│   │   ├── lever.py             # 4 companies
+│   │   ├── ashby.py             # 11 companies
+│   │   ├── smartrecruiters.py   # 4 companies
+│   │   └── bamboohr.py          # 3 companies (Prefect, Dagster...)
+│   ├── core/
+│   │   └── relevance.py         # Multi-signal scoring engine
+│   ├── storage/
+│   │   └── db.py                # SQLite + dedup + stale detection
+│   ├── server.py                # Flask + background scraper (Render)
+│   ├── main.py                  # CLI orchestrator (Actions + local)
+│   ├── export_data.py           # DB → JSON bridge
+│   └── requirements.txt         # requests, flask, gunicorn
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx              # Dashboard (dual-source + monitor tab)
+│   │   └── main.jsx             # React entry
+│   ├── public/
+│   │   └── api-data.json        # Static fallback (Actions updates hourly)
+│   ├── .env.example             # Template: set VITE_RENDER_URL
+│   ├── index.html
+│   ├── package.json
+│   └── vite.config.js
+├── .github/workflows/
+│   ├── scrape-and-deploy.yml    # Hourly full sweep + Pages deploy
+│   └── keepalive.yml            # Render keepalive (or use UptimeRobot)
+├── Dockerfile                    # Render deployment
+├── render.yaml                   # One-click Render blueprint
+└── README.md
+```
 
 ## Customizing
 
-### Your Profile (`config/profile.py`)
-Edit target titles, skills with proficiency weights, preferred locations, target companies, exclude keywords, salary floor.
-
-### Company Registry (`config/company_registry.py`)
-Add/remove companies. Each entry needs: name, ATS platform, board slug, career URL, priority (1-3).
-
-To add a new Greenhouse company:
+### Add a company
 ```python
-Company("NewCo", ATSPlatform.GREENHOUSE, "newco-slug", "https://newco.com/careers", 2),
+# backend/config/companies.py — add to the list:
+{"name": "Company", "ats": "greenhouse", "slug": "their-slug", "tier": 2},
 ```
 
-### Priority Levels
-- **Priority 1**: Dream companies — scraped every cycle
-- **Priority 2**: Strong interest — scraped by default
-- **Priority 3**: Nice to have — set `PRIORITY_FILTER=3` to include
+### Change scrape frequency
+```python
+# Render (backend/server.py or env var):
+FAST_INTERVAL = 300   # 5 min (default) — change to 180 for 3 min
 
-## Project Structure
+# GitHub Actions (.github/workflows/scrape-and-deploy.yml):
+cron: '20 */2 * * *'  # Every 2 hours (saves Actions minutes)
+```
 
-```
-job-scout/
-├── main.py                         # Entry point + CLI
-├── config/
-│   ├── settings.py                 # Environment-based config
-│   ├── profile.py                  # Your candidate profile
-│   └── company_registry.py         # 100+ companies → ATS mapping
-├── scrapers/
-│   ├── base.py                     # HTTP client, retry, rate limiting
-│   ├── factory.py                  # Routes companies → scrapers
-│   └── ats/
-│       ├── greenhouse.py           # Greenhouse public API
-│       ├── lever.py                # Lever public API
-│       ├── ashby.py                # Ashby public API
-│       ├── smartrecruiters.py      # SmartRecruiters public API
-│       ├── workday.py              # Workday internal JSON API
-│       └── custom.py               # Google, Amazon, Apple, MS, Meta, Bloomberg
-├── core/
-│   ├── relevance_engine.py         # Multi-signal scoring
-│   └── orchestrator.py             # Main loop + self-recovery
-├── storage/
-│   └── database.py                 # SQLite WAL persistence
-├── notifiers/
-│   └── email_notifier.py           # HTML digest emails
-├── monitors/
-│   └── health_monitor.py           # HTTP health/metrics server
-├── .github/workflows/ci.yml        # CI + deploy pipeline
-├── Dockerfile                       # Multi-stage production build
-├── docker-compose.yml               # Local/server deployment
-├── fly.toml                         # Fly.io config (Dallas region)
-├── render.yaml                      # Render config
-└── setup.sh                         # One-command setup + GitHub push
-```
+### Find ATS slugs
+| ATS | How to find the slug |
+|-----|---------------------|
+| Greenhouse | boards.greenhouse.io/**slug**/jobs |
+| Lever | jobs.lever.co/**slug** |
+| Ashby | jobs.ashbyhq.com/**slug** |
+| SmartRecruiters | careers.smartrecruiters.com/**slug** |
+| BambooHR | **slug**.bamboohr.com/careers |
