@@ -415,6 +415,137 @@ def api_verify_pin():
         return jsonify({"error": str(e)}), 500
 
 
+# ─── Application tracker endpoints ───────────────────────────────
+
+@app.route("/api/applications", methods=["GET"])
+def api_get_applications():
+    """Get all saved/applied jobs with optional status filter."""
+    try:
+        status_filter = request.args.get("status")  # ?status=applied
+        conn = get_conn(DB_PATH)
+        if status_filter:
+            rows = conn.execute(
+                "SELECT * FROM applications WHERE status = ? ORDER BY updated_at DESC",
+                (status_filter,)
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM applications ORDER BY updated_at DESC"
+            ).fetchall()
+        conn.close()
+        return jsonify([dict(r) for r in rows]), 200, {"Access-Control-Allow-Origin": "*"}
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/applications", methods=["POST", "OPTIONS"])
+def api_save_application():
+    """Save or update a job application."""
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        data  = request.get_json() or {}
+        ext_id = data.get("external_id", "")
+        if not ext_id:
+            return jsonify({"error": "external_id required"}), 400
+
+        now = datetime.now(timezone.utc).isoformat()
+        conn = get_conn(DB_PATH)
+
+        existing = conn.execute(
+            "SELECT id, status FROM applications WHERE external_id = ?", (ext_id,)
+        ).fetchone()
+
+        new_status = data.get("status", "saved")
+        applied_at = now if new_status == "applied" and (not existing or existing["status"] != "applied") else (
+            existing["applied_at"] if existing else None
+        ) if existing else None
+
+        if existing:
+            conn.execute("""
+                UPDATE applications SET
+                    status = ?, notes = COALESCE(?, notes),
+                    resume_version = COALESCE(?, resume_version),
+                    applied_at = COALESCE(?, applied_at),
+                    updated_at = ?
+                WHERE external_id = ?
+            """, (
+                new_status,
+                data.get("notes"),
+                data.get("resume_version"),
+                now if new_status == "applied" else None,
+                now, ext_id,
+            ))
+            action = "updated"
+        else:
+            conn.execute("""
+                INSERT INTO applications
+                    (external_id, title, company, url, status, relevance_score,
+                     salary_min, salary_max, location, notes, resume_version,
+                     saved_at, applied_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """, (
+                ext_id,
+                data.get("title", ""),
+                data.get("company", ""),
+                data.get("url", ""),
+                new_status,
+                data.get("relevance_score", 0.0),
+                data.get("salary_min", 0),
+                data.get("salary_max", 0),
+                data.get("location", ""),
+                data.get("notes", ""),
+                data.get("resume_version", ""),
+                now,
+                now if new_status == "applied" else None,
+                now,
+            ))
+            action = "saved"
+
+        conn.commit()
+        conn.close()
+        return jsonify({"status": action, "external_id": ext_id}), 200, {
+            "Access-Control-Allow-Origin": "*"
+        }
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/applications/<ext_id>", methods=["DELETE", "OPTIONS"])
+def api_delete_application(ext_id):
+    """Remove a job from the tracker."""
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        conn = get_conn(DB_PATH)
+        conn.execute("DELETE FROM applications WHERE external_id = ?", (ext_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({"status": "deleted"}), 200, {"Access-Control-Allow-Origin": "*"}
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/applications/export", methods=["GET"])
+def api_export_applications():
+    """Export all applications as JSON (for backup)."""
+    try:
+        conn = get_conn(DB_PATH)
+        rows = conn.execute("SELECT * FROM applications ORDER BY updated_at DESC").fetchall()
+        conn.close()
+        data = [dict(r) for r in rows]
+        return Response(
+            json.dumps(data, default=str, indent=2),
+            mimetype="application/json",
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Content-Disposition": "attachment; filename=applications.json",
+            }
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/set-pin", methods=["POST", "OPTIONS"])
 def api_set_pin():
     if request.method == "OPTIONS":

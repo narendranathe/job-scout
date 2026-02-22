@@ -1,0 +1,77 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+pip-log.txt
+
+# ── Virtual environments ───────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+.env/
+ENV/
+
+# ── Environment / secrets — NEVER commit these ────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.env
+secrets.json
+credentials.json
+service_account.json
+
+# ── SQLite databases — contain personal job/application data ──────────────────
+*.db
+*.sqlite
+*.sqlite3
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+*.out
+
+# ── Node / Frontend ───────────────────────────────────────────────────────────
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.cache/
+.npm
+.pnpm-store/
+
+# ── OS generated ──────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ── IDEs ──────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Testing / coverage ────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ── Render / deployment artifacts ─────────────────────────────────────────────
+.render/
+
+# ── Resume files (contain personal data — store on Render only) ───────────────
+*.pdf
+*.docx
+resumes/

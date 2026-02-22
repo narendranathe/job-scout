@@ -17,38 +17,46 @@ Priority tiers:
 
 COMPANIES = [
     # ═══════════════════════════════════════
-    #  TIER 1 — Top targets (every cycle)
+    #  TIER 1 — Dream targets (every cycle)
+    #  These are your highest-priority companies.
+    #  Scraped most frequently — new roles appear here first.
     # ═══════════════════════════════════════
 
-    # ── Greenhouse ──
+    # ── Greenhouse — Dream companies (Tier 1) ──
     {"name": "Anthropic",          "ats": "greenhouse", "slug": "anthropic",             "tier": 1},
     {"name": "OpenAI",             "ats": "greenhouse", "slug": "openai",                "tier": 1},
     {"name": "Stripe",             "ats": "greenhouse", "slug": "stripe",                "tier": 1},
-    {"name": "Datadog",            "ats": "greenhouse", "slug": "datadog",               "tier": 1},
     {"name": "Databricks",         "ats": "greenhouse", "slug": "databricks",            "tier": 1},
     {"name": "Snowflake",          "ats": "greenhouse", "slug": "snowflakecomputing",    "tier": 1},
-    {"name": "Coinbase",           "ats": "greenhouse", "slug": "coinbase",              "tier": 1},
     {"name": "Palantir",           "ats": "greenhouse", "slug": "palantir",              "tier": 1},
     {"name": "Scale AI",           "ats": "greenhouse", "slug": "scaleai",               "tier": 1},
-    {"name": "Discord",            "ats": "greenhouse", "slug": "discord",               "tier": 1},
+    {"name": "Coinbase",           "ats": "greenhouse", "slug": "coinbase",              "tier": 1},
+    {"name": "Datadog",            "ats": "greenhouse", "slug": "datadog",               "tier": 1},
+    {"name": "Reddit",             "ats": "greenhouse", "slug": "reddit",                "tier": 1},
     {"name": "Ramp",               "ats": "greenhouse", "slug": "ramp",                  "tier": 1},
     {"name": "Plaid",              "ats": "greenhouse", "slug": "plaid",                 "tier": 1},
-    {"name": "Reddit",             "ats": "greenhouse", "slug": "reddit",                "tier": 1},
     {"name": "Anduril",            "ats": "greenhouse", "slug": "andurilindustries",     "tier": 1},
     {"name": "Wiz",                "ats": "greenhouse", "slug": "wiz",                   "tier": 1},
     {"name": "Rippling",           "ats": "greenhouse", "slug": "rippling",              "tier": 1},
     {"name": "dbt Labs",           "ats": "greenhouse", "slug": "daboratoriesdbtlabsinc","tier": 1},
     {"name": "Fivetran",           "ats": "greenhouse", "slug": "fivetran",              "tier": 1},
     {"name": "Confluent",          "ats": "greenhouse", "slug": "confluent",             "tier": 1},
+    {"name": "Discord",            "ats": "greenhouse", "slug": "discord",               "tier": 1},
 
-    # ── Lever Tier 1 ──
+    # ── Lever — Dream companies (Tier 1) ──
     {"name": "Netflix",            "ats": "lever",      "slug": "netflix",               "tier": 1},
     {"name": "Spotify",            "ats": "lever",      "slug": "spotify",               "tier": 1},
 
-    # ── Ashby Tier 1 ──
+    # ── Ashby — Dream companies (Tier 1) ──
     {"name": "Vercel",             "ats": "ashby",      "slug": "vercel",                "tier": 1},
     {"name": "Linear",             "ats": "ashby",      "slug": "linear",                "tier": 1},
     {"name": "Supabase",           "ats": "ashby",      "slug": "supabase",              "tier": 1},
+
+    # ── Big Tech Dream companies — use Greenhouse slugs ──
+    {"name": "Salesforce",         "ats": "greenhouse", "slug": "salesforce",            "tier": 1},
+    {"name": "Uber",               "ats": "greenhouse", "slug": "uber",                  "tier": 1},
+    {"name": "DoorDash",           "ats": "greenhouse", "slug": "doordash",              "tier": 1},
+    {"name": "Grubhub",            "ats": "greenhouse", "slug": "grubhub",               "tier": 1},
 
     # ═══════════════════════════════════════
     #  TIER 2 — Strong targets (every 2nd)
@@ -156,17 +164,39 @@ COMPANIES = [
     {"name": "Great Expectations", "ats": "bamboohr",   "slug": "greatexpectations",     "tier": 3},
 
     # ═══════════════════════════════════════
-    #  WORKDAY — Finance & Enterprise (every 4th cycle)
-    #  These post less frequently so Tier 3 is appropriate.
-    #  Verify URLs: company.wd1.myworkdayjobs.com
+    #  WORKDAY — Finance & Enterprise (Tier 1/2 if dream, Tier 3 otherwise)
+    #  These companies post less frequently but are high-priority targets.
+    #  Verify/update board names at: company.wd1.myworkdayjobs.com
     # ═══════════════════════════════════════
-    {"name": "Goldman Sachs",  "ats": "workday", "slug": "goldmansachs", "wd_instance": "wd1", "wd_board": "GS",             "tier": 3},
-    {"name": "Capital One",    "ats": "workday", "slug": "capitalone",   "wd_instance": "wd1", "wd_board": "Capital_One",    "tier": 3},
-    {"name": "Walmart",        "ats": "workday", "slug": "walmart",      "wd_instance": "wd5", "wd_board": "WalmartExternal","tier": 3},
-    {"name": "Target",         "ats": "workday", "slug": "target",       "wd_instance": "wd1", "wd_board": "TGT_External",   "tier": 3},
-    {"name": "Disney",         "ats": "workday", "slug": "disney",       "wd_instance": "wd5", "wd_board": "disneycareer",   "tier": 3},
-    {"name": "Amex",           "ats": "workday", "slug": "aexp",         "wd_instance": "wd5", "wd_board": "amex-careers",   "tier": 3},
-    {"name": "Deloitte",       "ats": "workday", "slug": "deloitte",     "wd_instance": "wd5", "wd_board": "DeloitteCareers","tier": 3},
+
+    # ── Dream finance/enterprise companies on Workday (Tier 1 — check every cycle) ──
+    {"name": "Goldman Sachs",   "ats": "workday", "slug": "goldmansachs",  "wd_instance": "wd1", "wd_board": "GS",              "tier": 1},
+    {"name": "JP Morgan Chase", "ats": "workday", "slug": "jpmc",          "wd_instance": "wd1", "wd_board": "JPMCCareerSite",  "tier": 1},
+    {"name": "Fidelity",        "ats": "workday", "slug": "fidelity",      "wd_instance": "wd1", "wd_board": "fidelity-careers","tier": 1},
+    {"name": "Citadel",         "ats": "workday", "slug": "citadel",       "wd_instance": "wd5", "wd_board": "Careers",         "tier": 1},
+    {"name": "Bloomberg",       "ats": "workday", "slug": "bloomberg",     "wd_instance": "wd5", "wd_board": "BloombergLP",     "tier": 1},
+
+    # ── Big Tech on Workday (Tier 1) ──
+    {"name": "Apple",           "ats": "workday", "slug": "apple",         "wd_instance": "wd5", "wd_board": "US",              "tier": 1},
+    {"name": "NVIDIA",          "ats": "workday", "slug": "nvidia",        "wd_instance": "wd5", "wd_board": "NVIDIAExternalCareerSite","tier": 1},
+    {"name": "Microsoft",       "ats": "workday", "slug": "microsoft",     "wd_instance": "wd5", "wd_board": "MicrosoftExternalCareerSite","tier": 1},
+    {"name": "Amazon",          "ats": "workday", "slug": "amazon",        "wd_instance": "wd5", "wd_board": "External",        "tier": 1},
+    {"name": "Walmart",         "ats": "workday", "slug": "walmart",       "wd_instance": "wd5", "wd_board": "WalmartExternal", "tier": 1},
+    {"name": "Meta",            "ats": "workday", "slug": "meta",          "wd_instance": "wd5", "wd_board": "FBExternalCareerSite","tier": 1},
+    {"name": "Google",          "ats": "workday", "slug": "google",        "wd_instance": "wd5", "wd_board": "jobs",            "tier": 1},
+
+    # ── Other dream companies on Workday (Tier 2) ──
+    {"name": "Disney",          "ats": "workday", "slug": "disney",        "wd_instance": "wd5", "wd_board": "disneycareer",    "tier": 2},
+    {"name": "Capital One",     "ats": "workday", "slug": "capitalone",    "wd_instance": "wd1", "wd_board": "Capital_One",     "tier": 2},
+    {"name": "Amex",            "ats": "workday", "slug": "aexp",          "wd_instance": "wd5", "wd_board": "amex-careers",    "tier": 2},
+    {"name": "Target",          "ats": "workday", "slug": "target",        "wd_instance": "wd1", "wd_board": "TGT_External",    "tier": 3},
+    {"name": "Deloitte",        "ats": "workday", "slug": "deloitte",      "wd_instance": "wd5", "wd_board": "DeloitteCareers", "tier": 3},
+
+    # ── Quant firms (AQR, HRT use custom job boards — listed for reference) ──
+    # AQR:  https://careers.aqr.com  — no standard public API, apply directly
+    # HRT:  https://www.hudsonrivertrading.com/careers/ — no public ATS API
+    # Two Sigma: https://careers.twosigma.com — no standard public API
+    # NOTE: Monitor these manually or check LinkedIn for new postings
 ]
 
 # Total companies

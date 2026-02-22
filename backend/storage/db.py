@@ -21,7 +21,7 @@ def get_conn(db_path: str = DB_PATH) -> sqlite3.Connection:
 
 
 def init_db(db_path: str = DB_PATH):
-    """Create tables if they don't exist."""
+    """Create all tables if they don't exist."""
     conn = get_conn(db_path)
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS jobs (
@@ -46,9 +46,9 @@ def init_db(db_path: str = DB_PATH):
             is_active INTEGER DEFAULT 1
         );
 
-        CREATE INDEX IF NOT EXISTS idx_jobs_score ON jobs(relevance_score DESC);
+        CREATE INDEX IF NOT EXISTS idx_jobs_score   ON jobs(relevance_score DESC);
         CREATE INDEX IF NOT EXISTS idx_jobs_company ON jobs(company);
-        CREATE INDEX IF NOT EXISTS idx_jobs_active ON jobs(is_active);
+        CREATE INDEX IF NOT EXISTS idx_jobs_active  ON jobs(is_active);
 
         CREATE TABLE IF NOT EXISTS scrape_runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,6 +61,29 @@ def init_db(db_path: str = DB_PATH):
             errors INTEGER DEFAULT 0,
             status TEXT DEFAULT 'running'
         );
+
+        -- Application tracker: remembers every job you've interacted with
+        CREATE TABLE IF NOT EXISTS applications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            external_id TEXT NOT NULL,          -- links to jobs.external_id
+            title TEXT NOT NULL,
+            company TEXT NOT NULL,
+            url TEXT DEFAULT '',
+            status TEXT DEFAULT 'saved',        -- saved | applied | interview | offer | rejected
+            relevance_score REAL DEFAULT 0.0,
+            salary_min INTEGER DEFAULT 0,
+            salary_max INTEGER DEFAULT 0,
+            location TEXT DEFAULT '',
+            notes TEXT DEFAULT '',
+            resume_version TEXT DEFAULT '',     -- which resume you used (e.g. "data-eng-v2")
+            saved_at TEXT NOT NULL,
+            applied_at TEXT,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_applications_extid ON applications(external_id);
+        CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status);
+        CREATE INDEX IF NOT EXISTS idx_applications_company ON applications(company);
     """)
     conn.commit()
     conn.close()

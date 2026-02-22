@@ -243,6 +243,79 @@ function useJobData() {
   return { data, loading, error, source, health, lastUpdated, refetch: fetchData };
 }
 
+/* ═══ Application tracker — localStorage + optional Render API sync ═══ */
+const LS_KEY = "jobscout_apps";
+const ST_COLOR = {saved:"#4A7C9F",applied:"#3D8B6E",interview:"#C4A77D",offer:"#2D5A4A",rejected:"#B85450"};
+const ST_LABEL = {saved:"🔖 Save",applied:"✅ Applied",interview:"📞 Interview",offer:"🎉 Offer",rejected:"✗ Pass"};
+
+function useApplications() {
+  const [apps, setApps] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(LS_KEY) || "{}"); } catch { return {}; }
+  });
+
+  useEffect(() => {
+    try { localStorage.setItem(LS_KEY, JSON.stringify(apps)); } catch {}
+  }, [apps]);
+
+  // Sync from Render API on mount if available
+  useEffect(() => {
+    if (!RENDER_API) return;
+    fetch(`${RENDER_API}/api/applications`, {signal: AbortSignal.timeout(5000)})
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d?.applications) return;
+        setApps(prev => {
+          const m = {...prev};
+          d.applications.forEach(a => { m[a.external_id] = a; });
+          return m;
+        });
+      }).catch(() => {});
+  }, []);
+
+  const saveApp = useCallback((job, status = "saved") => {
+    setApps(prev => {
+      const now = new Date().toISOString();
+      const ex = prev[job.external_id];
+      const entry = {
+        external_id: job.external_id,
+        title: job.title, company: job.company, url: job.url || "",
+        status, relevance_score: job.relevance_score || 0,
+        salary_min: job.salary_min || 0, salary_max: job.salary_max || 0,
+        location: job.location || "", notes: ex?.notes || "",
+        saved_at: ex?.saved_at || now,
+        applied_at: status === "applied" ? (ex?.applied_at || now) : (ex?.applied_at || null),
+        updated_at: now,
+      };
+      if (RENDER_API) {
+        fetch(`${RENDER_API}/api/applications`, {
+          method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(entry),
+        }).catch(() => {});
+      }
+      return {...prev, [job.external_id]: entry};
+    });
+  }, []);
+
+  const removeApp = useCallback((extId) => {
+    setApps(prev => { const n = {...prev}; delete n[extId]; return n; });
+    if (RENDER_API) fetch(`${RENDER_API}/api/applications/${extId}`, {method:"DELETE"}).catch(()=>{});
+  }, []);
+
+  const updateNotes = useCallback((extId, notes) => {
+    setApps(prev => {
+      if (!prev[extId]) return prev;
+      const u = {...prev[extId], notes, updated_at: new Date().toISOString()};
+      if (RENDER_API) {
+        fetch(`${RENDER_API}/api/applications`, {
+          method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(u),
+        }).catch(() => {});
+      }
+      return {...prev, [extId]: u};
+    });
+  }, []);
+
+  return {apps, saveApp, removeApp, updateNotes};
+}
+
 /* ═══ Helpers ═══ */
 const fmtSal = n => n ? `$${(n/1000).toFixed(0)}K` : "—";
 const timeAgo = iso => {
@@ -332,6 +405,11 @@ export default function App() {
   const [showFilters,setShowFilters] = useState(false);
   const [so,sSo]           = useState("relevance");
   const [cq,sCq]           = useState("");
+
+  // Application tracker
+  const {apps, saveApp, removeApp, updateNotes} = useApplications();
+  const [trackerFilter, setTrackerFilter] = useState("All");
+  const [editingNotes, setEditingNotes]   = useState(null);
 
   // Manual scrape trigger
   const [scraping,setScraping]   = useState(false);
@@ -487,7 +565,8 @@ export default function App() {
     </div>
   );
 
-  const TABS = ["jobs","analytics","companies","trends","monitor"];
+  const trackerCount = Object.keys(apps).length;
+  const TABS = ["jobs","analytics","companies","trends","tracker","monitor"];
 
   return (
     <div style={{minHeight:"100vh",background:t.bg,fontFamily:"'Source Sans 3',sans-serif",color:t.tx,fontSize:16}}>
@@ -510,7 +589,7 @@ export default function App() {
                   color:tab===tb?"#fff":t.txM,
                   fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit",
                   textTransform:"capitalize",transition:"all .15s",flexShrink:0}}>
-                {tb==="monitor"?"🖥 Monitor":tb}
+                {tb==="monitor"?"🖥 Monitor":tb==="tracker"?`📋 Tracker${trackerCount?" ("+trackerCount+")":""}`:tb}
               </button>
             ))}
           </div>
@@ -642,10 +721,28 @@ export default function App() {
                           {j.description.slice(0,700)}...
                         </p>
                       )}
-                      <a href={j.url} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()}
-                        style={{display:"inline-block",padding:"11px 24px",borderRadius:9,background:t.gP,color:"#fff",fontSize:15,fontWeight:700,textDecoration:"none",marginTop:8,boxShadow:`0 3px 12px ${t.ac}30`}}>
-                        Apply →
-                      </a>
+                      <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginTop:10}}>
+                        <a href={j.url} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()}
+                          style={{display:"inline-block",padding:"11px 24px",borderRadius:9,background:t.gP,color:"#fff",fontSize:15,fontWeight:700,textDecoration:"none",boxShadow:`0 3px 12px ${t.ac}30`}}>
+                          Apply →
+                        </a>
+                        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                          {Object.keys(ST_LABEL).map(st => {
+                            const cur = apps[j.external_id];
+                            const isCur = cur?.status === st;
+                            const c = ST_COLOR[st];
+                            return (
+                              <button key={st} onClick={e=>{e.stopPropagation();isCur?removeApp(j.external_id):saveApp(j,st);}}
+                                style={{padding:"9px 13px",borderRadius:8,border:`1.5px solid ${isCur?c:t.bd}`,
+                                  background:isCur?`${c}18`:"transparent",color:isCur?c:t.txM,
+                                  fontSize:13,fontWeight:isCur?700:500,cursor:"pointer",fontFamily:"inherit",
+                                  transition:"all .15s",whiteSpace:"nowrap"}}>
+                                {ST_LABEL[st]}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -792,6 +889,139 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* ════════════ TRACKER ════════════ */}
+        {tab==="tracker" && (() => {
+          const allApps = Object.values(apps).sort((a,b)=>new Date(b.updated_at)-new Date(a.updated_at));
+          const filtered = trackerFilter==="All" ? allApps : allApps.filter(a=>a.status===trackerFilter);
+          const counts = {All:allApps.length};
+          Object.keys(ST_LABEL).forEach(s=>{ counts[s]=allApps.filter(a=>a.status===s).length; });
+          const exportApps = () => {
+            const blob = new Blob([JSON.stringify(allApps,null,2)],{type:"application/json"});
+            const a = document.createElement("a"); a.href=URL.createObjectURL(blob);
+            a.download=`jobscout-tracker-${new Date().toISOString().slice(0,10)}.json`; a.click();
+          };
+          return (
+            <div>
+              {/* Summary cards */}
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))",gap:12,marginBottom:20}}>
+                {[["All","📋",t.ac],["saved","🔖",ST_COLOR.saved],["applied","✅",ST_COLOR.applied],
+                  ["interview","📞",ST_COLOR.interview],["offer","🎉",ST_COLOR.offer],["rejected","✗",ST_COLOR.rejected]
+                ].map(([st,ico,c])=>(
+                  <button key={st} onClick={()=>setTrackerFilter(st)}
+                    style={{padding:"14px 10px",borderRadius:12,border:`2px solid ${trackerFilter===st?c:t.bd}`,
+                      background:trackerFilter===st?`${c}12`:t.cd,cursor:"pointer",fontFamily:"inherit",
+                      display:"flex",flexDirection:"column",alignItems:"center",gap:4,transition:"all .15s"}}>
+                    <span style={{fontSize:22}}>{ico}</span>
+                    <span style={{fontSize:26,fontWeight:700,color:c,fontFamily:"'Playfair Display',serif"}}>{counts[st]||0}</span>
+                    <span style={{fontSize:11,color:t.txM,fontWeight:700,textTransform:"capitalize"}}>{st}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Export + header */}
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
+                <span style={{fontSize:14,color:t.txM,fontWeight:600}}>{filtered.length} job{filtered.length!==1?"s":""} tracked</span>
+                {allApps.length>0 && (
+                  <button onClick={exportApps}
+                    style={{padding:"8px 16px",borderRadius:8,border:`1px solid ${t.bd}`,background:t.cd,
+                      color:t.txS,fontSize:13,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>
+                    ⬇ Export JSON
+                  </button>
+                )}
+              </div>
+
+              {/* Application list */}
+              {filtered.length===0 ? (
+                <div style={{textAlign:"center",padding:56,color:t.txM,fontSize:16}}>
+                  {allApps.length===0
+                    ? <span>No saved jobs yet. Open any job card and click <strong>🔖 Save</strong> or <strong>✅ Applied</strong>.</span>
+                    : `No "${trackerFilter}" jobs. Try a different filter.`
+                  }
+                </div>
+              ) : (
+                <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                  {filtered.map(app => {
+                    const c = ST_COLOR[app.status] || t.ac;
+                    const editing = editingNotes===app.external_id;
+                    // Try to find full job details from loaded data
+                    const fullJob = enriched.find(j=>j.external_id===app.external_id);
+                    return (
+                      <div key={app.external_id} style={{background:t.cd,borderRadius:12,border:`1px solid ${t.bd}`,overflow:"hidden",boxShadow:t.shS}}>
+                        <div style={{padding:"16px 20px",display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
+                          <LogoImg name={app.company} size={36} t={t}/>
+                          <div style={{flex:1,minWidth:200}}>
+                            <div style={{fontSize:16,fontWeight:700,color:t.tx,fontFamily:"'Playfair Display',serif",marginBottom:4}}>{app.title}</div>
+                            <div style={{fontSize:14,color:t.txS,display:"flex",gap:10,flexWrap:"wrap"}}>
+                              <span style={{fontWeight:700}}>{app.company}</span>
+                              {app.location && <span>{app.location}</span>}
+                              {app.salary_max>0 && <span style={{color:t.wm,fontWeight:700}}>{fmtSal(app.salary_min)}–{fmtSal(app.salary_max)}</span>}
+                              <span style={{color:t.txM}}>Saved {timeAgo(app.saved_at)}</span>
+                              {app.applied_at && <span style={{color:ST_COLOR.applied}}>Applied {timeAgo(app.applied_at)}</span>}
+                            </div>
+                          </div>
+                          {/* Score */}
+                          {app.relevance_score>0 && (
+                            <div style={{width:44,height:44,borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",background:t.sBg(app.relevance_score)}}>
+                              <span style={{fontSize:17,fontWeight:800,color:t.sTx(app.relevance_score),fontFamily:"'Playfair Display',serif"}}>{(app.relevance_score*100).toFixed(0)}</span>
+                            </div>
+                          )}
+                          {/* Status buttons */}
+                          <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                            {Object.keys(ST_LABEL).map(st=>{
+                              const isCur=app.status===st;
+                              const sc=ST_COLOR[st];
+                              const jobForSave = fullJob || app;
+                              return (
+                                <button key={st} onClick={()=>isCur?removeApp(app.external_id):saveApp(jobForSave,st)}
+                                  style={{padding:"6px 11px",borderRadius:7,border:`1.5px solid ${isCur?sc:t.bd}`,
+                                    background:isCur?`${sc}18`:"transparent",color:isCur?sc:t.txM,
+                                    fontSize:12,fontWeight:isCur?700:500,cursor:"pointer",fontFamily:"inherit",
+                                    transition:"all .15s",whiteSpace:"nowrap"}}>
+                                  {ST_LABEL[st]}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        {/* Notes + actions row */}
+                        <div style={{padding:"0 20px 14px",borderTop:`1px solid ${t.bd}`,display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",paddingTop:10}}>
+                          {editing ? (
+                            <input autoFocus defaultValue={app.notes}
+                              onBlur={e=>{updateNotes(app.external_id,e.target.value);setEditingNotes(null);}}
+                              onKeyDown={e=>{if(e.key==="Enter"){updateNotes(app.external_id,e.target.value);setEditingNotes(null);}if(e.key==="Escape")setEditingNotes(null);}}
+                              placeholder="Add notes (press Enter to save)..."
+                              style={{flex:1,padding:"8px 12px",borderRadius:8,border:`1px solid ${t.ac}`,
+                                background:t.inp,color:t.tx,fontSize:14,fontFamily:"inherit",outline:"none"}}
+                            />
+                          ) : (
+                            <button onClick={()=>setEditingNotes(app.external_id)}
+                              style={{flex:1,textAlign:"left",padding:"8px 12px",borderRadius:8,
+                                border:`1px solid ${app.notes?t.bd:"transparent"}`,background:app.notes?t.bgS:"transparent",
+                                color:app.notes?t.txS:t.txM,fontSize:14,cursor:"pointer",fontFamily:"inherit"}}>
+                              {app.notes || "✏️ Add notes..."}
+                            </button>
+                          )}
+                          <a href={app.url} target="_blank" rel="noopener noreferrer"
+                            style={{padding:"8px 14px",borderRadius:8,background:t.gP,color:"#fff",
+                              fontSize:13,fontWeight:700,textDecoration:"none",whiteSpace:"nowrap"}}>
+                            Apply →
+                          </a>
+                          <button onClick={()=>removeApp(app.external_id)}
+                            style={{padding:"8px 12px",borderRadius:8,border:`1px solid ${t.er}30`,
+                              background:"transparent",color:t.er,fontSize:13,fontWeight:600,
+                              cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* ════════════ MONITOR ════════════ */}
         {tab==="monitor" && (
