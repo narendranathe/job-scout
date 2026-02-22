@@ -3,7 +3,6 @@ services:
     name: jobscout-api
     runtime: docker
     dockerfilePath: ./Dockerfile
-    region: dallas
     plan: free
     healthCheckPath: /ping
     envVars:
