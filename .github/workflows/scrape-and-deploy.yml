@@ -15,7 +15,7 @@ name: "🔍 Full Sweep & Deploy"
 
 on:
   schedule:
-    - cron: '20 * * * *'        # Every hour at :20
+    - cron: '20 */2 * * *'        # Every hour at :20
   push:
     branches: [main]
     paths:
