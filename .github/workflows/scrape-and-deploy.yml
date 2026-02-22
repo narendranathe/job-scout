@@ -1,27 +1,41 @@
 # ═══════════════════════════════════════════════════════════════
-#  FULL SWEEP — runs hourly via GitHub Actions
+#  FULL SWEEP — scrapes all companies, exports JSON, deploys Pages
 #
-#  This is the "deep scan" component of Option D:
-#  • Scrapes ALL 109 companies (with tier batching)
-#  • Exports fresh api-data.json (static fallback for dashboard)
-#  • Commits + deploys dashboard to GitHub Pages
-#  • Optionally pings Render to refresh its cache
+#  Schedule: Every 2 hours, skipping quiet hours (12am–5:30am CST)
+#            12am–5:30am CST = 06:00–11:30 UTC → skip hours 6, 8, 10 UTC
 #
-#  Budget: 24 runs/day × ~4 min = 96 min/day ≈ 2,880 min/month
-#  (GitHub free = 2,000 min — adjust to every 90 min if needed)
+#  Manual run: Go to Actions tab → "Full Sweep & Deploy" → "Run workflow"
+#              Pick "full" (all companies) or "fast" (Tier 1 only, ~30s)
+#
+#  Budget: 9 runs/day × ~4 min = ~36 min/day ≈ 1,080 min/month
+#          (well within GitHub free tier of 2,000 min/month)
 # ═══════════════════════════════════════════════════════════════
 
 name: "🔍 Full Sweep & Deploy"
 
 on:
   schedule:
-    - cron: '20 */2 * * *'        # Every hour at :20
+    # Every 2 hours at :20, but skip quiet hours (06:00–11:30 UTC = 12am–5:30am CST)
+    # Runs at: 00:20, 02:20, 04:20, 12:20, 14:20, 16:20, 18:20, 20:20, 22:20 UTC
+    - cron: '20 0,2,4,12,14,16,18,20,22 * * *'
+
   push:
     branches: [main]
     paths:
       - 'backend/**'
       - 'frontend/**'
+
+  # Manual trigger with mode selection
   workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Scrape mode'
+        required: false
+        default: 'full'
+        type: choice
+        options:
+          - full    # All companies (~3 min)
+          - fast    # Tier 1 only, 24 companies (~30 sec)
 
 permissions:
   contents: write
@@ -56,10 +70,17 @@ jobs:
           path: backend/
         continue-on-error: true
 
-      # Full scrape — all tiers eligible this cycle
+      # Scrape — respects manual mode input or defaults to full
       - name: "🔍 Scrape all boards"
         working-directory: backend
-        run: python main.py --delay 0.3
+        run: |
+          MODE="${{ github.event.inputs.mode || 'full' }}"
+          echo "Running in mode: $MODE"
+          if [ "$MODE" = "fast" ]; then
+            python main.py --fast --delay 0.3
+          else
+            python main.py --delay 0.3
+          fi
         env:
           DB_PATH: jobscout.db
 
@@ -67,7 +88,7 @@ jobs:
         working-directory: backend
         run: python main.py --stats --db jobscout.db
 
-      # Persist state for next run
+      # Persist state for next run (90-day retention)
       - name: Save state
         uses: actions/upload-artifact@v4
         with:
@@ -78,24 +99,25 @@ jobs:
           retention-days: 90
           overwrite: true
 
-      # Commit updated api-data.json
+      # Commit updated api-data.json to repo
       - name: "📤 Commit data"
         run: |
           git config user.name "JobScout Bot"
           git config user.email "bot@jobscout.dev"
           git add frontend/public/api-data.json
           git diff --cached --quiet || {
-            JOBS=$(python3 -c "import json;d=json.load(open('frontend/public/api-data.json'));print(d['stats']['total_jobs'])")
+            JOBS=$(python3 -c "import json;d=json.load(open('frontend/public/api-data.json'));print(d['stats']['total_jobs'])" 2>/dev/null || echo "?")
             git commit -m "data: ${JOBS} jobs · $(date -u +'%b %d %H:%M') UTC [skip ci]"
             git push
           }
 
-      # Optional: Ping Render to refresh its cache
-      # Uncomment and set RENDER_URL secret after deploying to Render
+      # Optional: Ping Render to refresh its cache after GitHub Actions scrape
+      # Uncomment after deploying to Render and setting RENDER_URL + API_SECRET secrets
       # - name: "🔔 Notify Render"
       #   run: |
       #     curl -s -X POST "${{ secrets.RENDER_URL }}/api/scrape" \
       #       -H "Authorization: Bearer ${{ secrets.API_SECRET }}" \
+      #       -H "Content-Type: application/json" \
       #       --max-time 10 || true
 
   deploy:

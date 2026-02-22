@@ -1,5 +1,5 @@
 """
-Company registry — 100+ companies with verified ATS slugs.
+Company registry — 120+ companies with verified ATS slugs.
 
 ATS URL patterns (all PUBLIC, no auth needed):
   Greenhouse:      boards-api.greenhouse.io/v1/boards/{SLUG}/jobs
@@ -7,7 +7,7 @@ ATS URL patterns (all PUBLIC, no auth needed):
   Ashby:           api.ashbyhq.com/posting-api/job-board/{SLUG}
   SmartRecruiters: api.smartrecruiters.com/v1/companies/{SLUG}/postings
   BambooHR:        {SLUG}.bamboohr.com/careers/list
-  Jobvite:         api.jobvite.com/api/v2/job?c={SLUG}
+  Workday:         POST {slug}.{wd_instance}.myworkdayjobs.com/wday/cxs/{slug}/{wd_board}/jobs
 
 Priority tiers:
   1 = Check every cycle (top targets)
@@ -154,6 +154,19 @@ COMPANIES = [
     {"name": "Prefect",            "ats": "bamboohr",   "slug": "prefect",               "tier": 2},
     {"name": "Dagster",            "ats": "bamboohr",   "slug": "elementl",              "tier": 2},
     {"name": "Great Expectations", "ats": "bamboohr",   "slug": "greatexpectations",     "tier": 3},
+
+    # ═══════════════════════════════════════
+    #  WORKDAY — Finance & Enterprise (every 4th cycle)
+    #  These post less frequently so Tier 3 is appropriate.
+    #  Verify URLs: company.wd1.myworkdayjobs.com
+    # ═══════════════════════════════════════
+    {"name": "Goldman Sachs",  "ats": "workday", "slug": "goldmansachs", "wd_instance": "wd1", "wd_board": "GS",             "tier": 3},
+    {"name": "Capital One",    "ats": "workday", "slug": "capitalone",   "wd_instance": "wd1", "wd_board": "Capital_One",    "tier": 3},
+    {"name": "Walmart",        "ats": "workday", "slug": "walmart",      "wd_instance": "wd5", "wd_board": "WalmartExternal","tier": 3},
+    {"name": "Target",         "ats": "workday", "slug": "target",       "wd_instance": "wd1", "wd_board": "TGT_External",   "tier": 3},
+    {"name": "Disney",         "ats": "workday", "slug": "disney",       "wd_instance": "wd5", "wd_board": "disneycareer",   "tier": 3},
+    {"name": "Amex",           "ats": "workday", "slug": "aexp",         "wd_instance": "wd5", "wd_board": "amex-careers",   "tier": 3},
+    {"name": "Deloitte",       "ats": "workday", "slug": "deloitte",     "wd_instance": "wd5", "wd_board": "DeloitteCareers","tier": 3},
 ]
 
 # Total companies
