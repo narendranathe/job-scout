@@ -37,6 +37,35 @@ const ATS_META = {
   unknown:         {l:"Other",         c:"#7A7A7A",i:"📄"},
 };
 
+/* ═══ Dream-company set + company aliases ═══ */
+const DREAM_COMPANIES_SET = new Set([
+  "anthropic","openai","stripe","databricks","snowflake","goldman sachs","walmart",
+  "apple","nvidia","google","microsoft","disney","citadel","aqr","hrt",
+  "hudson river trading","netflix","meta","spotify","fidelity","uber","bloomberg",
+  "grubhub","doordash","amazon","salesforce","jp morgan chase","two sigma",
+]);
+// Common abbreviations → full company name (lowercase)
+const COMPANY_ALIASES = {
+  "gs":"goldman sachs","goldman":"goldman sachs",
+  "jpmc":"jp morgan chase","jpm":"jp morgan chase","chase":"jp morgan chase",
+  "msft":"microsoft",
+  "goog":"google","googl":"google",
+  "fb":"meta","fbk":"meta",
+  "amzn":"amazon",
+  "aapl":"apple",
+  "nvda":"nvidia","nv":"nvidia",
+  "hrt":"hudson river trading",
+  "tsla":"tesla",
+  "ubs":"ubs",
+};
+// Target role keywords for boosting in sort
+const TARGET_ROLE_KW = [
+  "data engineer","ml engineer","ai engineer","analytics engineer",
+  "analytical engineer","data platform","mlops engineer",
+];
+// Resume version presets for the tracker
+const RESUME_VERSIONS = ["_DE","_data","_SWE","_SE","_AE","_AI","_ML","standard","custom"];
+
 /* ═══ Brand Logo — clean magnifying glass (Simplify-style minimal) ═══ */
 function BrandLogo({ size = 32, t }) {
   return (
@@ -172,18 +201,49 @@ function likelySponsor(job){
   return["uber","meta","google","amazon","apple","microsoft","netflix","stripe","anthropic","openai","datadog","snowflake","databricks","two sigma","citadel","bloomberg","capital one","palantir","coinbase"].includes((job.company||"").toLowerCase());
 }
 
-/* ═══ Ranked search — exact title > title contains > company > skills > description ═══ */
+/* ═══ Dream-company helpers ═══ */
+function isDreamCo(company) {
+  return DREAM_COMPANIES_SET.has((company||"").toLowerCase());
+}
+function isTargetRoleFn(title) {
+  const t = (title||"").toLowerCase();
+  return TARGET_ROLE_KW.some(kw => t.includes(kw));
+}
+function isSeniorFn(title) {
+  return /senior|sr\b|staff\b|lead\b|principal|distinguished/i.test(title||"");
+}
+
+/* ═══ Ranked search — alias-aware, with dream-company + role + seniority tiebreakers ═══
+ *
+ * Search quality tiers (primary sort):
+ *   6 = exact title match
+ *   5 = title starts with query
+ *   4 = title contains query
+ *   3 = company name or alias matches
+ *   2 = matched skills
+ *   1 = job description
+ *
+ * Within each tier the secondary ordering is:
+ *   dream company first → target role first → senior+ first → relevance score
+ *
+ * Aliases: "GS" → Goldman Sachs, "Goldman" → Goldman Sachs,
+ *          "JPMC"/"JPM"/"Chase" → JP Morgan Chase, "NVDA" → NVIDIA, etc.
+ */
 function searchRank(job, ql) {
   const title   = (job.title   || "").toLowerCase();
   const company = (job.company || "").toLowerCase();
   const skills  = (job.matched_skills || []).join(" ").toLowerCase();
-  const desc    = (job.description || "").toLowerCase().slice(0, 500);
-  if (title === ql)             return 6;  // Exact title match
-  if (title.startsWith(ql))    return 5;  // Title starts with query
-  if (title.includes(ql))      return 4;  // Title contains query
-  if (company.includes(ql))    return 3;  // Company name match
-  if (skills.includes(ql))     return 2;  // Matched skills
-  if (desc.includes(ql))       return 1;  // Description match
+  const desc    = (job.description || "").toLowerCase().slice(0, 600);
+  // Expand alias: "GS" → "goldman sachs"
+  const aliasExpanded = COMPANY_ALIASES[ql] || null;
+
+  if (title === ql)                                                   return 6;
+  if (title.startsWith(ql))                                          return 5;
+  if (title.includes(ql))                                            return 4;
+  if (company.includes(ql))                                          return 3;
+  if (aliasExpanded && company.includes(aliasExpanded))              return 3; // alias hit
+  if (skills.includes(ql))                                           return 2;
+  if (desc.includes(ql))                                             return 1;
   return 0;
 }
 
@@ -300,10 +360,10 @@ function useApplications() {
     if (RENDER_API) fetch(`${RENDER_API}/api/applications/${extId}`, {method:"DELETE"}).catch(()=>{});
   }, []);
 
-  const updateNotes = useCallback((extId, notes) => {
+  const updateField = useCallback((extId, field, value) => {
     setApps(prev => {
       if (!prev[extId]) return prev;
-      const u = {...prev[extId], notes, updated_at: new Date().toISOString()};
+      const u = {...prev[extId], [field]: value, updated_at: new Date().toISOString()};
       if (RENDER_API) {
         fetch(`${RENDER_API}/api/applications`, {
           method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(u),
@@ -313,7 +373,7 @@ function useApplications() {
     });
   }, []);
 
-  return {apps, saveApp, removeApp, updateNotes};
+  return {apps, saveApp, removeApp, updateField};
 }
 
 /* ═══ Helpers ═══ */
@@ -407,9 +467,10 @@ export default function App() {
   const [cq,sCq]           = useState("");
 
   // Application tracker
-  const {apps, saveApp, removeApp, updateNotes} = useApplications();
-  const [trackerFilter, setTrackerFilter] = useState("All");
-  const [editingNotes, setEditingNotes]   = useState(null);
+  const {apps, saveApp, removeApp, updateField} = useApplications();
+  const [trackerFilter, setTrackerFilter]  = useState("All");
+  const [editingNotes, setEditingNotes]    = useState(null);
+  const [editingResume, setEditingResume]  = useState(null);
 
   // Manual scrape trigger
   const [scraping,setScraping]   = useState(false);
@@ -487,22 +548,40 @@ export default function App() {
 
     if (q.trim()) {
       const ql = q.trim().toLowerCase();
-      // Filter to only matching jobs
+      // Filter to only matching jobs (including alias hits)
       j = j.filter(x => searchRank(x, ql) > 0);
-      // Sort by search match quality first, then by selected sort as tiebreak
+      // Multi-level sort:
+      // 1. Search quality tier (6→1)
+      // 2. Dream company first within same tier
+      // 3. Target role (data/ml/ai engineer) first
+      // 4. Senior+ first
+      // 5. Relevance score as tiebreak
       j.sort((a,b) => {
-        const diff = searchRank(b,ql) - searchRank(a,ql);
-        if (diff !== 0) return diff;
-        return so==="salary" ? (b.salary_max||0)-(a.salary_max||0)
-             : so==="date"   ? new Date(b.posted_at||0)-new Date(a.posted_at||0)
-             : (b.relevance_score||0)-(a.relevance_score||0);
+        const aR = searchRank(a,ql), bR = searchRank(b,ql);
+        if (bR !== aR) return bR - aR;
+        const aDream = isDreamCo(a.company)?1:0, bDream = isDreamCo(b.company)?1:0;
+        if (bDream !== aDream) return bDream - aDream;
+        const aTarget = isTargetRoleFn(a.title)?1:0, bTarget = isTargetRoleFn(b.title)?1:0;
+        if (bTarget !== aTarget) return bTarget - aTarget;
+        const aSr = isSeniorFn(a.title)?1:0, bSr = isSeniorFn(b.title)?1:0;
+        if (bSr !== aSr) return bSr - aSr;
+        return (b.relevance_score||0)-(a.relevance_score||0);
       });
     } else {
-      j.sort((a,b) =>
-        so==="salary" ? (b.salary_max||0)-(a.salary_max||0)
-      : so==="date"   ? new Date(b.posted_at||0)-new Date(a.posted_at||0)
-      : (b.relevance_score||0)-(a.relevance_score||0)
-      );
+      // Default browse: salary/date as selected, or relevance with dream-company boost
+      j.sort((a,b) => {
+        if (so==="salary") return (b.salary_max||0)-(a.salary_max||0);
+        if (so==="date")   return new Date(b.posted_at||0)-new Date(a.posted_at||0);
+        // Relevance sort: dream company gets +0.06 invisible boost so they surface first
+        // among jobs with nearly identical scores
+        const aScore = (a.relevance_score||0) + (isDreamCo(a.company)?0.06:0)
+                                               + (isTargetRoleFn(a.title)?0.03:0)
+                                               + (isSeniorFn(a.title)?0.01:0);
+        const bScore = (b.relevance_score||0) + (isDreamCo(b.company)?0.06:0)
+                                               + (isTargetRoleFn(b.title)?0.03:0)
+                                               + (isSeniorFn(b.title)?0.01:0);
+        return bScore - aScore;
+      });
     }
     return j;
   }, [enriched,selRoles,selExp,selStates,selCities,selATS,remoteOnly,h1bOnly,selSalary,selPosted,q,so]);
@@ -984,35 +1063,69 @@ export default function App() {
                             })}
                           </div>
                         </div>
-                        {/* Notes + actions row */}
-                        <div style={{padding:"0 20px 14px",borderTop:`1px solid ${t.bd}`,display:"flex",gap:10,alignItems:"center",flexWrap:"wrap",paddingTop:10}}>
-                          {editing ? (
-                            <input autoFocus defaultValue={app.notes}
-                              onBlur={e=>{updateNotes(app.external_id,e.target.value);setEditingNotes(null);}}
-                              onKeyDown={e=>{if(e.key==="Enter"){updateNotes(app.external_id,e.target.value);setEditingNotes(null);}if(e.key==="Escape")setEditingNotes(null);}}
-                              placeholder="Add notes (press Enter to save)..."
-                              style={{flex:1,padding:"8px 12px",borderRadius:8,border:`1px solid ${t.ac}`,
-                                background:t.inp,color:t.tx,fontSize:14,fontFamily:"inherit",outline:"none"}}
-                            />
-                          ) : (
-                            <button onClick={()=>setEditingNotes(app.external_id)}
-                              style={{flex:1,textAlign:"left",padding:"8px 12px",borderRadius:8,
-                                border:`1px solid ${app.notes?t.bd:"transparent"}`,background:app.notes?t.bgS:"transparent",
-                                color:app.notes?t.txS:t.txM,fontSize:14,cursor:"pointer",fontFamily:"inherit"}}>
-                              {app.notes || "✏️ Add notes..."}
+                        {/* Resume version + Notes + actions */}
+                        <div style={{padding:"10px 20px 14px",borderTop:`1px solid ${t.bd}`,display:"flex",flexDirection:"column",gap:8}}>
+                          {/* Resume version row */}
+                          <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+                            <span style={{fontSize:12,fontWeight:700,color:t.txM,whiteSpace:"nowrap",minWidth:90}}>📄 Resume used:</span>
+                            {editingResume===app.external_id ? (
+                              <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+                                {RESUME_VERSIONS.map(v=>(
+                                  <button key={v} onClick={()=>{updateField(app.external_id,"resume_version",v);setEditingResume(null);}}
+                                    style={{padding:"4px 10px",borderRadius:6,border:`1.5px solid ${app.resume_version===v?t.ac:t.bd}`,
+                                      background:app.resume_version===v?t.acL:"transparent",
+                                      color:app.resume_version===v?t.ac:t.txS,fontSize:13,fontWeight:600,
+                                      cursor:"pointer",fontFamily:"inherit"}}>
+                                    {v}
+                                  </button>
+                                ))}
+                                <input defaultValue={app.resume_version||""} placeholder="or type custom…"
+                                  onBlur={e=>{if(e.target.value)updateField(app.external_id,"resume_version",e.target.value);setEditingResume(null);}}
+                                  onKeyDown={e=>{if(e.key==="Enter"){if(e.target.value)updateField(app.external_id,"resume_version",e.target.value);setEditingResume(null);}if(e.key==="Escape")setEditingResume(null);}}
+                                  style={{padding:"4px 10px",borderRadius:6,border:`1px solid ${t.ac}`,background:t.inp,color:t.tx,fontSize:13,fontFamily:"inherit",outline:"none",width:140}}
+                                />
+                              </div>
+                            ) : (
+                              <button onClick={()=>setEditingResume(app.external_id)}
+                                style={{padding:"4px 10px",borderRadius:6,
+                                  border:`1.5px solid ${app.resume_version?t.ac:t.bd}`,
+                                  background:app.resume_version?t.acL:"transparent",
+                                  color:app.resume_version?t.ac:t.txM,fontSize:13,fontWeight:app.resume_version?700:400,
+                                  cursor:"pointer",fontFamily:"inherit"}}>
+                                {app.resume_version || "＋ Set resume version"}
+                              </button>
+                            )}
+                          </div>
+                          {/* Notes + action buttons row */}
+                          <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                            {editing ? (
+                              <input autoFocus defaultValue={app.notes}
+                                onBlur={e=>{updateField(app.external_id,"notes",e.target.value);setEditingNotes(null);}}
+                                onKeyDown={e=>{if(e.key==="Enter"){updateField(app.external_id,"notes",e.target.value);setEditingNotes(null);}if(e.key==="Escape")setEditingNotes(null);}}
+                                placeholder="Add notes (press Enter to save)..."
+                                style={{flex:1,padding:"8px 12px",borderRadius:8,border:`1px solid ${t.ac}`,
+                                  background:t.inp,color:t.tx,fontSize:14,fontFamily:"inherit",outline:"none"}}
+                              />
+                            ) : (
+                              <button onClick={()=>setEditingNotes(app.external_id)}
+                                style={{flex:1,textAlign:"left",padding:"8px 12px",borderRadius:8,
+                                  border:`1px solid ${app.notes?t.bd:"transparent"}`,background:app.notes?t.bgS:"transparent",
+                                  color:app.notes?t.txS:t.txM,fontSize:14,cursor:"pointer",fontFamily:"inherit"}}>
+                                {app.notes || "✏️ Add notes..."}
+                              </button>
+                            )}
+                            <a href={app.url} target="_blank" rel="noopener noreferrer"
+                              style={{padding:"8px 14px",borderRadius:8,background:t.gP,color:"#fff",
+                                fontSize:13,fontWeight:700,textDecoration:"none",whiteSpace:"nowrap"}}>
+                              Apply →
+                            </a>
+                            <button onClick={()=>removeApp(app.external_id)}
+                              style={{padding:"8px 12px",borderRadius:8,border:`1px solid ${t.er}30`,
+                                background:"transparent",color:t.er,fontSize:13,fontWeight:600,
+                                cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
+                              Remove
                             </button>
-                          )}
-                          <a href={app.url} target="_blank" rel="noopener noreferrer"
-                            style={{padding:"8px 14px",borderRadius:8,background:t.gP,color:"#fff",
-                              fontSize:13,fontWeight:700,textDecoration:"none",whiteSpace:"nowrap"}}>
-                            Apply →
-                          </a>
-                          <button onClick={()=>removeApp(app.external_id)}
-                            style={{padding:"8px 12px",borderRadius:8,border:`1px solid ${t.er}30`,
-                              background:"transparent",color:t.er,fontSize:13,fontWeight:600,
-                              cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
-                            Remove
-                          </button>
+                          </div>
                         </div>
                       </div>
                     );

@@ -51,8 +51,14 @@ TWILIO_FROM    = os.environ.get("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
 TWILIO_TO      = os.environ.get("TWILIO_WHATSAPP_TO", "")
 
 # ── Alert criteria ─────────────────────────────────────────────────────────
-# Only alert when relevance score is high enough — avoids noise
-ALERT_MIN_SCORE = float(os.environ.get("ALERT_MIN_SCORE", "0.65"))
+# Two-tier thresholds:
+#   DREAM_ALERT_SCORE — lower bar for dream companies (40% match is worth knowing)
+#   ALERT_MIN_SCORE   — kept for reference / non-dream use by forkers (65%)
+#
+# Rationale: a 40%+ semantic match at Anthropic/Google/Goldman is immediately worth
+# knowing even if the keyword overlap isn't perfect — the company alone justifies it.
+DREAM_ALERT_SCORE = float(os.environ.get("DREAM_ALERT_SCORE", "0.40"))
+ALERT_MIN_SCORE   = float(os.environ.get("ALERT_MIN_SCORE",   "0.65"))
 
 DREAM_COMPANIES = {
     s.strip().lower()
@@ -63,7 +69,9 @@ DREAM_ROLE_KEYWORDS = [
     s.strip().lower()
     for s in os.environ.get(
         "DREAM_ROLE_KEYWORDS",
-        "data engineer,senior data engineer,ml engineer,ai engineer,analytics engineer"
+        "data engineer,senior data engineer,sr data engineer,ml engineer,"
+        "ai engineer,analytics engineer,analytical engineer,data platform engineer,"
+        "staff data engineer,principal data engineer,lead data engineer"
     ).split(",")
     if s.strip()
 ]
@@ -74,19 +82,25 @@ DREAM_ROLE_KEYWORDS = [
 def is_dream_job(job: dict) -> bool:
     """
     Returns True when ALL three conditions are met:
-      1. Relevance score >= ALERT_MIN_SCORE (job actually fits your profile)
-      2. Company is in your DREAM_COMPANIES list
-      3. Job title contains one of your DREAM_ROLE_KEYWORDS
+      1. Company is in DREAM_COMPANIES list
+      2. Relevance score >= DREAM_ALERT_SCORE (40% — lower bar for dream cos)
+      3. Job title contains one of DREAM_ROLE_KEYWORDS
+
+    Dream companies use a 40% threshold instead of 65% — at Anthropic or Goldman,
+    a 40%+ semantic match on your resume is worth an immediate alert.
+    Set DREAM_ALERT_SCORE env var to override (e.g. "0.50").
     """
     if not DREAM_COMPANIES or not DREAM_ROLE_KEYWORDS:
         return False
 
-    score = job.get("relevance_score", 0.0)
-    if score < ALERT_MIN_SCORE:
-        return False  # Not relevant enough — skip
+    # Must be a dream company — we only alert for those
+    company_low = job.get("company", "").lower()
+    if company_low not in DREAM_COMPANIES:
+        return False
 
-    company_match = job.get("company", "").lower() in DREAM_COMPANIES
-    if not company_match:
+    # 40% match threshold for dream companies
+    score = job.get("relevance_score", 0.0)
+    if score < DREAM_ALERT_SCORE:
         return False
 
     title = job.get("title", "").lower()
