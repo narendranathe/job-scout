@@ -478,6 +478,11 @@ export default function App() {
   const [addingVersion, setAddingVersion]         = useState(false);
   const [rvForm, setRvForm]   = useState({version_key:"", display_name:"", resume_text:"", notes:""});
   const [rvResult, setRvResult] = useState(null);
+  const [rvFile, setRvFile]     = useState(null);
+  const [rvUploading, setRvUploading] = useState(false);
+  const [compareA, setCompareA]   = useState("");
+  const [compareB, setCompareB]   = useState("");
+  const [compareResult, setCompareResult] = useState(null);
 
   // Manual scrape trigger
   const [scraping,setScraping]   = useState(false);
@@ -512,21 +517,44 @@ export default function App() {
 
   const submitResumeVersion = async () => {
     if (!RENDER_API || !rvForm.version_key.trim()) return;
+    setRvUploading(true);
     try {
-      const r = await fetch(`${RENDER_API}/api/resume/versions`, {
-        method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(rvForm),
-      });
+      let r;
+      if (rvFile) {
+        // PDF upload path — use FormData
+        const fd = new FormData();
+        fd.append("file", rvFile);
+        fd.append("version_key", rvForm.version_key);
+        fd.append("display_name", rvForm.display_name || rvForm.version_key);
+        fd.append("notes", rvForm.notes);
+        r = await fetch(`${RENDER_API}/api/resume/versions/upload`, {method:"POST", body: fd});
+      } else {
+        // Text paste path — use JSON
+        r = await fetch(`${RENDER_API}/api/resume/versions`, {
+          method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(rvForm),
+        });
+      }
       const d = await r.json();
       if (r.ok) {
         const preview = d.skills.slice(0,5).join(", ") + (d.skills.length > 5 ? "…" : "");
         setRvResult({ok:true, msg:`✅ Saved! ${d.skills_extracted} skills found: ${preview}`});
         setRvForm({version_key:"", display_name:"", resume_text:"", notes:""});
+        setRvFile(null);
         setAddingVersion(false);
         fetchResumeVersions();
       } else {
         setRvResult({ok:false, msg:`❌ ${d.error}`});
       }
     } catch(e) { setRvResult({ok:false, msg:`❌ ${e.message}`}); }
+    finally { setRvUploading(false); }
+  };
+
+  const compareVersions = async () => {
+    if (!RENDER_API || !compareA || !compareB || compareA === compareB) return;
+    try {
+      const r = await fetch(`${RENDER_API}/api/resume/versions/compare?a=${encodeURIComponent(compareA)}&b=${encodeURIComponent(compareB)}`);
+      if (r.ok) setCompareResult(await r.json());
+    } catch {}
   };
 
   const deleteResumeVersion = async (vk) => {
@@ -1089,31 +1117,100 @@ export default function App() {
                       </div>
                     )}
                     {resumeVersions.length === 0 && !addingVersion && (
-                      <p style={{fontSize:14,color:t.txM,marginTop:14}}>No resume versions saved yet. Add one below.</p>
+                      <p style={{fontSize:14,color:t.txM,marginTop:14}}>No resume versions saved yet. Upload a PDF or paste text below.</p>
                     )}
+
+                    {/* Compare section — only when 2+ versions exist */}
+                    {resumeVersions.length >= 2 && (
+                      <div style={{marginTop:14,padding:"14px",borderRadius:10,background:`${t.bl}08`,border:`1px solid ${t.bl}20`}}>
+                        <div style={{fontSize:12,fontWeight:700,color:t.bl,textTransform:"uppercase",letterSpacing:".06em",marginBottom:10}}>⚖ Compare Versions</div>
+                        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+                          <select value={compareA} onChange={e=>{setCompareA(e.target.value);setCompareResult(null);}}
+                            style={{padding:"7px 10px",borderRadius:7,border:`1px solid ${t.bd}`,background:t.inp,color:t.tx,fontSize:13,fontFamily:"inherit",outline:"none",flex:"1 1 120px"}}>
+                            <option value="">— Version A —</option>
+                            {resumeVersions.map(v=><option key={v.version_key} value={v.version_key}>{v.version_key} · {v.display_name}</option>)}
+                          </select>
+                          <span style={{color:t.txM,fontWeight:600}}>vs</span>
+                          <select value={compareB} onChange={e=>{setCompareB(e.target.value);setCompareResult(null);}}
+                            style={{padding:"7px 10px",borderRadius:7,border:`1px solid ${t.bd}`,background:t.inp,color:t.tx,fontSize:13,fontFamily:"inherit",outline:"none",flex:"1 1 120px"}}>
+                            <option value="">— Version B —</option>
+                            {resumeVersions.map(v=><option key={v.version_key} value={v.version_key}>{v.version_key} · {v.display_name}</option>)}
+                          </select>
+                          <button onClick={compareVersions} disabled={!compareA||!compareB||compareA===compareB||!RENDER_API}
+                            style={{padding:"7px 16px",borderRadius:7,border:"none",background:compareA&&compareB&&compareA!==compareB?t.gP:`${t.txM}20`,color:compareA&&compareB&&compareA!==compareB?"#fff":t.txM,fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
+                            Compare →
+                          </button>
+                        </div>
+                        {compareResult && (
+                          <div style={{marginTop:12}}>
+                            {/* Similarity score */}
+                            <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12}}>
+                              <div style={{fontSize:32,fontWeight:800,color:compareResult.similarity_pct>=70?t.ok:compareResult.similarity_pct>=40?t.wm:t.er,fontFamily:"'Playfair Display',serif"}}>
+                                {compareResult.similarity_pct}%
+                              </div>
+                              <div style={{fontSize:13,color:t.txM}}>
+                                overlap · {compareResult.shared.length} shared skills<br/>
+                                <span style={{color:t.bl}}>{compareResult.a.display_name}: {compareResult.a.skill_count} skills</span>
+                                {" · "}
+                                <span style={{color:t.vi}}>{compareResult.b.display_name}: {compareResult.b.skill_count} skills</span>
+                              </div>
+                            </div>
+                            {/* Diff columns */}
+                            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10}}>
+                              {[
+                                {label:`Only in ${compareResult.a.version_key}`,skills:compareResult.only_a,c:t.bl},
+                                {label:"Shared",skills:compareResult.shared,c:t.ok},
+                                {label:`Only in ${compareResult.b.version_key}`,skills:compareResult.only_b,c:t.vi},
+                              ].map(col=>(
+                                <div key={col.label}>
+                                  <div style={{fontSize:11,fontWeight:700,color:col.c,textTransform:"uppercase",letterSpacing:".05em",marginBottom:6}}>{col.label} ({col.skills.length})</div>
+                                  <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                                    {col.skills.map(s=>(
+                                      <span key={s} style={{fontSize:12,padding:"2px 7px",borderRadius:5,background:`${col.c}14`,color:col.c}}>{s}</span>
+                                    ))}
+                                    {col.skills.length===0 && <span style={{fontSize:12,color:t.txM,fontStyle:"italic"}}>none</span>}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     {/* Add version form */}
                     {addingVersion ? (
                       <div style={{marginTop:14,display:"flex",flexDirection:"column",gap:10,padding:"14px",borderRadius:10,background:`${t.ac}06`,border:`1px solid ${t.ac}20`}}>
+                        {/* PDF upload */}
+                        <div style={{padding:"10px 12px",borderRadius:7,border:`1.5px dashed ${t.ac}50`,background:t.bgS}}>
+                          <div style={{fontSize:12,fontWeight:700,color:t.txM,marginBottom:6}}>📎 UPLOAD PDF (recommended)</div>
+                          <input type="file" accept=".pdf" onChange={e=>{setRvFile(e.target.files[0]||null);setRvResult(null);}}
+                            style={{fontSize:13,color:t.txS,fontFamily:"inherit"}}/>
+                          {rvFile && <div style={{fontSize:12,color:t.ok,marginTop:4,fontWeight:600}}>✓ {rvFile.name}</div>}
+                          <div style={{fontSize:11,color:t.txM,marginTop:4}}>or paste text below instead</div>
+                        </div>
                         <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
                           <input placeholder="Version key (e.g. _DE, _GS)" value={rvForm.version_key}
                             onChange={e=>setRvForm(f=>({...f,version_key:e.target.value}))}
                             style={{flex:"1 1 140px",padding:"8px 12px",borderRadius:7,border:`1px solid ${t.bd}`,background:t.inp,color:t.tx,fontSize:14,fontFamily:"inherit",outline:"none"}}/>
-                          <input placeholder="Display name (e.g. Data Engineering)" value={rvForm.display_name}
+                          <input placeholder="Display name (e.g. Goldman Sachs)" value={rvForm.display_name}
                             onChange={e=>setRvForm(f=>({...f,display_name:e.target.value}))}
                             style={{flex:"2 1 200px",padding:"8px 12px",borderRadius:7,border:`1px solid ${t.bd}`,background:t.inp,color:t.tx,fontSize:14,fontFamily:"inherit",outline:"none"}}/>
                         </div>
-                        <textarea placeholder="Paste resume text here (for skill extraction)..." value={rvForm.resume_text}
-                          onChange={e=>setRvForm(f=>({...f,resume_text:e.target.value}))}
-                          rows={5} style={{padding:"8px 12px",borderRadius:7,border:`1px solid ${t.bd}`,background:t.inp,color:t.tx,fontSize:13,fontFamily:"inherit",outline:"none",resize:"vertical"}}/>
-                        <input placeholder="Notes (optional)..." value={rvForm.notes}
+                        {!rvFile && (
+                          <textarea placeholder="Paste resume text here (used if no PDF selected)..." value={rvForm.resume_text}
+                            onChange={e=>setRvForm(f=>({...f,resume_text:e.target.value}))}
+                            rows={5} style={{padding:"8px 12px",borderRadius:7,border:`1px solid ${t.bd}`,background:t.inp,color:t.tx,fontSize:13,fontFamily:"inherit",outline:"none",resize:"vertical"}}/>
+                        )}
+                        <input placeholder="Notes (optional — e.g. 'sent to quant firms')..." value={rvForm.notes}
                           onChange={e=>setRvForm(f=>({...f,notes:e.target.value}))}
                           style={{padding:"8px 12px",borderRadius:7,border:`1px solid ${t.bd}`,background:t.inp,color:t.tx,fontSize:14,fontFamily:"inherit",outline:"none"}}/>
                         <div style={{display:"flex",gap:8}}>
-                          <button onClick={submitResumeVersion} disabled={!RENDER_API||!rvForm.version_key.trim()}
-                            style={{padding:"9px 20px",borderRadius:8,border:"none",background:RENDER_API?t.gP:`${t.txM}20`,color:RENDER_API?"#fff":t.txM,fontSize:14,fontWeight:700,cursor:RENDER_API?"pointer":"not-allowed",fontFamily:"inherit"}}>
-                            Save Version
+                          <button onClick={submitResumeVersion} disabled={!RENDER_API||!rvForm.version_key.trim()||rvUploading}
+                            style={{padding:"9px 20px",borderRadius:8,border:"none",background:RENDER_API&&!rvUploading?t.gP:`${t.txM}20`,color:RENDER_API&&!rvUploading?"#fff":t.txM,fontSize:14,fontWeight:700,cursor:RENDER_API&&!rvUploading?"pointer":"not-allowed",fontFamily:"inherit"}}>
+                            {rvUploading?"⏳ Processing...":"Save Version"}
                           </button>
-                          <button onClick={()=>{setAddingVersion(false);setRvResult(null);}}
+                          <button onClick={()=>{setAddingVersion(false);setRvResult(null);setRvFile(null);}}
                             style={{padding:"9px 16px",borderRadius:8,border:`1px solid ${t.bd}`,background:"transparent",color:t.txM,fontSize:14,cursor:"pointer",fontFamily:"inherit"}}>
                             Cancel
                           </button>

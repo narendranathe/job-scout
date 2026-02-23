@@ -600,6 +600,94 @@ def api_save_resume_version():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/resume/versions/upload", methods=["POST", "OPTIONS"])
+def api_upload_resume_version_pdf():
+    """Upload a PDF resume → extract text → save as a named version."""
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        from storage.profile_manager import init_profile_tables, save_resume_version
+        init_profile_tables(DB_PATH)
+
+        version_key = request.form.get("version_key", "").strip()
+        if not version_key:
+            return jsonify({"error": "version_key required"}), 400
+        if "file" not in request.files:
+            return jsonify({"error": "PDF file required (field name: file)"}), 400
+
+        file = request.files["file"]
+        if not file.filename.lower().endswith(".pdf"):
+            return jsonify({"error": "Only PDF files are supported"}), 400
+
+        try:
+            import pdfplumber, io
+            pdf_bytes = file.read()
+            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                pages_text = [p.extract_text() or "" for p in pdf.pages]
+            text = "\n".join(pages_text).strip()
+        except Exception as e:
+            return jsonify({"error": f"PDF extraction failed: {e}"}), 500
+
+        if not text:
+            return jsonify({"error": "Could not extract text — try pasting resume text instead"}), 422
+
+        data = {
+            "version_key": version_key,
+            "display_name": request.form.get("display_name", version_key),
+            "resume_text": text,
+            "notes": request.form.get("notes", ""),
+            "target_companies": [],
+        }
+        skills = save_resume_version(data, DB_PATH)
+        return jsonify({
+            "status": "ok",
+            "version_key": version_key,
+            "skills_extracted": len(skills),
+            "skills": skills,
+            "text_length": len(text),
+        }), 200, {"Access-Control-Allow-Origin": "*"}
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/resume/versions/compare", methods=["GET"])
+def api_compare_resume_versions():
+    """Compare two resume versions — returns skill overlap + diffs.
+    Query: ?a=<version_key>&b=<version_key>
+    """
+    a_key = request.args.get("a", "").strip()
+    b_key = request.args.get("b", "").strip()
+    if not a_key or not b_key:
+        return jsonify({"error": "Query params ?a=<key>&b=<key> required"}), 400
+    try:
+        from storage.profile_manager import get_resume_version
+        a = get_resume_version(a_key, DB_PATH)
+        b = get_resume_version(b_key, DB_PATH)
+        if not a:
+            return jsonify({"error": f"Version '{a_key}' not found"}), 404
+        if not b:
+            return jsonify({"error": f"Version '{b_key}' not found"}), 404
+
+        a_skills = set(a.get("extracted_skills", []))
+        b_skills = set(b.get("extracted_skills", []))
+        shared   = sorted(a_skills & b_skills)
+        only_a   = sorted(a_skills - b_skills)
+        only_b   = sorted(b_skills - a_skills)
+        total    = len(a_skills | b_skills)
+        similarity_pct = round(len(shared) / total * 100) if total else 0
+
+        return jsonify({
+            "a": {"version_key": a_key, "display_name": a.get("display_name", a_key), "skill_count": len(a_skills)},
+            "b": {"version_key": b_key, "display_name": b.get("display_name", b_key), "skill_count": len(b_skills)},
+            "similarity_pct": similarity_pct,
+            "shared": shared,
+            "only_a": only_a,
+            "only_b": only_b,
+        }), 200, {"Access-Control-Allow-Origin": "*"}
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/resume/versions/<version_key>", methods=["GET"])
 def api_get_resume_version(version_key):
     """Get a specific resume version including full resume text."""
