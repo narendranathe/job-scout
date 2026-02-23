@@ -85,6 +85,21 @@ def init_db(db_path: str = DB_PATH):
         CREATE UNIQUE INDEX IF NOT EXISTS idx_applications_extid ON applications(external_id);
         CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status);
         CREATE INDEX IF NOT EXISTS idx_applications_company ON applications(company);
+
+        -- Resume versions: stores each resume variant + extracted skills
+        CREATE TABLE IF NOT EXISTS resume_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            version_key TEXT UNIQUE NOT NULL,       -- "_DE", "_GS", "standard"
+            display_name TEXT NOT NULL,             -- "Data Engineering", "Goldman Sachs"
+            resume_text TEXT DEFAULT '',            -- full plain text of the resume
+            extracted_skills TEXT DEFAULT '[]',     -- JSON: skills auto-extracted from text
+            target_roles TEXT DEFAULT '[]',         -- JSON: ["data engineer","senior data engineer"]
+            target_companies TEXT DEFAULT '[]',     -- JSON: companies this version was sent to
+            notes TEXT DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_resume_versions_key ON resume_versions(version_key);
     """)
     conn.commit()
     conn.close()
@@ -199,3 +214,77 @@ def get_stats(db_path: str = DB_PATH) -> dict:
     """).fetchone()
     conn.close()
     return dict(row) if row else {}
+
+
+# ─── Resume version helpers ───────────────────────────────────────
+
+def upsert_resume_version(
+    conn: sqlite3.Connection,
+    version_key: str,
+    display_name: str,
+    resume_text: str = "",
+    skills: list = None,
+    target_roles: list = None,
+    target_companies: list = None,
+    notes: str = "",
+) -> str:
+    """Insert or update a resume version. Returns 'new' or 'updated'."""
+    now = datetime.now(timezone.utc).isoformat()
+    skills = skills or []
+    target_roles = target_roles or []
+    target_companies = target_companies or []
+
+    existing = conn.execute(
+        "SELECT id FROM resume_versions WHERE version_key = ?", (version_key,)
+    ).fetchone()
+
+    if existing is None:
+        conn.execute("""
+            INSERT INTO resume_versions
+                (version_key, display_name, resume_text, extracted_skills,
+                 target_roles, target_companies, notes, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?)
+        """, (
+            version_key, display_name, resume_text,
+            json.dumps(skills), json.dumps(target_roles), json.dumps(target_companies),
+            notes, now, now,
+        ))
+        return "new"
+    else:
+        conn.execute("""
+            UPDATE resume_versions SET
+                display_name = ?, resume_text = ?, extracted_skills = ?,
+                target_roles = ?, target_companies = ?, notes = ?, updated_at = ?
+            WHERE version_key = ?
+        """, (
+            display_name, resume_text,
+            json.dumps(skills), json.dumps(target_roles), json.dumps(target_companies),
+            notes, now, version_key,
+        ))
+        return "updated"
+
+
+def _parse_rv_row(row) -> dict:
+    d = dict(row)
+    for field in ["extracted_skills", "target_roles", "target_companies"]:
+        try:
+            d[field] = json.loads(d[field])
+        except Exception:
+            d[field] = []
+    return d
+
+
+def get_resume_version(conn: sqlite3.Connection, version_key: str) -> dict | None:
+    """Get a single resume version by key."""
+    row = conn.execute(
+        "SELECT * FROM resume_versions WHERE version_key = ?", (version_key,)
+    ).fetchone()
+    return _parse_rv_row(row) if row else None
+
+
+def list_resume_versions(conn: sqlite3.Connection) -> list[dict]:
+    """List all resume versions ordered by updated_at."""
+    rows = conn.execute(
+        "SELECT * FROM resume_versions ORDER BY updated_at DESC"
+    ).fetchall()
+    return [_parse_rv_row(r) for r in rows]

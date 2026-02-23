@@ -472,6 +472,13 @@ export default function App() {
   const [editingNotes, setEditingNotes]    = useState(null);
   const [editingResume, setEditingResume]  = useState(null);
 
+  // Resume Version Manager
+  const [showResumeManager, setShowResumeManager] = useState(false);
+  const [resumeVersions, setResumeVersions]       = useState([]);
+  const [addingVersion, setAddingVersion]         = useState(false);
+  const [rvForm, setRvForm]   = useState({version_key:"", display_name:"", resume_text:"", notes:""});
+  const [rvResult, setRvResult] = useState(null);
+
   // Manual scrape trigger
   const [scraping,setScraping]   = useState(false);
   const [scrapeMsg,setScrapeMsg] = useState(null);
@@ -495,6 +502,41 @@ export default function App() {
     finally { setScraping(false); }
   };
 
+  const fetchResumeVersions = useCallback(async () => {
+    if (!RENDER_API) return;
+    try {
+      const r = await fetch(`${RENDER_API}/api/resume/versions`, {signal: AbortSignal.timeout(5000)});
+      if (r.ok) setResumeVersions(await r.json());
+    } catch {}
+  }, []);
+
+  const submitResumeVersion = async () => {
+    if (!RENDER_API || !rvForm.version_key.trim()) return;
+    try {
+      const r = await fetch(`${RENDER_API}/api/resume/versions`, {
+        method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(rvForm),
+      });
+      const d = await r.json();
+      if (r.ok) {
+        const preview = d.skills.slice(0,5).join(", ") + (d.skills.length > 5 ? "…" : "");
+        setRvResult({ok:true, msg:`✅ Saved! ${d.skills_extracted} skills found: ${preview}`});
+        setRvForm({version_key:"", display_name:"", resume_text:"", notes:""});
+        setAddingVersion(false);
+        fetchResumeVersions();
+      } else {
+        setRvResult({ok:false, msg:`❌ ${d.error}`});
+      }
+    } catch(e) { setRvResult({ok:false, msg:`❌ ${e.message}`}); }
+  };
+
+  const deleteResumeVersion = async (vk) => {
+    if (!RENDER_API) return;
+    try {
+      await fetch(`${RENDER_API}/api/resume/versions/${encodeURIComponent(vk)}`, {method:"DELETE"});
+      fetchResumeVersions();
+    } catch {}
+  };
+
   const allJobs = data?.jobs   || [];
   const stats   = data?.stats  || {};
   const dist    = data?.distributions || {};
@@ -506,6 +548,17 @@ export default function App() {
     _cat: catOf(j.title),
     _exp: expOf(j.title),
   })), [allJobs]);
+
+  // Build company → applications map for "already applied here" intelligence
+  const companyApps = useMemo(() => {
+    const m = {};
+    Object.values(apps).forEach(a => {
+      const key = (a.company || "").toLowerCase();
+      if (!m[key]) m[key] = [];
+      m[key].push(a);
+    });
+    return m;
+  }, [apps]);
 
   // Build filter option lists
   const opts = useMemo(() => {
@@ -800,6 +853,29 @@ export default function App() {
                           {j.description.slice(0,700)}...
                         </p>
                       )}
+                      {/* Application History for this company */}
+                      {(() => {
+                        const coKey = (j.company || "").toLowerCase();
+                        const coHistory = (companyApps[coKey] || []).filter(a => a.status !== "saved");
+                        if (!coHistory.length) return null;
+                        return (
+                          <div style={{margin:"12px 0",padding:"12px 16px",borderRadius:10,background:`${t.wm}10`,border:`1px solid ${t.wm}30`}}>
+                            <div style={{fontSize:12,fontWeight:700,color:t.wm,textTransform:"uppercase",letterSpacing:".06em",marginBottom:8}}>
+                              📋 Your history at {j.company}
+                            </div>
+                            {coHistory.map((a,i) => (
+                              <div key={i} style={{display:"flex",gap:10,alignItems:"center",padding:"5px 0",borderBottom:i<coHistory.length-1?`1px solid ${t.bd}`:"none",flexWrap:"wrap",fontSize:13}}>
+                                <span style={{color:t.txS,flex:1,minWidth:120}}>{a.title}</span>
+                                {a.applied_at && <span style={{color:t.txM}}>{timeAgo(a.applied_at)}</span>}
+                                {a.resume_version && <span style={{color:t.ac,fontWeight:600}}>📄 {a.resume_version}</span>}
+                                <span style={{fontWeight:700,color:ST_COLOR[a.status]||t.txM,padding:"2px 8px",borderRadius:5,background:`${ST_COLOR[a.status]||t.txM}18`,fontSize:12}}>
+                                  {a.status.charAt(0).toUpperCase()+a.status.slice(1)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
                       <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginTop:10}}>
                         <a href={j.url} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()}
                           style={{display:"inline-block",padding:"11px 24px",borderRadius:9,background:t.gP,color:"#fff",fontSize:15,fontWeight:700,textDecoration:"none",boxShadow:`0 3px 12px ${t.ac}30`}}>
@@ -982,6 +1058,81 @@ export default function App() {
           };
           return (
             <div>
+              {/* ── Resume Version Manager ── */}
+              <div style={{marginBottom:18,background:t.cd,borderRadius:12,border:`1px solid ${t.bd}`,overflow:"hidden",boxShadow:t.shS}}>
+                <button onClick={()=>{setShowResumeManager(m=>!m);if(!showResumeManager)fetchResumeVersions();}}
+                  style={{width:"100%",padding:"14px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",background:"transparent",border:"none",cursor:"pointer",fontFamily:"inherit",color:t.tx}}>
+                  <span style={{fontSize:15,fontWeight:700}}>📄 Resume Version Manager</span>
+                  <span style={{fontSize:14,color:t.txM,transform:showResumeManager?"rotate(180deg)":"",transition:"transform .2s"}}>▾</span>
+                </button>
+                {showResumeManager && (
+                  <div style={{padding:"0 20px 18px",borderTop:`1px solid ${t.bd}`}}>
+                    {/* Saved versions list */}
+                    {resumeVersions.length > 0 && (
+                      <div style={{marginTop:14,display:"flex",flexDirection:"column",gap:8}}>
+                        {resumeVersions.map(rv => (
+                          <div key={rv.version_key} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 14px",borderRadius:9,background:t.bgS,border:`1px solid ${t.bd}`,flexWrap:"wrap"}}>
+                            <div style={{flex:1,minWidth:140}}>
+                              <span style={{fontWeight:700,color:t.ac,fontSize:14}}>{rv.version_key}</span>
+                              <span style={{color:t.txM,fontSize:13,marginLeft:8}}>{rv.display_name}</span>
+                            </div>
+                            <span style={{fontSize:12,color:t.txM}}>{rv.extracted_skills?.length||0} skills</span>
+                            {rv.target_companies?.length > 0 && (
+                              <span style={{fontSize:12,color:t.txS}}>{rv.target_companies.slice(0,3).join(", ")}</span>
+                            )}
+                            <button onClick={()=>deleteResumeVersion(rv.version_key)}
+                              style={{padding:"4px 10px",borderRadius:6,border:`1px solid ${t.er}30`,background:"transparent",color:t.er,fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>
+                              Remove
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {resumeVersions.length === 0 && !addingVersion && (
+                      <p style={{fontSize:14,color:t.txM,marginTop:14}}>No resume versions saved yet. Add one below.</p>
+                    )}
+                    {/* Add version form */}
+                    {addingVersion ? (
+                      <div style={{marginTop:14,display:"flex",flexDirection:"column",gap:10,padding:"14px",borderRadius:10,background:`${t.ac}06`,border:`1px solid ${t.ac}20`}}>
+                        <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                          <input placeholder="Version key (e.g. _DE, _GS)" value={rvForm.version_key}
+                            onChange={e=>setRvForm(f=>({...f,version_key:e.target.value}))}
+                            style={{flex:"1 1 140px",padding:"8px 12px",borderRadius:7,border:`1px solid ${t.bd}`,background:t.inp,color:t.tx,fontSize:14,fontFamily:"inherit",outline:"none"}}/>
+                          <input placeholder="Display name (e.g. Data Engineering)" value={rvForm.display_name}
+                            onChange={e=>setRvForm(f=>({...f,display_name:e.target.value}))}
+                            style={{flex:"2 1 200px",padding:"8px 12px",borderRadius:7,border:`1px solid ${t.bd}`,background:t.inp,color:t.tx,fontSize:14,fontFamily:"inherit",outline:"none"}}/>
+                        </div>
+                        <textarea placeholder="Paste resume text here (for skill extraction)..." value={rvForm.resume_text}
+                          onChange={e=>setRvForm(f=>({...f,resume_text:e.target.value}))}
+                          rows={5} style={{padding:"8px 12px",borderRadius:7,border:`1px solid ${t.bd}`,background:t.inp,color:t.tx,fontSize:13,fontFamily:"inherit",outline:"none",resize:"vertical"}}/>
+                        <input placeholder="Notes (optional)..." value={rvForm.notes}
+                          onChange={e=>setRvForm(f=>({...f,notes:e.target.value}))}
+                          style={{padding:"8px 12px",borderRadius:7,border:`1px solid ${t.bd}`,background:t.inp,color:t.tx,fontSize:14,fontFamily:"inherit",outline:"none"}}/>
+                        <div style={{display:"flex",gap:8}}>
+                          <button onClick={submitResumeVersion} disabled={!RENDER_API||!rvForm.version_key.trim()}
+                            style={{padding:"9px 20px",borderRadius:8,border:"none",background:RENDER_API?t.gP:`${t.txM}20`,color:RENDER_API?"#fff":t.txM,fontSize:14,fontWeight:700,cursor:RENDER_API?"pointer":"not-allowed",fontFamily:"inherit"}}>
+                            Save Version
+                          </button>
+                          <button onClick={()=>{setAddingVersion(false);setRvResult(null);}}
+                            style={{padding:"9px 16px",borderRadius:8,border:`1px solid ${t.bd}`,background:"transparent",color:t.txM,fontSize:14,cursor:"pointer",fontFamily:"inherit"}}>
+                            Cancel
+                          </button>
+                        </div>
+                        {rvResult && (
+                          <div style={{fontSize:13,fontWeight:600,color:rvResult.ok?t.ok:t.er,marginTop:4}}>{rvResult.msg}</div>
+                        )}
+                        {!RENDER_API && <div style={{fontSize:13,color:t.er}}>⚠️ Set VITE_RENDER_URL to enable saving versions.</div>}
+                      </div>
+                    ) : (
+                      <button onClick={()=>{setAddingVersion(true);setRvResult(null);}}
+                        style={{marginTop:12,padding:"9px 18px",borderRadius:8,border:`1.5px dashed ${t.ac}60`,background:"transparent",color:t.ac,fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>
+                        ＋ Add Version
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
               {/* Summary cards */}
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(120px,1fr))",gap:12,marginBottom:20}}>
                 {[["All","📋",t.ac],["saved","🔖",ST_COLOR.saved],["applied","✅",ST_COLOR.applied],

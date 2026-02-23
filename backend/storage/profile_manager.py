@@ -223,6 +223,88 @@ def get_all_skills(db_path: str = DB_PATH) -> list[str]:
     return list(dict.fromkeys(extracted + custom))
 
 
+# ─── Resume version CRUD ─────────────────────────────────────────
+
+def save_resume_version(data: dict, db_path: str = DB_PATH) -> list[str]:
+    """Store a resume version and extract skills. Returns extracted skill list."""
+    from storage.db import upsert_resume_version
+
+    version_key = data.get("version_key", "").strip()
+    display_name = data.get("display_name", version_key).strip() or version_key
+    resume_text = data.get("resume_text", "").strip()
+    target_companies = data.get("target_companies", [])
+    notes = data.get("notes", "")
+
+    skills = extract_skills_from_resume(resume_text) if resume_text else []
+
+    # Infer target_roles from display_name / version_key when not provided
+    target_roles = data.get("target_roles", [])
+    if not target_roles:
+        lower = display_name.lower()
+        if any(k in lower for k in ("data eng", "_de", "de ", "etl")):
+            target_roles = ["data engineer", "senior data engineer"]
+        elif any(k in lower for k in ("ml", "machine learn")):
+            target_roles = ["ml engineer", "machine learning engineer"]
+        elif any(k in lower for k in ("ai ", " ai", "artificial")):
+            target_roles = ["ai engineer"]
+        elif any(k in lower for k in ("analytic", "_ae")):
+            target_roles = ["analytics engineer"]
+        elif any(k in lower for k in ("software", "swe", "_se")):
+            target_roles = ["software engineer"]
+
+    conn = get_conn(db_path)
+    upsert_resume_version(conn, version_key, display_name, resume_text,
+                          skills, target_roles, target_companies, notes)
+    conn.commit()
+    conn.close()
+    log.info("Resume version '%s' stored — %d skills extracted", version_key, len(skills))
+    return skills
+
+
+def get_resume_version(version_key: str, db_path: str = DB_PATH) -> dict:
+    """Get a resume version by key (returns {} if not found)."""
+    from storage.db import get_resume_version as _get_rv
+    conn = get_conn(db_path)
+    result = _get_rv(conn, version_key)
+    conn.close()
+    return result or {}
+
+
+def list_resume_versions(db_path: str = DB_PATH) -> list[dict]:
+    """List all resume versions ordered by updated_at."""
+    from storage.db import list_resume_versions as _list_rv
+    conn = get_conn(db_path)
+    result = _list_rv(conn)
+    conn.close()
+    return result
+
+
+def delete_resume_version(version_key: str, db_path: str = DB_PATH):
+    """Delete a resume version by key."""
+    conn = get_conn(db_path)
+    conn.execute("DELETE FROM resume_versions WHERE version_key = ?", (version_key,))
+    conn.commit()
+    conn.close()
+    log.info("Resume version '%s' deleted", version_key)
+
+
+def get_company_application_history(company_name: str, db_path: str = DB_PATH) -> dict:
+    """Get all applications for a company (case-insensitive match)."""
+    conn = get_conn(db_path)
+    rows = conn.execute(
+        "SELECT * FROM applications WHERE LOWER(company) = LOWER(?) ORDER BY updated_at DESC",
+        (company_name,)
+    ).fetchall()
+    conn.close()
+    applications = [dict(r) for r in rows]
+    applied = any(a["status"] in ("applied", "interview", "offer") for a in applications)
+    return {
+        "company": company_name,
+        "applied": applied,
+        "applications": applications,
+    }
+
+
 # ─── Internal ────────────────────────────────────────────────────
 
 def _hash_pin(pin: str) -> str:

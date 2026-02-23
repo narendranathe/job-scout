@@ -535,6 +535,18 @@ def api_delete_application(ext_id):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/applications/company/<company_name>", methods=["GET"])
+def api_company_history(company_name):
+    """Get all applications for a company (case-insensitive)."""
+    try:
+        from storage.profile_manager import get_company_application_history
+        return jsonify(get_company_application_history(company_name, DB_PATH)), 200, {
+            "Access-Control-Allow-Origin": "*"
+        }
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/applications/export", methods=["GET"])
 def api_export_applications():
     """Export all applications as JSON (for backup)."""
@@ -551,6 +563,65 @@ def api_export_applications():
                 "Content-Disposition": "attachment; filename=applications.json",
             }
         )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/resume/versions", methods=["GET"])
+def api_list_resume_versions():
+    """List all saved resume versions."""
+    try:
+        from storage.profile_manager import init_profile_tables, list_resume_versions
+        init_profile_tables(DB_PATH)
+        return jsonify(list_resume_versions(DB_PATH)), 200, {"Access-Control-Allow-Origin": "*"}
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/resume/versions", methods=["POST", "OPTIONS"])
+def api_save_resume_version():
+    """Save/update a resume version and extract skills from resume_text."""
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        from storage.profile_manager import init_profile_tables, save_resume_version
+        init_profile_tables(DB_PATH)
+        data = request.get_json() or {}
+        if not data.get("version_key"):
+            return jsonify({"error": "version_key required"}), 400
+        skills = save_resume_version(data, DB_PATH)
+        return jsonify({
+            "status": "ok",
+            "version_key": data["version_key"],
+            "skills_extracted": len(skills),
+            "skills": skills,
+        }), 200, {"Access-Control-Allow-Origin": "*"}
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/resume/versions/<version_key>", methods=["GET"])
+def api_get_resume_version(version_key):
+    """Get a specific resume version including full resume text."""
+    try:
+        from storage.profile_manager import get_resume_version
+        v = get_resume_version(version_key, DB_PATH)
+        if not v:
+            return jsonify({"error": "not found"}), 404
+        return jsonify(v), 200, {"Access-Control-Allow-Origin": "*"}
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/resume/versions/<version_key>", methods=["DELETE", "OPTIONS"])
+def api_delete_resume_version(version_key):
+    """Delete a resume version by key."""
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        from storage.profile_manager import delete_resume_version
+        delete_resume_version(version_key, DB_PATH)
+        return jsonify({"status": "deleted"}), 200, {"Access-Control-Allow-Origin": "*"}
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -590,7 +661,7 @@ def index():
 @app.after_request
 def add_cors(response):
     response.headers["Access-Control-Allow-Origin"]  = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     return response
 

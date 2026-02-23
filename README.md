@@ -1,21 +1,23 @@
 # JobScout — Personal Job Discovery Dashboard
 
-Zero-cost, real-time job scraper + intelligent React dashboard built for data engineers and ML professionals. Monitors 120+ companies across 6 ATS platforms, sends dream-job alerts via Slack/WhatsApp, and personalizes results from your resume.
+Zero-cost, real-time job scraper + intelligent React dashboard built for data engineers and ML professionals. Monitors 130+ companies across 6 ATS platforms, sends dream-job alerts via Discord and Telegram (free forever), and builds a semantic memory of every resume version and company you've ever applied to.
 
 ## Features
 
 | Feature | Details |
 |---------|---------|
-| **120+ companies** | Greenhouse, Lever, Ashby, SmartRecruiters, BambooHR, Workday |
-| **Finance companies** | Goldman Sachs, Capital One, Walmart, Disney, Target, Amex, Deloitte |
-| **Real-time scraping** | Render: Tier 1 every 5 min · GitHub Actions: all 120+ every 2 hrs |
+| **130+ companies** | Greenhouse, Lever, Ashby, SmartRecruiters, BambooHR, Workday |
+| **Finance & Big Tech** | Goldman Sachs, JP Morgan, Walmart, Disney, Target, Amex, Deloitte |
+| **Real-time scraping** | Render: Tier 1 every 5 min · GitHub Actions: all 130+ every 2 hrs |
 | **Smart scheduling** | Skips 12am–5:30am CST — no new roles overnight |
-| **Dream job alerts** | Slack webhook + WhatsApp (Twilio) — fires instantly on new matches |
-| **Ranked search** | Exact title → title contains → company → skills → description |
-| **Resume personalization** | Upload resume → extract skills → personalize relevance scores |
+| **Dream job alerts** | Discord webhook + Telegram Bot — free forever, fires instantly |
+| **Ranked search** | Exact title → title contains → company (alias-aware) → skills → description |
+| **Resume versions** | Store _DE, _GS, _SWE, _AI, custom — extract skills from each |
+| **Application memory** | Track status, resume used, notes; see full history per company |
+| **"Applied here" badge** | Expand any job card to see your history at that company |
 | **Profile & PIN** | Store preferences, dream companies, access PIN via Render API |
 | **Mobile responsive** | Works on phone, tablet, desktop |
-| **Manual triggers** | Dashboard button to kick off Render scrape, GitHub Actions link |
+| **Manual triggers** | Dashboard button + GitHub Actions dispatch |
 | **Dark / Light theme** | Persists in memory |
 
 ## Architecture
@@ -27,16 +29,20 @@ Zero-cost, real-time job scraper + intelligent React dashboard built for data en
 │  ├── Every 5 min:  Tier 1 (24 companies)             │
 │  ├── Every 60 min: All tiers (full sweep)            │
 │  ├── Night skip:   12am–5:30am CST paused            │
-│  ├── Dream alerts: Slack + WhatsApp on new job       │
-│  └── SQLite DB:    jobs + profile + resume           │
+│  ├── Dream alerts: Discord + Telegram on new job     │
+│  └── SQLite DB:    jobs + profile + resume versions  │
 │                                                      │
 │  API Endpoints:                                      │
-│    GET  /api/data      → JSON for dashboard          │
-│    GET  /api/health    → server status               │
-│    POST /api/scrape    → manual trigger              │
-│    GET  /api/profile   → user profile                │
-│    POST /api/resume    → upload resume               │
-│    POST /api/verify-pin → check PIN                  │
+│    GET  /api/data                → JSON for dashboard│
+│    GET  /api/health              → server status     │
+│    POST /api/scrape              → manual trigger    │
+│    GET  /api/profile             → user profile      │
+│    POST /api/resume              → upload resume     │
+│    POST /api/resume/versions     → save version      │
+│    GET  /api/resume/versions     → list versions     │
+│    GET  /api/applications        → tracker data      │
+│    GET  /api/applications/company/<name> → history   │
+│    POST /api/verify-pin          → check PIN         │
 └──────────────────────┬──────────────────────────────┘
                        │ primary source (~5 min fresh)
 ┌──────────────────────▼──────────────────────────────┐
@@ -45,6 +51,7 @@ Zero-cost, real-time job scraper + intelligent React dashboard built for data en
 │  ├── Analytics: ATS pie, salary bar, 30-day trend    │
 │  ├── Companies: logo grid + sample roles             │
 │  ├── Trends: posting timeline + top companies        │
+│  ├── Tracker: resume versions, application history   │
 │  └── Monitor: health, manual triggers, run history   │
 └──────────────────────▲──────────────────────────────┘
                        │ fallback (~2 hr fresh)
@@ -57,130 +64,153 @@ Zero-cost, real-time job scraper + intelligent React dashboard built for data en
 └──────────────────────────────────────────────────────┘
 ```
 
-## Setup (15 min)
+## Fork Setup Guide
 
-### 1. Clone & configure
+Six steps to make this your own:
 
+**1. Clone & configure skills**
 ```bash
 git clone https://github.com/narendranathe/job-scout.git
 cd job-scout
+# Edit backend/config/profile.py — your skills, locations, experience level
 ```
 
-Edit your profile:
-```bash
-# backend/config/profile.py — set your skills, locations, experience level
-```
-
-### 2. Test locally
-
+**2. Test locally**
 ```bash
 cd backend
 pip install -r requirements.txt
-
 python main.py --fast    # Tier 1 only (~30 sec)
 python main.py           # All companies (~3 min)
 python main.py --stats   # Check results
 ```
 
-### 3. Deploy Render
-
+**3. Deploy to Render**
 1. Go to [render.com](https://render.com) → New → Blueprint → connect this repo
 2. Render reads `render.yaml` → deploys automatically
 3. Note your URL: `https://jobscout-api.onrender.com`
 
-### 4. Connect dashboard to Render
-
+**4. Connect dashboard**
 ```bash
 cd frontend
 cp .env.example .env
 # Edit .env: VITE_RENDER_URL=https://jobscout-api.onrender.com
 ```
 
-### 5. Push to GitHub + enable Pages
-
+**5. Push to GitHub + enable Pages**
 ```bash
-git add -A && git commit -m "config: render url"
+git add -A && git commit -m "config: personal profile"
 git push
 ```
-
 In GitHub: **Settings → Pages → Source: GitHub Actions**
 
-Add these secrets (**Settings → Secrets → Actions**):
+Add secrets (**Settings → Secrets → Actions**):
 - `RENDER_URL` — your Render URL
 - `API_SECRET` — optional auth token
 
-### 6. Verify
+**6. Set up alerts (Discord + Telegram — free forever)**
 
-After ~5 min, check the Monitor tab — all 5 checks should be green.
+See [Dream Job Alerts](#dream-job-alerts) below.
 
 ---
 
 ## Dream Job Alerts
 
-Get notified via **Slack** and/or **WhatsApp** the moment your dream role appears at a dream company.
+Get notified the moment a dream role appears. Both platforms are **free with no expiry**.
 
-### Setup Slack
+### Discord (Recommended — easiest)
 
-1. Go to [api.slack.com/apps](https://api.slack.com/apps) → Create App → Incoming Webhooks
-2. Activate webhooks → Add to workspace → copy the webhook URL
+1. Open any Discord server → **Edit Channel → Integrations → Webhooks → New Webhook**
+2. Copy the webhook URL
 3. Add to Render environment variables:
 
 ```
-SLACK_WEBHOOK_URL=https://hooks.slack.com/services/XXX/YYY/ZZZ
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/XXX/YYY
 ```
 
-### Setup WhatsApp (Twilio)
+### Telegram Bot
 
-1. Sign up at [twilio.com](https://www.twilio.com) → free trial ($15 credit)
-2. Enable WhatsApp Sandbox: console.twilio.com → Messaging → Try it out → Send a WhatsApp message
-3. Follow the sandbox join instructions (send a WhatsApp message to the Twilio number)
-4. Add to Render environment variables:
+1. Message [@BotFather](https://t.me/botfather) → `/newbot` → follow prompts → copy token
+2. Start your bot in Telegram, then get your chat ID:
+```bash
+curl https://api.telegram.org/bot<TOKEN>/getUpdates
+```
+3. Add to Render environment variables:
 
 ```
-TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxx
-TWILIO_AUTH_TOKEN=your_auth_token
-TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
-TWILIO_WHATSAPP_TO=whatsapp:+1XXXXXXXXXX
+TELEGRAM_BOT_TOKEN=1234567890:AAF...
+TELEGRAM_CHAT_ID=987654321
 ```
 
-### Configure what triggers alerts
+### Alert trigger conditions
+
+Both conditions must match for an alert to fire:
 
 ```
-DREAM_COMPANIES=Anthropic,OpenAI,Stripe,Databricks,Snowflake
-DREAM_ROLE_KEYWORDS=data engineer,ml engineer,data scientist
+DREAM_COMPANIES=Anthropic,OpenAI,Stripe,Databricks,Goldman Sachs
+DREAM_ROLE_KEYWORDS=data engineer,ml engineer,ai engineer
+DREAM_ALERT_SCORE=0.70
 ```
 
-The alert fires when **both** conditions match: company in DREAM_COMPANIES **AND** role keyword in job title.
+The alert fires when: **company in DREAM_COMPANIES AND role keyword in title AND relevance_score ≥ 0.70**
+
+### Legacy options (not free long-term)
+
+- **Slack** — 30-day free trial, then requires paid plan
+- **WhatsApp (Twilio)** — $15 trial credit, then ~$0.005/message
 
 ---
 
 ## Resume Personalization
 
-Upload your resume text to Render — the backend extracts 50+ skills automatically and weights your job relevance scores accordingly.
+### Upload your main resume
+
+Upload resume text to extract skills and personalize relevance scores:
 
 ```bash
-# Via curl:
 curl -X POST https://your-render-url.onrender.com/api/resume \
   -H "Content-Type: application/json" \
-  -d '{"resume_text": "Python, Spark, Airflow, AWS, dbt, Snowflake..."}'
+  -d '{"resume_text": "Python, Spark, Airflow, AWS, dbt, Snowflake, Kafka..."}'
 
 # Response:
-# {"status": "ok", "skills_extracted": 12, "skills": ["python", "spark", "airflow", ...]}
+# {"status": "ok", "skills_extracted": 14, "skills": ["python", "spark", ...]}
 ```
 
-The extracted skills merge with `backend/config/profile.py` core skills for scoring.
+### Resume Version Manager
 
-### Update profile preferences
+The Tracker tab has a built-in Resume Version Manager. Each version stores:
+- **version_key** — short ID like `_DE`, `_GS`, `standard`
+- **display_name** — readable label like "Data Engineering" or "Goldman Sachs"
+- **resume_text** — full plain text (for skill extraction)
+- **target_companies** — which companies received this version
+- **extracted_skills** — auto-detected from text
+
+Via API:
+```bash
+# Save a version
+curl -X POST https://your-render-url.onrender.com/api/resume/versions \
+  -H "Content-Type: application/json" \
+  -d '{"version_key":"_DE","display_name":"Data Engineering","resume_text":"Python Spark Airflow..."}'
+
+# List all versions
+curl https://your-render-url.onrender.com/api/resume/versions
+
+# Get one version (includes full text)
+curl https://your-render-url.onrender.com/api/resume/versions/_DE
+```
+
+---
+
+## Application Memory
+
+JobScout remembers every company you've applied to:
+
+- **"Already applied here" badge** — Expand any job card from a company you've applied to and see your full history: role title, date applied, resume version used, current status
+- **Tracker tab** — Full list with status buttons (saved / applied / interview / offer / rejected), notes, and resume version picker
+- **Company history API** — Query your history for any company:
 
 ```bash
-curl -X POST https://your-render-url.onrender.com/api/profile \
-  -H "Content-Type: application/json" \
-  -d '{
-    "dream_companies": ["Anthropic", "OpenAI", "Stripe"],
-    "dream_role_keywords": ["data engineer", "ml engineer"],
-    "preferred_locations": ["remote", "dallas", "austin"],
-    "custom_skills": ["dbt", "kafka", "terraform"]
-  }'
+curl https://your-render-url.onrender.com/api/applications/company/Goldman%20Sachs
+# Returns: {company, applied: true, applications: [{title, status, resume_version, applied_at}]}
 ```
 
 ---
@@ -217,11 +247,10 @@ curl -X POST https://your-render-url.onrender.com/api/profile \
 
 ### GitHub Actions (manual dispatch)
 Go to: `Actions → Full Sweep & Deploy → Run workflow`
-- Choose `full` (all 120+ companies, ~3 min) or `fast` (Tier 1 only, ~30 sec)
+- Choose `full` (all 130+ companies, ~3 min) or `fast` (Tier 1 only, ~30 sec)
 
 ### API
 ```bash
-# Trigger full scrape via API
 curl -X POST https://your-render-url.onrender.com/api/scrape \
   -H "Authorization: Bearer YOUR_API_SECRET"
 ```
@@ -234,7 +263,7 @@ curl -X POST https://your-render-url.onrender.com/api/scrape \
 job-scout/
 ├── backend/
 │   ├── config/
-│   │   ├── companies.py         # 120+ companies — 6 ATS platforms + Workday
+│   │   ├── companies.py         # 130+ companies — 6 ATS platforms + Workday
 │   │   └── profile.py           # Your skills, locations, experience level
 │   ├── scrapers/
 │   │   ├── greenhouse.py        # 87 companies
@@ -242,14 +271,15 @@ job-scout/
 │   │   ├── ashby.py             # 11 companies
 │   │   ├── smartrecruiters.py   # 4 companies
 │   │   ├── bamboohr.py          # 3 companies
-│   │   └── workday.py           # 7 finance companies (Goldman, Walmart, etc.)
+│   │   ├── workday.py           # 7 finance companies
+│   │   └── utils.py             # shared HTTP helpers
 │   ├── core/
 │   │   └── relevance.py         # Keyword scoring engine (0–100%)
 │   ├── storage/
-│   │   ├── db.py                # SQLite jobs + scrape_runs tables
-│   │   └── profile_manager.py   # User profile + resume storage + skill extraction
+│   │   ├── db.py                # SQLite: jobs + applications + resume_versions
+│   │   └── profile_manager.py   # Profile + resume storage + skill extraction
 │   ├── alerts/
-│   │   └── notifier.py          # Slack + WhatsApp dream-job alerts
+│   │   └── notifier.py          # Discord + Telegram dream-job alerts
 │   ├── server.py                # Flask API + background scraper + night skip
 │   ├── main.py                  # CLI (GitHub Actions + local testing)
 │   ├── export_data.py           # DB → api-data.json
@@ -266,26 +296,6 @@ job-scout/
 ├── render.yaml                  # One-click Render blueprint
 └── README.md
 ```
-
----
-
-## Schedule & Budget
-
-### GitHub Actions runs per day
-Cron: `20 0,2,4,12,14,16,18,20,22 * * *` (skips 6, 8, 10 UTC = 12am–4am CST)
-
-| Workflow | Runs/day | Min/run | Monthly |
-|----------|----------|---------|---------|
-| Full sweep + deploy | 9 | ~4 min | ~1,080 min |
-
-GitHub free tier: **2,000 min/month** — well within budget.
-
-### Render (free tier)
-- Tier 1 scrape every 5 min during active hours
-- Full sweep every 60 min
-- Sleeps if no traffic for 15 min (GitHub Actions keepalive pings /ping)
-
-**Total cost: $0/month.**
 
 ---
 
@@ -312,7 +322,38 @@ PROFILE = {
 ```
 
 ### Change scrape frequency
-```python
-# Render (env var on Render dashboard):
+```
+# Render environment variable:
 FAST_INTERVAL=180   # 3 min instead of 5 min
 ```
+
+---
+
+## Schedule & Budget
+
+### GitHub Actions runs per day
+Cron: `20 0,2,4,12,14,16,18,20,22 * * *` (skips 6, 8, 10 UTC = 12am–4am CST)
+
+| Workflow | Runs/day | Min/run | Monthly |
+|----------|----------|---------|---------|
+| Full sweep + deploy | 9 | ~4 min | ~1,080 min |
+
+GitHub free tier: **2,000 min/month** — well within budget.
+
+### Render (free tier)
+- Tier 1 scrape every 5 min during active hours
+- Full sweep every 60 min
+- GitHub Actions keepalive pings `/ping` every 14 min to prevent sleep
+
+**Total cost: $0/month.**
+
+---
+
+## Roadmap
+
+Features intentionally deferred (not in scope for free-tier personal use):
+
+- **Vector embeddings** — sentence-transformers for true semantic job matching (needs ML model runtime)
+- **AI resume tailoring** — Claude API to rewrite bullets targeting a specific JD
+- **PDF auto-import** — read local PDF resume files server-side (security boundary)
+- **Interview prep** — company-specific question bank linked to tracked applications
