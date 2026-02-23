@@ -33,6 +33,7 @@ from flask import Flask, jsonify, Response, request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config.companies import COMPANIES, get_batch, TOTAL_COMPANIES
+from config.profile import PROFILE
 from core.relevance import RelevanceEngine
 from storage.db import (
     init_db, get_conn, upsert_job, mark_stale_jobs,
@@ -208,6 +209,14 @@ def run_scrape(mode: str = "fast") -> dict:
                 raw_job["relevance_score"] = score
                 raw_job["matched_skills"]  = matched
                 raw_job["sponsorship"]     = _detect_sponsorship(raw_job)
+
+                # Skip jobs below the minimum score threshold — keeps DB clean
+                # and prevents low-signal roles from appearing in the dashboard.
+                # Threshold set in profile.py → min_score_threshold (default 0.30)
+                min_score = PROFILE.get("min_score_threshold", 0.30)
+                if score < min_score:
+                    stats["skipped"] += 1
+                    continue
 
                 result = upsert_job(conn, raw_job)
                 if result == "new":

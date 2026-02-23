@@ -215,10 +215,47 @@ RELEVANT_TITLE_KEYWORDS = [
 ]
 
 EXCLUDE_TITLE_KEYWORDS = [
-    "recruiter", "sales", "marketing", "legal", "counsel",
-    "talent acquisition", "account executive", "customer success",
-    "designer", "ux", "product manager", "content writer",
-    "office manager", "executive assistant", "receptionist",
+    # ── Non-technical / business roles ───────────────────────────────────────
+    "recruiter", "talent acquisition", "sourcer",
+    "sales", "account executive", "account manager", "business development",
+    "marketing", "brand manager", "social media", "content writer", "copywriter",
+    "legal", "counsel", "paralegal", "compliance officer",
+    "customer success", "customer support", "customer service", "call center",
+    "product manager", "product owner", "scrum master", "agile coach",
+    "designer", "ux ", " ux", "ui ", " ui", "graphic design", "visual design",
+    "office manager", "executive assistant", "administrative assistant",
+    "receptionist", "coordinator",
+
+    # ── Operations / field / trades ──────────────────────────────────────────
+    "field operator", "field technician", "field service", "field inspector",
+    "field representative", "field engineer",   # "field engineer" ≠ data
+    "store manager", "general manager", "district manager",
+    "operations manager",                        # kept "data operations" via RELEVANT
+    "warehouse", "logistics", "supply chain", "procurement", "purchasing",
+    "truck driver", "delivery driver", "driver",
+    "electrician", "plumber", "carpenter", "hvac", "mechanic",
+    "maintenance technician", "janitorial", "custodian",
+
+    # ── Healthcare / medical ─────────────────────────────────────────────────
+    "nurse", "physician", "doctor", "therapist", "pharmacist",
+    "clinical", "medical assistant", "dental", "veterinar",
+    "health coach", "physical therapy", "occupational therapy",
+
+    # ── Finance non-technical ────────────────────────────────────────────────
+    "financial advisor", "loan officer", "mortgage", "underwriter",
+    "insurance agent", "tax preparer", "wealth manager",
+
+    # ── HR / people ops ─────────────────────────────────────────────────────
+    "hr manager", "human resources", "benefits coordinator",
+    "payroll specialist", "hr business partner", "people partner",
+
+    # ── Manual data entry / collection (not engineering) ────────────────────
+    "data entry", "data collector", "data transcription", "data annotation",
+    "data labeling", "data tagger",
+
+    # ── Customer-facing / retail ─────────────────────────────────────────────
+    "barista", "cashier", "retail associate", "server ",
+    "bartender", "front desk",
 ]
 
 

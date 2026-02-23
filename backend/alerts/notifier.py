@@ -57,7 +57,7 @@ TWILIO_TO      = os.environ.get("TWILIO_WHATSAPP_TO", "")
 #
 # Rationale: a 40%+ semantic match at Anthropic/Google/Goldman is immediately worth
 # knowing even if the keyword overlap isn't perfect — the company alone justifies it.
-DREAM_ALERT_SCORE = float(os.environ.get("DREAM_ALERT_SCORE", "0.40"))
+DREAM_ALERT_SCORE = float(os.environ.get("DREAM_ALERT_SCORE", "0.70"))
 ALERT_MIN_SCORE   = float(os.environ.get("ALERT_MIN_SCORE",   "0.65"))
 
 DREAM_COMPANIES = {

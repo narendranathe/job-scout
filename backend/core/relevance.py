@@ -20,20 +20,47 @@ class RelevanceEngine:
         self.needs_sponsor = PROFILE.get("needs_sponsorship", False)
 
     def is_relevant_title(self, title: str) -> bool:
-        """Pre-filter: does this job title match data/ML engineering?"""
+        """
+        Pre-filter: only keep titles relevant to data/ML/AI/analytics engineering.
+
+        Three-gate logic:
+          1. Hard-exclude — immediately reject irrelevant roles (field operator,
+             HR, medical, data entry, etc.)
+          2. Hard-include — immediately accept known target roles
+          3. Context filter — broad terms (data, AI) only pass if paired with an
+             engineering/technical context word, preventing "Field Data Collector"
+             or "Data Entry Specialist" from leaking through.
+        """
         t = title.lower()
-        # Exclude obviously irrelevant roles
+
+        # Gate 1: hard exclude — rejects before anything else
         if any(kw in t for kw in EXCLUDE_TITLE_KEYWORDS):
             return False
-        # Include if title matches our keywords
+
+        # Gate 2: hard include — explicit target role match
         if any(kw in t for kw in RELEVANT_TITLE_KEYWORDS):
             return True
-        # Also include broad matches
-        return any(kw in t for kw in [
-            "data", "ml ", "machine learning", "ai ", "analytics",
-            "platform", "infrastructure", "backend",
-            "pipeline", "etl", "warehouse",
+
+        # Gate 3: contextual match — broad signal must pair with engineering context
+        has_data_ctx = any(w in t for w in [
+            "data", "database", "dba", "dataops",
         ])
+        has_ml_ai = any(w in t for w in [
+            "ml ", " ml", "machine learning", "artificial intelligence",
+            "ai ", " ai", "llm", "nlp", "deep learning", "neural",
+            "computer vision", "generative",
+        ])
+        has_eng_ctx = any(w in t for w in [
+            "engineer", "engineering", "developer", "dev ", "architect",
+            "scientist", "analyst", "specialist",
+        ])
+        has_infra_ctx = any(w in t for w in [
+            "pipeline", "etl", "warehouse", "lakehouse", "dbt",
+            "kafka", "spark", "airflow", "streaming",
+        ])
+
+        technical = has_eng_ctx or has_infra_ctx
+        return (has_data_ctx or has_ml_ai) and technical
 
     def score(self, job: dict) -> tuple[float, list[str]]:
         """
