@@ -26,6 +26,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config.companies import COMPANIES, get_batch, TOTAL_COMPANIES
+from config.profile import PROFILE
 from core.relevance import RelevanceEngine
 from storage.db import (
     init_db, get_conn, upsert_job, mark_stale_jobs,
@@ -54,6 +55,12 @@ def _load_scrapers():
         "smartrecruiters": smartrecruiters,
         "bamboohr": bamboohr,
     }
+    try:
+        from scrapers import workday
+        SCRAPERS["workday"] = workday
+        log.info("Workday scraper loaded")
+    except ImportError:
+        log.warning("Workday scraper not found — skipping Workday companies")
 
 
 # ─── Cycle Counter ───────────────────────────────────
@@ -117,6 +124,11 @@ def run_scrape(db_path: str, mode: str = "full", delay: float = 0.3) -> dict:
                 raw_job["relevance_score"] = score
                 raw_job["matched_skills"] = matched
                 raw_job["sponsorship"] = _detect_sponsorship(raw_job)
+
+                min_score = PROFILE.get("min_score_threshold", 0.30)
+                if score < min_score:
+                    stats["skipped"] += 1
+                    continue
 
                 result = upsert_job(conn, raw_job)
                 if result == "new":

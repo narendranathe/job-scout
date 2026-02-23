@@ -9,6 +9,8 @@ import logging
 import requests
 from typing import Generator
 
+from .utils import is_remote
+
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://api.ashbyhq.com/posting-api/job-board/{slug}"
@@ -42,7 +44,7 @@ def scrape(company: dict) -> Generator[dict, None, None]:
 
             description = job.get("descriptionPlain", "") or job.get("description", "") or ""
             title = job.get("title", "").strip()
-            is_remote = job.get("isRemote", False) or _is_remote(location, title, description)
+            remote = job.get("isRemote", False) or is_remote(location, title, description)
 
             apply_url = job.get("jobUrl", "") or f"https://jobs.ashbyhq.com/{slug}/{job.get('id', '')}"
 
@@ -55,7 +57,7 @@ def scrape(company: dict) -> Generator[dict, None, None]:
                 "description": description[:5000],
                 "url": apply_url,
                 "ats": "ashby",
-                "is_remote": is_remote,
+                "is_remote": remote,
                 "posted_at": (job.get("publishedAt") or job.get("updatedAt") or "")[:19],
                 "salary_min": _extract_salary(job, "min"),
                 "salary_max": _extract_salary(job, "max"),
@@ -79,6 +81,3 @@ def _extract_salary(job: dict, bound: str) -> int:
     return 0
 
 
-def _is_remote(location: str, title: str, description: str) -> bool:
-    combined = f"{location} {title} {description[:500]}".lower()
-    return any(kw in combined for kw in ["remote", "anywhere", "distributed", "work from home"])

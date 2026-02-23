@@ -11,10 +11,11 @@ import logging
 import requests
 from typing import Generator
 
+from .utils import is_remote, strip_html
+
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs"
-DETAIL_URL = "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs/{job_id}"
 TIMEOUT = 30
 
 
@@ -57,12 +58,13 @@ def scrape(company: dict) -> Generator[dict, None, None]:
             departments = job.get("departments", [])
             department = departments[0].get("name", "") if departments else ""
 
-            # Build description text (strip HTML tags roughly)
+            # Build description text (strip HTML tags)
             content = job.get("content", "")
-            description = _strip_html(content)
+            description = strip_html(content)
 
             # Detect remote
-            is_remote = _is_remote(location, job.get("title", ""), description)
+            title_str = job.get("title", "")
+            remote = is_remote(location, title_str, description)
 
             # Build apply URL
             job_id = job.get("id", "")
@@ -70,14 +72,14 @@ def scrape(company: dict) -> Generator[dict, None, None]:
 
             yield {
                 "external_id": f"gh-{slug}-{job_id}",
-                "title": job.get("title", "").strip(),
+                "title": title_str.strip(),
                 "company": name,
                 "location": location,
                 "department": department,
-                "description": description[:5000],  # Truncate for storage
+                "description": description[:5000],
                 "url": apply_url,
                 "ats": "greenhouse",
-                "is_remote": is_remote,
+                "is_remote": remote,
                 "posted_at": (job.get("updated_at") or job.get("first_published_at") or "")[:19],
                 "salary_min": 0,
                 "salary_max": 0,
@@ -87,16 +89,3 @@ def scrape(company: dict) -> Generator[dict, None, None]:
             continue
 
 
-def _strip_html(html: str) -> str:
-    """Rough HTML tag removal for description text."""
-    import re
-    text = re.sub(r"<[^>]+>", " ", html)
-    text = re.sub(r"&[a-zA-Z]+;", " ", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
-
-
-def _is_remote(location: str, title: str, description: str) -> bool:
-    """Detect if job is remote from location/title/description."""
-    combined = f"{location} {title} {description[:500]}".lower()
-    return any(kw in combined for kw in ["remote", "anywhere", "distributed", "work from home"])

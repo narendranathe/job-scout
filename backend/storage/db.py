@@ -2,6 +2,7 @@
 SQLite storage — persists scraped + scored jobs with deduplication.
 """
 
+import json
 import sqlite3
 import logging
 import os
@@ -118,7 +119,7 @@ def upsert_job(conn: sqlite3.Connection, job: dict) -> str:
             job.get("posted_at", ""),
             job.get("salary_min", 0), job.get("salary_max", 0),
             job.get("relevance_score", 0.0),
-            ",".join(job.get("matched_skills", [])),
+            json.dumps(job.get("matched_skills", [])),
             int(job.get("sponsorship", False)),
             now, now,
         ))
@@ -139,7 +140,7 @@ def upsert_job(conn: sqlite3.Connection, job: dict) -> str:
             int(job.get("is_remote", False)),
             job.get("salary_min", 0), job.get("salary_max", 0),
             job.get("relevance_score", 0.0),
-            ",".join(job.get("matched_skills", [])),
+            json.dumps(job.get("matched_skills", [])),
             int(job.get("sponsorship", False)),
             now, job["external_id"],
         ))

@@ -130,7 +130,9 @@ class RelevanceEngine:
         # Clamp to [0.0, 1.0]
         score = max(0.0, min(1.0, score))
 
-        return round(score, 4), matched_skills
+        # Deduplicate while preserving insertion order (a skill could appear in both
+        # core and secondary lists if profile.py was misconfigured)
+        return round(score, 4), list(dict.fromkeys(matched_skills))
 
 
 def _skill_match(skill: str, text: str) -> bool:

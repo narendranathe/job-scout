@@ -9,6 +9,8 @@ import logging
 import requests
 from typing import Generator
 
+from .utils import is_remote
+
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://api.smartrecruiters.com/v1/companies/{slug}/postings"
@@ -60,7 +62,7 @@ def scrape(company: dict) -> Generator[dict, None, None]:
                 description = job.get("name", "") + " " + (job.get("customField", [{}])[0].get("valueLabel", "") if job.get("customField") else "")
 
                 title = job.get("name", "").strip()
-                is_remote = job.get("location", {}).get("remote", False) or _is_remote(location, title, description)
+                remote = job.get("location", {}).get("remote", False) or is_remote(location, title, description)
 
                 ref = job.get("ref", "") or job.get("id", "")
                 apply_url = job.get("ref", f"https://jobs.smartrecruiters.com/{slug}/{job.get('id', '')}")
@@ -78,7 +80,7 @@ def scrape(company: dict) -> Generator[dict, None, None]:
                     "description": description[:5000],
                     "url": apply_url,
                     "ats": "smartrecruiters",
-                    "is_remote": is_remote,
+                    "is_remote": remote,
                     "posted_at": posted,
                     "salary_min": 0,
                     "salary_max": 0,
@@ -97,6 +99,3 @@ def scrape(company: dict) -> Generator[dict, None, None]:
     log.info("SmartRecruiters [%s] total: %d jobs", name, total_yielded)
 
 
-def _is_remote(location: str, title: str, description: str) -> bool:
-    combined = f"{location} {title} {description[:500]}".lower()
-    return any(kw in combined for kw in ["remote", "anywhere", "distributed", "work from home"])

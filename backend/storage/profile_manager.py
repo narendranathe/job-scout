@@ -25,6 +25,11 @@ DB_PATH = os.environ.get(
     "DB_PATH", os.path.join(os.path.dirname(__file__), "..", "jobscout.db")
 )
 
+# Iterations for pbkdf2_hmac — fast enough for a personal dashboard, slow enough
+# to resist brute-force if the DB file is ever leaked.
+_PIN_ITERATIONS = 200_000
+_PIN_SALT = b"jobscout-pin-v1"  # fixed per-app salt (not per-user, but beats bare SHA256)
+
 # ─── Skill extraction patterns ────────────────────────────────────
 # Covers 50+ common data/ML/engineering skills
 SKILL_PATTERNS = {
@@ -91,11 +96,9 @@ SKILL_PATTERNS = {
 # ─── DB helpers ───────────────────────────────────────────────────
 
 def get_conn(db_path: str = DB_PATH):
-    import sqlite3
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+    """Get a DB connection — delegates to db.py so WAL mode and row_factory are consistent."""
+    from storage.db import get_conn as _get_conn
+    return _get_conn(db_path)
 
 
 def init_profile_tables(db_path: str = DB_PATH):
@@ -111,8 +114,8 @@ def init_profile_tables(db_path: str = DB_PATH):
             preferred_locations TEXT DEFAULT '[]',
             dream_companies TEXT DEFAULT '[]',
             dream_role_keywords TEXT DEFAULT '[]',
-            created_at TEXT NOT NULL DEFAULT '',
-            updated_at TEXT NOT NULL DEFAULT ''
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         INSERT OR IGNORE INTO user_profile (id, created_at, updated_at)
         VALUES (1, datetime('now'), datetime('now'));
@@ -223,4 +226,10 @@ def get_all_skills(db_path: str = DB_PATH) -> list[str]:
 # ─── Internal ────────────────────────────────────────────────────
 
 def _hash_pin(pin: str) -> str:
-    return hashlib.sha256(pin.strip().encode()).hexdigest()
+    """Hash PIN with pbkdf2_hmac — significantly harder to brute-force than bare SHA256."""
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        pin.strip().encode(),
+        _PIN_SALT,
+        _PIN_ITERATIONS,
+    ).hex()

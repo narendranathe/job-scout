@@ -16,6 +16,19 @@ DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "job
 DEFAULT_OUTPUT = os.path.join(os.path.dirname(__file__), "..", "frontend", "public", "api-data.json")
 
 
+def _parse_skills(val: str) -> list[str]:
+    """Parse matched_skills stored as JSON (new) or comma-separated (legacy)."""
+    if not val:
+        return []
+    try:
+        parsed = json.loads(val)
+        if isinstance(parsed, list):
+            return parsed
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return [s.strip() for s in val.split(",") if s.strip()]
+
+
 def export(db_path: str = DB_PATH, output_path: str = None) -> dict:
     if not os.path.exists(db_path):
         log.warning("No DB at %s", db_path)
@@ -32,7 +45,7 @@ def export(db_path: str = DB_PATH, output_path: str = None) -> dict:
     for r in rows:
         j = dict(r)
         if isinstance(j.get("matched_skills"), str):
-            j["matched_skills"] = [s.strip() for s in j["matched_skills"].split(",") if s.strip()]
+            j["matched_skills"] = _parse_skills(j["matched_skills"])
         jobs.append(j)
 
     total = len(jobs)
@@ -57,7 +70,8 @@ def export(db_path: str = DB_PATH, output_path: str = None) -> dict:
     runs = []
     try:
         runs = [dict(r) for r in conn.execute("SELECT * FROM scrape_runs ORDER BY started_at DESC LIMIT 20").fetchall()]
-    except: pass
+    except Exception as e:
+        log.warning("Could not load scrape_runs: %s", e)
 
     conn.close()
 

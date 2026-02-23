@@ -8,6 +8,8 @@ import logging
 import requests
 from typing import Generator
 
+from .utils import is_remote
+
 log = logging.getLogger(__name__)
 TIMEOUT = 30
 
@@ -55,7 +57,7 @@ def scrape(company: dict) -> Generator[dict, None, None]:
             job_id = job.get("id", "")
             apply_url = f"https://{slug}.bamboohr.com/careers/{job_id}"
 
-            is_remote = _is_remote(location, title, "")
+            remote = is_remote(location, title, "")
 
             yield {
                 "external_id": f"bh-{slug}-{job_id}",
@@ -66,7 +68,7 @@ def scrape(company: dict) -> Generator[dict, None, None]:
                 "description": job.get("description", "")[:5000] or title,
                 "url": apply_url,
                 "ats": "bamboohr",
-                "is_remote": is_remote,
+                "is_remote": remote,
                 "posted_at": (job.get("dateCreated") or job.get("datePosted") or "")[:19],
                 "salary_min": 0,
                 "salary_max": 0,
@@ -76,6 +78,3 @@ def scrape(company: dict) -> Generator[dict, None, None]:
             continue
 
 
-def _is_remote(location: str, title: str, description: str) -> bool:
-    combined = f"{location} {title} {description[:500]}".lower()
-    return any(kw in combined for kw in ["remote", "anywhere", "distributed", "work from home"])

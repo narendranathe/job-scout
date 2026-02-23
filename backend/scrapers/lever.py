@@ -9,6 +9,8 @@ import logging
 import requests
 from typing import Generator
 
+from .utils import is_remote
+
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://api.lever.co/v0/postings/{slug}"
@@ -53,7 +55,7 @@ def scrape(company: dict) -> Generator[dict, None, None]:
                 description = " ".join(parts)
 
             title = job.get("text", "").strip()
-            is_remote = _is_remote(location, title, description)
+            remote = is_remote(location, title, description)
 
             yield {
                 "external_id": f"lv-{slug}-{job.get('id', '')}",
@@ -64,7 +66,7 @@ def scrape(company: dict) -> Generator[dict, None, None]:
                 "description": description[:5000],
                 "url": job.get("hostedUrl", "") or job.get("applyUrl", ""),
                 "ats": "lever",
-                "is_remote": is_remote,
+                "is_remote": remote,
                 "posted_at": _epoch_to_iso(job.get("createdAt")),
                 "salary_min": _parse_salary(job, "min"),
                 "salary_max": _parse_salary(job, "max"),
@@ -92,6 +94,3 @@ def _parse_salary(job: dict, bound: str) -> int:
     return 0
 
 
-def _is_remote(location: str, title: str, description: str) -> bool:
-    combined = f"{location} {title} {description[:500]}".lower()
-    return any(kw in combined for kw in ["remote", "anywhere", "distributed", "work from home"])
