@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat \"/c/Users/naren/.claude/projects/C--Users-naren-projects-job-scout/a2d908d1-420d-4a70-87af-4eb4cc0a29b4.jsonl\" | python3 -c \"\nimport sys, json\nlines = sys.stdin.readlines\\(\\)\nprint\\(f'Total lines: {len\\(lines\\)}'\\)\n# Print last 50 lines to find recent context\nfor line in lines[-80:]:\n    try:\n        data = json.loads\\(line\\)\n        role = data.get\\('role', ''\\)\n        if role in ['user', 'assistant']:\n            content = data.get\\('content', ''\\)\n            if isinstance\\(content, list\\):\n                for item in content:\n                    if isinstance\\(item, dict\\) and item.get\\('type'\\) == 'text':\n                        text = item.get\\('text', ''\\)\n                        if len\\(text\\) > 50:\n                            print\\(f'[{role}]: {text[:500]}'\\)\n                            print\\('---'\\)\n            elif isinstance\\(content, str\\) and len\\(content\\) > 50:\n                print\\(f'[{role}]: {content[:500]}'\\)\n                print\\('---'\\)\n    except:\n        pass\n\" 2>/dev/null)",
+      "Bash(cd:*)",
+      "Bash(powershell.exe:*)",
+      "Bash(cd C:\\\\Users\\\\naren\\\\projects\\\\job-scout:*)"
+    ]
+  }
+}

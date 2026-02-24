@@ -28,6 +28,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+
 from flask import Flask, jsonify, Response, request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -56,7 +57,10 @@ API_SECRET    = os.environ.get("API_SECRET", "")               # optional auth f
 
 app = Flask(__name__)
 
+
 # ─── Scraper Registry ──────────────────────────────────────────────
+from routes.vault_routes import vault_bp 
+app.register_blueprint(vault_bp)
 SCRAPERS: dict = {}
 
 def _load_scrapers():
