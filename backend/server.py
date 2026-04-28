@@ -404,10 +404,10 @@ def api_get_applications():
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM applications ORDER BY updated_at DESC"
+                "SELECT * FROM applications WHERE status != 'removed' ORDER BY updated_at DESC"
             ).fetchall()
         conn.close()
-        return jsonify([dict(r) for r in rows]), 200, {"Access-Control-Allow-Origin": "*"}
+        return jsonify({"applications": [dict(r) for r in rows]}), 200, {"Access-Control-Allow-Origin": "*"}
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -487,15 +487,53 @@ def api_save_application():
 
 @app.route("/api/applications/<ext_id>", methods=["DELETE", "OPTIONS"])
 def api_delete_application(ext_id):
-    """Remove a job from the tracker."""
+    """Soft-delete a job from the tracker (sets status to 'removed')."""
     if request.method == "OPTIONS":
         return "", 204
     try:
+        now = datetime.now(timezone.utc).isoformat()
         conn = get_conn(DB_PATH)
-        conn.execute("DELETE FROM applications WHERE external_id = ?", (ext_id,))
+        conn.execute(
+            "UPDATE applications SET status = 'removed', updated_at = ? WHERE external_id = ?",
+            (now, ext_id)
+        )
         conn.commit()
         conn.close()
-        return jsonify({"status": "deleted"}), 200, {"Access-Control-Allow-Origin": "*"}
+        return jsonify({"ok": True, "removed": ext_id}), 200, {"Access-Control-Allow-Origin": "*"}
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/applications/<string:ext_id>", methods=["PATCH"])
+def patch_application(ext_id):
+    """Partially update an application (status, notes, resume_version)."""
+    data = request.get_json() or {}
+    allowed = {"status", "notes", "resume_version"}
+    updates = {k: v for k, v in data.items() if k in allowed}
+    if not updates:
+        return jsonify({"error": "No valid fields"}), 400
+    # Handle applied_at automatically when status becomes 'applied'
+    if updates.get("status") == "applied":
+        updates["applied_at"] = datetime.now(timezone.utc).isoformat()
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    # Build SET clause from KNOWN-SAFE column names only
+    SAFE_COLS = {"status", "notes", "resume_version", "applied_at", "updated_at"}
+    set_parts = [f"{k} = ?" for k in updates if k in SAFE_COLS]
+    values = [v for k, v in updates.items() if k in SAFE_COLS] + [ext_id]
+    try:
+        conn = get_conn(DB_PATH)
+        conn.execute(
+            f"UPDATE applications SET {', '.join(set_parts)} WHERE external_id = ?",
+            values
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM applications WHERE external_id = ?", (ext_id,)
+        ).fetchone()
+        conn.close()
+        if row is None:
+            return jsonify({"error": "Not found"}), 404
+        return jsonify(dict(row)), 200, {"Access-Control-Allow-Origin": "*"}
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
