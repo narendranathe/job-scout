@@ -165,6 +165,29 @@ def run_scrape(db_path: str, mode: str = "full", delay: float = 0.3) -> dict:
 
     mark_stale_jobs(conn, hours=96)
     conn.commit()
+
+    # Playwright scrapers (quant/HFT firms with custom portals)
+    try:
+        from scrapers.playwright_scraper import scrape_all_playwright
+        pw_jobs = scrape_all_playwright()
+        for raw_job in pw_jobs:
+            score, matched = engine.score(raw_job)
+            raw_job["relevance_score"] = score
+            raw_job["matched_skills"] = matched
+            raw_job["sponsorship"] = _detect_sponsorship(raw_job)
+            if score < PROFILE.get("min_score_threshold", 0.30):
+                continue
+            result = upsert_job(conn, raw_job)
+            if result == "new":
+                stats["new"] += 1
+                stats["found"] += 1
+            elif result == "updated":
+                stats["updated"] += 1
+        conn.commit()
+        log.info("Playwright: %d jobs processed", len(pw_jobs))
+    except Exception as e:
+        log.warning("Playwright scrape skipped (playwright may not be installed): %s", e)
+
     finish_run(conn, run_id, stats)
     conn.close()
 
