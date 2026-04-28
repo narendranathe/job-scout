@@ -49,27 +49,36 @@ COMPANIES = [
 
     # ── Greenhouse — Dream companies (Platinum / Tier 0) ──
     {"name": "Anthropic",          "ats": "greenhouse", "slug": "anthropic",             "tier": 0},
-    {"name": "OpenAI",             "ats": "greenhouse", "slug": "openai",                "tier": 0},
+    # OpenAI moved to proprietary portal (openai.com/careers) — Playwright target
+    {"name": "OpenAI",             "ats": "playwright", "slug": "openai",                "tier": 0},
     {"name": "Stripe",             "ats": "greenhouse", "slug": "stripe",                "tier": 0},
     {"name": "Databricks",         "ats": "greenhouse", "slug": "databricks",            "tier": 0},
     {"name": "Point72",            "ats": "greenhouse", "slug": "point72",               "tier": 0},
-    {"name": "Snowflake",          "ats": "greenhouse", "slug": "snowflakecomputing",    "tier": 1},
-    {"name": "Palantir",           "ats": "greenhouse", "slug": "palantir",              "tier": 1},
+    # Snowflake moved to proprietary portal — Playwright target
+    {"name": "Snowflake",          "ats": "playwright", "slug": "snowflake",             "tier": 1},
+    # Palantir moved from Greenhouse → Lever (confirmed 231 jobs)
+    {"name": "Palantir",           "ats": "lever",      "slug": "palantir",              "tier": 1},
     {"name": "Scale AI",           "ats": "greenhouse", "slug": "scaleai",               "tier": 1},
     {"name": "Coinbase",           "ats": "greenhouse", "slug": "coinbase",              "tier": 1},
     {"name": "Datadog",            "ats": "greenhouse", "slug": "datadog",               "tier": 1},
     {"name": "Reddit",             "ats": "greenhouse", "slug": "reddit",                "tier": 1},
-    {"name": "Ramp",               "ats": "greenhouse", "slug": "ramp",                  "tier": 1},
-    {"name": "Plaid",              "ats": "greenhouse", "slug": "plaid",                 "tier": 1},
+    # Ramp moved to proprietary portal
+    {"name": "Ramp",               "ats": "playwright", "slug": "ramp",                  "tier": 1},
+    # Plaid moved from Greenhouse → Lever (confirmed 94 jobs)
+    {"name": "Plaid",              "ats": "lever",      "slug": "plaid",                 "tier": 1},
     {"name": "Anduril",            "ats": "greenhouse", "slug": "andurilindustries",     "tier": 1},
-    {"name": "Wiz",                "ats": "greenhouse", "slug": "wiz",                   "tier": 1},
-    {"name": "Rippling",           "ats": "greenhouse", "slug": "rippling",              "tier": 1},
-    {"name": "dbt Labs",           "ats": "greenhouse", "slug": "daboratoriesdbtlabsinc","tier": 1},
+    # Wiz moved to proprietary portal
+    {"name": "Wiz",                "ats": "playwright", "slug": "wiz",                   "tier": 1},
+    # Rippling moved to proprietary portal
+    {"name": "Rippling",           "ats": "playwright", "slug": "rippling",              "tier": 1},
+    # dbt Labs moved to proprietary portal
+    {"name": "dbt Labs",           "ats": "playwright", "slug": "dbtlabs",               "tier": 1},
     {"name": "Fivetran",           "ats": "greenhouse", "slug": "fivetran",              "tier": 1},
-    {"name": "Confluent",          "ats": "greenhouse", "slug": "confluent",             "tier": 1},
+    # Confluent moved to proprietary portal
+    {"name": "Confluent",          "ats": "playwright", "slug": "confluent",             "tier": 1},
     {"name": "Discord",            "ats": "greenhouse", "slug": "discord",               "tier": 1},
-    # Niche quant/finance firms on Greenhouse
-    {"name": "Optiver",            "ats": "playwright", "slug": "optiver",              "tier": 1},
+    # Niche quant/finance firms
+    {"name": "Optiver",            "ats": "playwright", "slug": "optiver",               "tier": 1},
     {"name": "Virtu Financial",    "ats": "greenhouse", "slug": "virtu",                 "tier": 1},
     {"name": "PIMCO",              "ats": "workday",    "slug": "pimco",     "wd_instance": "wd1", "wd_board": "pimco-careers",  "tier": 1},
 
@@ -82,11 +91,11 @@ COMPANIES = [
     {"name": "Linear",             "ats": "ashby",      "slug": "linear",                "tier": 1},
     {"name": "Supabase",           "ats": "ashby",      "slug": "supabase",              "tier": 1},
 
-    # ── Big Tech Dream companies — use Greenhouse slugs ──
-    {"name": "Salesforce",         "ats": "greenhouse", "slug": "salesforce",            "tier": 1},
-    {"name": "Uber",               "ats": "greenhouse", "slug": "uber",                  "tier": 1},
-    {"name": "DoorDash",           "ats": "greenhouse", "slug": "doordash",              "tier": 1},
-    {"name": "Grubhub",            "ats": "greenhouse", "slug": "grubhub",               "tier": 1},
+    # Salesforce / Uber / DoorDash / Grubhub — moved off Greenhouse to proprietary portals
+    {"name": "Salesforce",         "ats": "playwright", "slug": "salesforce",            "tier": 1},
+    {"name": "Uber",               "ats": "playwright", "slug": "uber",                  "tier": 1},
+    {"name": "DoorDash",           "ats": "playwright", "slug": "doordash",              "tier": 1},
+    {"name": "Grubhub",            "ats": "playwright", "slug": "grubhub",               "tier": 2},
 
     # ═══════════════════════════════════════
     #  TIER 2 — Strong targets (every 2nd)
@@ -196,23 +205,25 @@ COMPANIES = [
     #  Verify/update board names at: company.wd1.myworkdayjobs.com
     # ═══════════════════════════════════════
 
-    # ── Dream finance/enterprise companies on Workday (Platinum — check every cycle) ──
-    {"name": "Goldman Sachs",   "ats": "workday", "slug": "goldmansachs",  "wd_instance": "wd1", "wd_board": "GS",              "tier": 0},
-    # Morgan Stanley uses Taleo (tal.net), not Workday — needs custom scraper
+    # ── Finance on Workday (confirmed working) ──
+    # Goldman/JPMorgan/Fidelity/Citadel/Bloomberg return HTTP 422 — Workday API locked, use Playwright
+    {"name": "Goldman Sachs",   "ats": "playwright", "slug": "goldmansachs",                                                    "tier": 0},
     {"name": "Morgan Stanley",  "ats": "playwright", "slug": "morganstanley",                                                   "tier": 0},
-    {"name": "JP Morgan Chase", "ats": "workday", "slug": "jpmc",          "wd_instance": "wd1", "wd_board": "JPMCCareerSite",  "tier": 1},
-    {"name": "Fidelity",        "ats": "workday", "slug": "fidelity",      "wd_instance": "wd1", "wd_board": "fidelity-careers","tier": 1},
-    {"name": "Citadel",         "ats": "workday", "slug": "citadel",       "wd_instance": "wd5", "wd_board": "Careers",         "tier": 0},
-    {"name": "Bloomberg",       "ats": "workday", "slug": "bloomberg",     "wd_instance": "wd5", "wd_board": "BloombergLP",     "tier": 0},
+    {"name": "JP Morgan Chase", "ats": "playwright", "slug": "jpmc",                                                            "tier": 1},
+    {"name": "Fidelity",        "ats": "playwright", "slug": "fidelity",                                                        "tier": 1},
+    {"name": "Citadel",         "ats": "playwright", "slug": "citadel",                                                         "tier": 0},
+    {"name": "Bloomberg",       "ats": "playwright", "slug": "bloomberg",                                                       "tier": 0},
 
-    # ── Big Tech on Workday (Platinum for dream targets, Tier 1 for others) ──
-    {"name": "Apple",           "ats": "workday", "slug": "apple",         "wd_instance": "wd5", "wd_board": "US",              "tier": 0},
+    # ── Big Tech ──
+    # NVIDIA and Walmart confirmed working via Workday
     {"name": "NVIDIA",          "ats": "workday", "slug": "nvidia",        "wd_instance": "wd5", "wd_board": "NVIDIAExternalCareerSite","tier": 0},
-    {"name": "Microsoft",       "ats": "workday", "slug": "microsoft",     "wd_instance": "wd5", "wd_board": "MicrosoftExternalCareerSite","tier": 0},
-    {"name": "Amazon",          "ats": "workday", "slug": "amazon",        "wd_instance": "wd5", "wd_board": "External",        "tier": 0},
     {"name": "Walmart",         "ats": "workday", "slug": "walmart",       "wd_instance": "wd5", "wd_board": "WalmartExternal", "tier": 1},
-    {"name": "Meta",            "ats": "workday", "slug": "meta",          "wd_instance": "wd5", "wd_board": "FBExternalCareerSite","tier": 0},
-    {"name": "Google",          "ats": "workday", "slug": "google",        "wd_instance": "wd5", "wd_board": "jobs",            "tier": 0},
+    # Apple/Microsoft/Amazon/Meta/Google use proprietary portals, block API access — Playwright
+    {"name": "Apple",           "ats": "playwright", "slug": "apple",                                                           "tier": 0},
+    {"name": "Microsoft",       "ats": "playwright", "slug": "microsoft",                                                       "tier": 0},
+    {"name": "Amazon",          "ats": "playwright", "slug": "amazon",                                                          "tier": 0},
+    {"name": "Meta",            "ats": "playwright", "slug": "meta",                                                            "tier": 0},
+    {"name": "Google",          "ats": "playwright", "slug": "google",                                                          "tier": 0},
 
     # ── Other dream companies on Workday (Tier 2) ──
     # BlackRock uses a custom portal (careers.blackrock.com), not standard Workday
