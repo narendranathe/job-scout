@@ -1100,7 +1100,7 @@ export default function App() {
                   [`${stats.h1b_pct||0}%`,"H1B Sponsors",t.vi],
                   [`${stats.remote_pct||0}%`,"Remote Jobs",t.ok],
                   [`${stats.companies_tracked||0}`,"Companies",t.ac],
-                  [`${stats.high_match||0}`,"High Match (70%+)",t.wm],
+                  [`${stats.high_match||0}`,`High Match (top 10% • ≥${stats.high_match_threshold?.toFixed(2)||"0.70"})`,t.wm],
                 ].map(([v,l,c])=>(
                   <div key={l} style={{padding:18,borderRadius:12,background:`${c}08`,border:`1px solid ${c}20`,textAlign:"center"}}>
                     <div style={{fontSize:34,fontWeight:700,color:c,fontFamily:"'Playfair Display',serif"}}>{v}</div>

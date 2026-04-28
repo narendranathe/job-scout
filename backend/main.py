@@ -171,6 +171,11 @@ def run_scrape(db_path: str, mode: str = "full", delay: float = 0.3) -> dict:
         from scrapers.playwright_scraper import scrape_all_playwright
         pw_jobs = scrape_all_playwright()
         for raw_job in pw_jobs:
+            # Mirror the title filter from the classical ATS path so Playwright
+            # jobs with title-only descriptions can't pass on tier boost alone.
+            if not engine.is_relevant_title(raw_job.get("title", "")):
+                stats["skipped"] += 1
+                continue
             # Playwright targets store their tier as "tier1" / "platinum" in the job dict
             # Ensure platinum boost fires by normalising the tier field
             if raw_job.get("tier") not in ("platinum", "tier1", "tier2", "tier3"):

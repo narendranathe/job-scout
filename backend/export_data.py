@@ -9,6 +9,7 @@ import os
 import logging
 from datetime import datetime, timezone
 from collections import Counter
+from statistics import quantiles
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +50,16 @@ def export(db_path: str = DB_PATH, output_path: str = None, cycle_counter: int =
         jobs.append(j)
 
     total = len(jobs)
-    high = sum(1 for j in jobs if (j.get("relevance_score") or 0) >= 0.7)
+
+    # HIGH MATCH = top 10% by relevance, recalibrated each cycle.
+    # Falls back to 0.70 only when corpus is too small to compute a stable percentile.
+    score_pool = [j["relevance_score"] for j in jobs if j.get("relevance_score")]
+    if len(score_pool) >= 10:
+        high_match_threshold = float(quantiles(score_pool, n=10)[8])
+    else:
+        high_match_threshold = 0.7
+    high = sum(1 for j in jobs if (j.get("relevance_score") or 0) >= high_match_threshold)
+
     remote_n = sum(1 for j in jobs if j.get("is_remote"))
     salaries = [j["salary_max"] for j in jobs if j.get("salary_max") and j["salary_max"] > 0]
     avg_sal = round(sum(salaries) / len(salaries)) if salaries else 0
@@ -79,6 +89,7 @@ def export(db_path: str = DB_PATH, output_path: str = None, cycle_counter: int =
         "jobs": jobs,
         "stats": {
             "total_jobs": total, "high_match": high,
+            "high_match_threshold": round(high_match_threshold, 3),
             "remote_pct": round(remote_n/total*100) if total else 0,
             "avg_salary": avg_sal,
             "h1b_pct": round(h1b_n/total*100) if total else 0,
