@@ -96,7 +96,7 @@ def run_scrape(db_path: str, mode: str = "full", delay: float = 0.3) -> dict:
     cycle = load_cycle_counter()
 
     if mode == "fast":
-        companies = [c for c in COMPANIES if c.get("tier", 3) == 1]
+        companies = [c for c in COMPANIES if c.get("tier", 3) in (0, 1)]
     else:
         companies = get_batch(cycle)
 

@@ -10,6 +10,7 @@ ATS URL patterns (all PUBLIC, no auth needed):
   Workday:         POST {slug}.{wd_instance}.myworkdayjobs.com/wday/cxs/{slug}/{wd_board}/jobs
 
 Priority tiers:
+  0 = Platinum — Check every cycle ($220K+ verified comp, dream targets)
   1 = Check every cycle (top targets)
   2 = Check every 2nd cycle
   3 = Check every 4th cycle
@@ -17,16 +18,32 @@ Priority tiers:
 
 COMPANIES = [
     # ═══════════════════════════════════════
+    #  PLATINUM — $220K+ verified comp, scraped every cycle
+    #  Based on Levels.fyi senior data/ML engineer total comp as of 2026.
+    #  Review quarterly.
+    # ═══════════════════════════════════════
+
+    # ── Quant/HFT (Playwright scrapers — see scrapers/playwright_scraper.py) ──
+    # These companies have no public ATS API. Scraped via Playwright in Slice 3.
+    # Listed here for config completeness; main.py skips ats=playwright in API loop.
+    {"name": "Jane Street",          "ats": "playwright", "slug": "janestreet",    "tier": 0},
+    {"name": "Two Sigma",            "ats": "playwright", "slug": "twosigma",      "tier": 0},
+    {"name": "Hudson River Trading", "ats": "playwright", "slug": "hrt",           "tier": 0},
+    {"name": "AQR Capital",          "ats": "playwright", "slug": "aqr",           "tier": 0},
+    {"name": "D.E. Shaw",            "ats": "playwright", "slug": "deshaw",        "tier": 0},
+    {"name": "Jump Trading",         "ats": "playwright", "slug": "jumptrading",   "tier": 0},
+
+    # ═══════════════════════════════════════
     #  TIER 1 — Dream targets (every cycle)
     #  These are your highest-priority companies.
     #  Scraped most frequently — new roles appear here first.
     # ═══════════════════════════════════════
 
-    # ── Greenhouse — Dream companies (Tier 1) ──
-    {"name": "Anthropic",          "ats": "greenhouse", "slug": "anthropic",             "tier": 1},
-    {"name": "OpenAI",             "ats": "greenhouse", "slug": "openai",                "tier": 1},
-    {"name": "Stripe",             "ats": "greenhouse", "slug": "stripe",                "tier": 1},
-    {"name": "Databricks",         "ats": "greenhouse", "slug": "databricks",            "tier": 1},
+    # ── Greenhouse — Dream companies (Platinum / Tier 0) ──
+    {"name": "Anthropic",          "ats": "greenhouse", "slug": "anthropic",             "tier": 0},
+    {"name": "OpenAI",             "ats": "greenhouse", "slug": "openai",                "tier": 0},
+    {"name": "Stripe",             "ats": "greenhouse", "slug": "stripe",                "tier": 0},
+    {"name": "Databricks",         "ats": "greenhouse", "slug": "databricks",            "tier": 0},
     {"name": "Snowflake",          "ats": "greenhouse", "slug": "snowflakecomputing",    "tier": 1},
     {"name": "Palantir",           "ats": "greenhouse", "slug": "palantir",              "tier": 1},
     {"name": "Scale AI",           "ats": "greenhouse", "slug": "scaleai",               "tier": 1},
@@ -166,21 +183,21 @@ COMPANIES = [
     #  Verify/update board names at: company.wd1.myworkdayjobs.com
     # ═══════════════════════════════════════
 
-    # ── Dream finance/enterprise companies on Workday (Tier 1 — check every cycle) ──
-    {"name": "Goldman Sachs",   "ats": "workday", "slug": "goldmansachs",  "wd_instance": "wd1", "wd_board": "GS",              "tier": 1},
+    # ── Dream finance/enterprise companies on Workday (Platinum — check every cycle) ──
+    {"name": "Goldman Sachs",   "ats": "workday", "slug": "goldmansachs",  "wd_instance": "wd1", "wd_board": "GS",              "tier": 0},
     {"name": "JP Morgan Chase", "ats": "workday", "slug": "jpmc",          "wd_instance": "wd1", "wd_board": "JPMCCareerSite",  "tier": 1},
     {"name": "Fidelity",        "ats": "workday", "slug": "fidelity",      "wd_instance": "wd1", "wd_board": "fidelity-careers","tier": 1},
-    {"name": "Citadel",         "ats": "workday", "slug": "citadel",       "wd_instance": "wd5", "wd_board": "Careers",         "tier": 1},
-    {"name": "Bloomberg",       "ats": "workday", "slug": "bloomberg",     "wd_instance": "wd5", "wd_board": "BloombergLP",     "tier": 1},
+    {"name": "Citadel",         "ats": "workday", "slug": "citadel",       "wd_instance": "wd5", "wd_board": "Careers",         "tier": 0},
+    {"name": "Bloomberg",       "ats": "workday", "slug": "bloomberg",     "wd_instance": "wd5", "wd_board": "BloombergLP",     "tier": 0},
 
-    # ── Big Tech on Workday (Tier 1) ──
-    {"name": "Apple",           "ats": "workday", "slug": "apple",         "wd_instance": "wd5", "wd_board": "US",              "tier": 1},
-    {"name": "NVIDIA",          "ats": "workday", "slug": "nvidia",        "wd_instance": "wd5", "wd_board": "NVIDIAExternalCareerSite","tier": 1},
-    {"name": "Microsoft",       "ats": "workday", "slug": "microsoft",     "wd_instance": "wd5", "wd_board": "MicrosoftExternalCareerSite","tier": 1},
-    {"name": "Amazon",          "ats": "workday", "slug": "amazon",        "wd_instance": "wd5", "wd_board": "External",        "tier": 1},
+    # ── Big Tech on Workday (Platinum for dream targets, Tier 1 for others) ──
+    {"name": "Apple",           "ats": "workday", "slug": "apple",         "wd_instance": "wd5", "wd_board": "US",              "tier": 0},
+    {"name": "NVIDIA",          "ats": "workday", "slug": "nvidia",        "wd_instance": "wd5", "wd_board": "NVIDIAExternalCareerSite","tier": 0},
+    {"name": "Microsoft",       "ats": "workday", "slug": "microsoft",     "wd_instance": "wd5", "wd_board": "MicrosoftExternalCareerSite","tier": 0},
+    {"name": "Amazon",          "ats": "workday", "slug": "amazon",        "wd_instance": "wd5", "wd_board": "External",        "tier": 0},
     {"name": "Walmart",         "ats": "workday", "slug": "walmart",       "wd_instance": "wd5", "wd_board": "WalmartExternal", "tier": 1},
-    {"name": "Meta",            "ats": "workday", "slug": "meta",          "wd_instance": "wd5", "wd_board": "FBExternalCareerSite","tier": 1},
-    {"name": "Google",          "ats": "workday", "slug": "google",        "wd_instance": "wd5", "wd_board": "jobs",            "tier": 1},
+    {"name": "Meta",            "ats": "workday", "slug": "meta",          "wd_instance": "wd5", "wd_board": "FBExternalCareerSite","tier": 0},
+    {"name": "Google",          "ats": "workday", "slug": "google",        "wd_instance": "wd5", "wd_board": "jobs",            "tier": 0},
 
     # ── Other dream companies on Workday (Tier 2) ──
     {"name": "Disney",          "ats": "workday", "slug": "disney",        "wd_instance": "wd5", "wd_board": "disneycareer",    "tier": 2},
@@ -260,6 +277,7 @@ def get_batch(cycle_number: int, batch_size: int = 0) -> list[dict]:
     """
     Smart batching: returns companies to scrape THIS cycle.
 
+    - Tier 0 (Platinum): every cycle ($220K+ dream companies)
     - Tier 1: every cycle
     - Tier 2: every 2nd cycle
     - Tier 3: every 4th cycle
@@ -269,7 +287,7 @@ def get_batch(cycle_number: int, batch_size: int = 0) -> list[dict]:
     eligible = []
     for co in COMPANIES:
         tier = co.get("tier", 3)
-        if tier == 1:
+        if tier in (0, 1):          # Platinum + Tier 1 — every cycle
             eligible.append(co)
         elif tier == 2 and cycle_number % 2 == 0:
             eligible.append(co)
