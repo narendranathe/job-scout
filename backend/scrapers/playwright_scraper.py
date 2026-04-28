@@ -138,6 +138,34 @@ PLAYWRIGHT_TARGETS = [
         "title_selector": ".job-title, .position-title, h3, h4",
         "link_selector": "a[href]",
     },
+    # ── Non-Workday finance firms ──
+    {
+        "name": "Optiver",
+        "ats": "custom",
+        "tier": "tier1",
+        "url": "https://optiver.com/working-at-optiver/career-opportunities/",
+        "job_container": ".job-listing, .vacancy-item, [class*='job'], article[class*='position']",
+        "title_selector": ".job-title, h3, .vacancy-title, .position-title",
+        "link_selector": "a[href]",
+    },
+    {
+        "name": "BlackRock",
+        "ats": "custom",
+        "tier": "tier1",
+        "url": "https://careers.blackrock.com/job-search",
+        "job_container": ".job-result, .job-card, [class*='job-listing'], li[class*='job']",
+        "title_selector": ".job-title, h3, h2, .position-title",
+        "link_selector": "a[href]",
+    },
+    {
+        "name": "Morgan Stanley",
+        "ats": "custom",
+        "tier": "tier1",
+        "url": "https://www.morganstanley.com/people-opportunities/students-graduates/programs",
+        "job_container": ".job-listing, .opportunity-card, [class*='position'], li[class*='job']",
+        "title_selector": ".job-title, h3, h4, .position-title",
+        "link_selector": "a[href]",
+    },
 ]
 
 # ---------------------------------------------------------------------------
