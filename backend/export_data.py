@@ -29,7 +29,7 @@ def _parse_skills(val: str) -> list[str]:
     return [s.strip() for s in val.split(",") if s.strip()]
 
 
-def export(db_path: str = DB_PATH, output_path: str = None) -> dict:
+def export(db_path: str = DB_PATH, output_path: str = None, cycle_counter: int = 0) -> dict:
     if not os.path.exists(db_path):
         log.warning("No DB at %s", db_path)
         return _empty()
@@ -93,6 +93,11 @@ def export(db_path: str = DB_PATH, output_path: str = None) -> dict:
         "trend": sorted([{"date":k,"count":v} for k,v in date_c.items()], key=lambda x: x["date"])[-30:],
         "runs": runs,
         "exported_at": datetime.now(timezone.utc).isoformat(),
+        "metadata": {
+            "cycle_counter": cycle_counter,
+            "last_run_at": datetime.now(timezone.utc).isoformat(),
+            "jobs_total": total,
+        },
     }
 
     if output_path:

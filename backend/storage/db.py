@@ -44,7 +44,8 @@ def init_db(db_path: str = DB_PATH):
             sponsorship INTEGER DEFAULT 0,
             first_seen_at TEXT NOT NULL,
             last_seen_at TEXT NOT NULL,
-            is_active INTEGER DEFAULT 1
+            is_active INTEGER DEFAULT 1,
+            tier TEXT DEFAULT 'tier1'
         );
 
         CREATE INDEX IF NOT EXISTS idx_jobs_score   ON jobs(relevance_score DESC);
@@ -102,6 +103,12 @@ def init_db(db_path: str = DB_PATH):
         CREATE INDEX IF NOT EXISTS idx_resume_versions_key ON resume_versions(version_key);
     """)
     conn.commit()
+    # One-time migration: add tier if existing DB lacks it
+    try:
+        conn.execute("ALTER TABLE jobs ADD COLUMN tier TEXT DEFAULT 'tier1'")
+        conn.commit()
+    except Exception:
+        pass  # Column already exists — safe to ignore
     conn.close()
     log.info("Database initialized at %s", db_path)
 
@@ -124,8 +131,8 @@ def upsert_job(conn: sqlite3.Connection, job: dict) -> str:
                 external_id, title, company, location, department,
                 description, url, ats, is_remote, posted_at,
                 salary_min, salary_max, relevance_score, matched_skills,
-                sponsorship, first_seen_at, last_seen_at, is_active
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                sponsorship, first_seen_at, last_seen_at, is_active, tier
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
         """, (
             job["external_id"], job["title"], job["company"],
             job.get("location", ""), job.get("department", ""),
@@ -137,6 +144,7 @@ def upsert_job(conn: sqlite3.Connection, job: dict) -> str:
             json.dumps(job.get("matched_skills", [])),
             int(job.get("sponsorship", False)),
             now, now,
+            job.get("tier", "tier1"),
         ))
         return "new"
     else:
@@ -147,7 +155,8 @@ def upsert_job(conn: sqlite3.Connection, job: dict) -> str:
                 description = ?, url = ?, is_remote = ?,
                 salary_min = ?, salary_max = ?,
                 relevance_score = ?, matched_skills = ?,
-                sponsorship = ?, last_seen_at = ?, is_active = 1
+                sponsorship = ?, last_seen_at = ?, is_active = 1,
+                tier = ?
             WHERE external_id = ?
         """, (
             job["title"], job.get("location", ""), job.get("department", ""),
@@ -157,7 +166,7 @@ def upsert_job(conn: sqlite3.Connection, job: dict) -> str:
             job.get("relevance_score", 0.0),
             json.dumps(job.get("matched_skills", [])),
             int(job.get("sponsorship", False)),
-            now, job["external_id"],
+            now, job.get("tier", "tier1"), job["external_id"],
         ))
         return "updated"
 

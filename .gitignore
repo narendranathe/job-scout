@@ -75,3 +75,8 @@ htmlcov/
 *.pdf
 *.docx
 resumes/
+resume-personal.md
+resume-projects.md
+resume_narendranath.tex
+backend/resume_vault/
+.claude-memory.md

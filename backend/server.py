@@ -23,7 +23,6 @@ import os
 import sys
 import json
 import time
-import threading
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -87,7 +86,6 @@ def _load_scrapers():
 # ─── Shared State ──────────────────────────────────────────────────
 class State:
     def __init__(self):
-        self._lock = threading.Lock()
         self.started_at   = datetime.now(timezone.utc).isoformat()
         self.last_scrape_at = None
         self.last_duration  = 0
@@ -99,54 +97,51 @@ class State:
         self._cached_at     = None
 
     def update_cache(self, data: dict):
-        with self._lock:
-            self._cached_json = json.dumps(data, default=str, separators=(",", ":"))
-            self._cached_at   = datetime.now(timezone.utc).isoformat()
+        self._cached_json = json.dumps(data, default=str, separators=(",", ":"))
+        self._cached_at   = datetime.now(timezone.utc).isoformat()
 
     def get_cache(self) -> str | None:
-        with self._lock:
-            return self._cached_json
+        return self._cached_json
 
     def record_cycle(self, duration: float, stats: dict, error: str = None):
-        with self._lock:
-            self.last_scrape_at = datetime.now(timezone.utc).isoformat()
-            self.last_duration  = round(duration, 1)
-            self.total_cycles  += 1
-            self.total_new     += stats.get("new", 0)
-            self.last_error     = error
-            self.is_scraping    = False
+        self.last_scrape_at = datetime.now(timezone.utc).isoformat()
+        self.last_duration  = round(duration, 1)
+        self.total_cycles  += 1
+        self.total_new     += stats.get("new", 0)
+        self.last_error     = error
+        self.is_scraping    = False
 
     def health(self) -> dict:
-        with self._lock:
-            return {
-                "status":            "scraping" if self.is_scraping else "idle",
-                "started_at":        self.started_at,
-                "uptime_hours":      round(
-                    (datetime.now(timezone.utc) - datetime.fromisoformat(self.started_at)).total_seconds() / 3600, 1
-                ),
-                "last_scrape_at":    self.last_scrape_at,
-                "last_duration_sec": self.last_duration,
-                "total_cycles":      self.total_cycles,
-                "total_new_jobs":    self.total_new,
-                "last_error":        self.last_error,
-                "cache_fresh_at":    self._cached_at,
-                "companies_tracked": TOTAL_COMPANIES,
-                "fast_interval_sec": FAST_INTERVAL,
-            }
+        return {
+            "status":            "scraping" if self.is_scraping else "idle",
+            "started_at":        self.started_at,
+            "uptime_hours":      round(
+                (datetime.now(timezone.utc) - datetime.fromisoformat(self.started_at)).total_seconds() / 3600, 1
+            ),
+            "last_scrape_at":    self.last_scrape_at,
+            "last_duration_sec": self.last_duration,
+            "total_cycles":      self.total_cycles,
+            "total_new_jobs":    self.total_new,
+            "last_error":        self.last_error,
+            "cache_fresh_at":    self._cached_at,
+            "companies_tracked": TOTAL_COMPANIES,
+            "fast_interval_sec": FAST_INTERVAL,
+        }
 
 
 state = State()
 
-# ─── Cycle counter (persists on disk) ─────────────────────────────
-COUNTER_PATH = Path(DB_PATH).parent / ".cycle_counter"
+# ─── Cycle counter (reads from exported JSON) ─────────────────
+JSON_OUTPUT_PATH = Path(DB_PATH).parent.parent / "frontend" / "public" / "api-data.json"
 
-def _next_cycle() -> int:
+def load_cycle_counter() -> int:
+    """Read cycle counter from api-data.json metadata, increment, return new value."""
     try:
-        n = int(COUNTER_PATH.read_text().strip()) + 1
+        with open(JSON_OUTPUT_PATH) as f:
+            data = json.load(f)
+        return data.get("metadata", {}).get("cycle_counter", 0) + 1
     except Exception:
-        n = 1
-    COUNTER_PATH.write_text(str(n))
-    return n
+        return 1
 
 
 # ─── Night quiet hours ────────────────────────────────────────────
@@ -181,10 +176,10 @@ def run_scrape(mode: str = "fast") -> dict:
     init_db(DB_PATH)
     conn = get_conn(DB_PATH)
     run_id = start_run(conn)
-    cycle = _next_cycle()
+    cycle = load_cycle_counter()
 
     companies = (
-        [c for c in COMPANIES if c.get("tier", 3) == 1]
+        [c for c in COMPANIES if c.get("tier", 3) in (0, 1)]
         if mode == "fast"
         else get_batch(cycle)
     )
@@ -270,38 +265,6 @@ def build_cache():
         log.error("Cache rebuild failed: %s", e)
 
 
-# ─── Background scraper loop ──────────────────────────────────────
-def scraper_loop():
-    log.info("Background scraper started — interval=%ds", FAST_INTERVAL)
-    local_cycle = 0
-
-    while True:
-        # ── Night quiet hours: skip and sleep ──
-        if is_quiet_hours():
-            log.info("😴 Quiet hours (12am–5:30am CST) — skipping cycle")
-            time.sleep(FAST_INTERVAL)
-            continue
-
-        try:
-            local_cycle += 1
-            state.is_scraping = True
-            mode = "full" if local_cycle % 12 == 0 else "fast"
-
-            t0 = time.time()
-            stats = run_scrape(mode)
-            duration = time.time() - t0
-
-            state.record_cycle(duration, stats)
-            build_cache()
-
-        except Exception as e:
-            log.error("Scraper loop error: %s", e)
-            state.record_cycle(0, {}, str(e))
-
-        log.info("💤 Next scrape in %ds...", FAST_INTERVAL)
-        time.sleep(FAST_INTERVAL)
-
-
 # ─── Flask routes ─────────────────────────────────────────────────
 
 @app.route("/ping")
@@ -340,7 +303,7 @@ def api_stats():
 
 @app.route("/api/scrape", methods=["POST", "OPTIONS"])
 def api_trigger_scrape():
-    """Trigger an immediate full scrape (manual button or GitHub Actions)."""
+    """Trigger an immediate full scrape (synchronous — GitHub Actions is the scheduler)."""
     if request.method == "OPTIONS":
         return "", 204
 
@@ -352,18 +315,16 @@ def api_trigger_scrape():
     if state.is_scraping:
         return jsonify({"status": "already_scraping", "message": "Scrape already running"}), 409
 
-    def _trigger():
-        state.is_scraping = True
-        t0 = time.time()
-        try:
-            stats = run_scrape("full")
-            state.record_cycle(time.time() - t0, stats)
-            build_cache()
-        except Exception as e:
-            state.record_cycle(0, {}, str(e))
-
-    threading.Thread(target=_trigger, daemon=True).start()
-    return jsonify({"status": "scrape_triggered", "message": "Full scrape started — refresh in ~2 min"}), 202
+    state.is_scraping = True
+    t0 = time.time()
+    try:
+        stats = run_scrape("fast", delay=0.3)
+        state.record_cycle(time.time() - t0, stats)
+        build_cache()
+        return jsonify({"ok": True, "stats": stats}), 200
+    except Exception as e:
+        state.record_cycle(0, {}, str(e))
+        return jsonify({"error": str(e)}), 500
 
 
 # ─── Profile & Resume endpoints ────────────────────────────────────
@@ -760,10 +721,8 @@ def add_cors(response):
 
 # ─── Startup ──────────────────────────────────────────────────────
 init_db(DB_PATH)
-
-_scraper_thread = threading.Thread(target=scraper_loop, daemon=True, name="scraper")
-_scraper_thread.start()
-log.info("Background scraper thread started (interval=%ds)", FAST_INTERVAL)
+# Note: No background thread — GitHub Actions cron is the scheduler.
+# The /api/scrape endpoint can be called manually or by Actions to trigger a scrape.
 
 
 def main():

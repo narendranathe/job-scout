@@ -43,6 +43,21 @@ DISCORD_WEBHOOK  = os.environ.get("DISCORD_WEBHOOK_URL", "")
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
+# ── Tailor-resume integration ──────────────────────────────────────────────
+# Optional — if set, the notifier will call the tailor-resume API before
+# each dream-job alert and attach a note if a tailored .tex was generated.
+#
+#   TAILOR_RESUME_API_URL      — base URL of tailor-resume API
+#                                (e.g. https://tailor-resume-api.fly.dev)
+#   TAILOR_RESUME_PROFILE_PATH — path to a plain-text profile/resume file
+#                                used as the "artifact" for tailoring
+#
+# Both are optional. If TAILOR_RESUME_API_URL is not set the call is skipped
+# entirely (no error, no slowdown). If the API is unreachable the alert fires
+# normally — the tailoring step is strictly best-effort.
+TAILOR_RESUME_API_URL      = os.environ.get("TAILOR_RESUME_API_URL", "")
+TAILOR_RESUME_PROFILE_PATH = os.environ.get("TAILOR_RESUME_PROFILE_PATH", "")
+
 # Paid / trial channels (kept for forkers)
 SLACK_WEBHOOK  = os.environ.get("SLACK_WEBHOOK_URL", "")
 TWILIO_SID     = os.environ.get("TWILIO_ACCOUNT_SID", "")
@@ -75,6 +90,58 @@ DREAM_ROLE_KEYWORDS = [
     ).split(",")
     if s.strip()
 ]
+
+
+# ── Tailor-resume helper ────────────────────────────────────────────────────
+
+def _tailor_resume_for_job(job: dict):
+    """
+    Best-effort call to the tailor-resume API.
+
+    Returns the tex_b64 string on success, or None if:
+      - TAILOR_RESUME_API_URL is not configured
+      - The API times out (5 s hard limit)
+      - Any other network / HTTP error occurs
+
+    The alert pipeline must NEVER fail because of this function — all
+    exceptions are caught and logged at WARNING level only.
+    """
+    if not TAILOR_RESUME_API_URL:
+        return None
+
+    jd_text = job.get("description") or ""
+
+    # Load profile artifact from disk if a path was provided
+    artifact = "No profile provided"
+    if TAILOR_RESUME_PROFILE_PATH:
+        try:
+            with open(TAILOR_RESUME_PROFILE_PATH, "r", encoding="utf-8") as fh:
+                artifact = fh.read().strip() or artifact
+        except Exception as e:
+            log.warning("Could not read TAILOR_RESUME_PROFILE_PATH (%s): %s", TAILOR_RESUME_PROFILE_PATH, e)
+
+    try:
+        resp = requests.post(
+            f"{TAILOR_RESUME_API_URL.rstrip('/')}/api/v1/resume/tailor",
+            json={"jd_text": jd_text, "artifact": artifact},
+            timeout=5,
+        )
+        if resp.ok:
+            data = resp.json()
+            tex_b64 = data.get("tex_b64")
+            if tex_b64:
+                log.info("Tailor-resume: .tex generated for %s @ %s", job.get("title"), job.get("company"))
+                return tex_b64
+            log.warning("Tailor-resume: API returned OK but no tex_b64 in response")
+        else:
+            log.warning("Tailor-resume: API returned %d — %s", resp.status_code, resp.text[:200])
+    except requests.exceptions.Timeout:
+        log.warning("Tailor-resume: API timed out after 5 s — skipping for %s @ %s",
+                    job.get("title"), job.get("company"))
+    except Exception as e:
+        log.warning("Tailor-resume: API call failed (%s) — alert will fire without tailored resume", e)
+
+    return None
 
 
 # ── Public API ─────────────────────────────────────────────────────────────
@@ -130,6 +197,13 @@ def notify_dream_job(job: dict) -> bool:
     skills_text = ", ".join(skills[:6]) if skills else "—"
     score_pct  = f"{int(score * 100)}%"
 
+    # ── Tailor resume (best-effort) ────────────────────────────
+    tex_b64 = _tailor_resume_for_job(job)
+    tailor_note = (
+        "\nResume:   Tailored .tex generated — download from job dashboard"
+        if tex_b64 else ""
+    )
+
     # Plain text for channels that don't support rich formatting
     plain = (
         f"🎯 DREAM JOB ALERT\n"
@@ -140,13 +214,16 @@ def notify_dream_job(job: dict) -> bool:
         f"Skills:   {skills_text}\n"
         + (f"Salary:   {sal_text}\n" if sal_text else "")
         + f"Apply:    {url}"
+        + tailor_note
     )
 
     results = []
 
     # ── Free channels ──────────────────────────────────────────
     if DISCORD_WEBHOOK:
-        results.append(("Discord", _send_discord(company, title, location, url, score_pct, sal_text, skills_text)))
+        results.append(("Discord", _send_discord(
+            company, title, location, url, score_pct, sal_text, skills_text, tex_b64=tex_b64,
+        )))
 
     if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
         results.append(("Telegram", _send_telegram(plain)))
@@ -174,9 +251,40 @@ def notify_dream_job(job: dict) -> bool:
     return sent
 
 
+# ── Error rate alert ──────────────────────────────────────────────────────
+
+def alert_high_error_rate(stats: dict):
+    """
+    Fire Discord alert if >10% of scraped companies errored.
+    stats dict must contain 'companies' (int) and 'errors' (int).
+    """
+    companies = stats.get("companies", 0)
+    errors = stats.get("errors", 0)
+    if companies == 0 or errors / companies <= 0.10:
+        return
+
+    error_pct = round(errors / companies * 100)
+    msg = (
+        f"**JobScout scrape error rate: {error_pct}%**\n"
+        f"Companies attempted: {companies} | Errors: {errors}\n"
+        f"Cycle: {stats.get('cycle', '?')} | New jobs found: {stats.get('new', 0)}"
+    )
+    _send_discord_message(msg)
+
+
+def _send_discord_message(message: str):
+    """Send a plain text message to the Discord webhook."""
+    if not DISCORD_WEBHOOK:
+        return
+    try:
+        requests.post(DISCORD_WEBHOOK, json={"content": message}, timeout=10)
+    except Exception as e:
+        log.warning("Discord alert failed: %s", e)
+
+
 # ── Free: Discord ──────────────────────────────────────────────────────────
 
-def _send_discord(company, title, location, url, score_pct, sal_text, skills_text) -> bool:
+def _send_discord(company, title, location, url, score_pct, sal_text, skills_text, tex_b64=None) -> bool:
     """
     Discord webhook — completely free, no rate limits for personal use.
     Rich embed with color-coded score bar.
@@ -200,6 +308,12 @@ def _send_discord(company, title, location, url, score_pct, sal_text, skills_tex
             fields.append({"name": "💰 Salary", "value": sal_text, "inline": True})
         if skills_text and skills_text != "—":
             fields.append({"name": "🛠 Matched Skills", "value": skills_text, "inline": False})
+        if tex_b64:
+            fields.append({
+                "name": "📄 Tailored Resume",
+                "value": "Tailored .tex generated — download from job dashboard",
+                "inline": False,
+            })
 
         payload = {
             "content": f"🎯 **Dream job alert!** {title} at **{company}**",

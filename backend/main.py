@@ -21,7 +21,6 @@ import time
 import json
 import logging
 import argparse
-from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -32,6 +31,7 @@ from storage.db import (
     init_db, get_conn, upsert_job, mark_stale_jobs,
     start_run, finish_run, get_stats,
 )
+from scrapers.utils import scrape_with_retry, parse_salary
 
 logging.basicConfig(
     level=logging.INFO,
@@ -64,15 +64,19 @@ def _load_scrapers():
 
 
 # ─── Cycle Counter ───────────────────────────────────
-COUNTER_PATH = os.path.join(os.path.dirname(__file__), ".cycle_counter")
+JSON_OUTPUT_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "frontend", "public", "api-data.json"
+)
 
-def _next_cycle() -> int:
+
+def load_cycle_counter() -> int:
+    """Read cycle counter from api-data.json metadata, increment, return new value."""
     try:
-        n = int(Path(COUNTER_PATH).read_text().strip()) + 1
+        with open(JSON_OUTPUT_PATH) as f:
+            data = json.load(f)
+        return data.get("metadata", {}).get("cycle_counter", 0) + 1
     except Exception:
-        n = 1
-    Path(COUNTER_PATH).write_text(str(n))
-    return n
+        return 1
 
 
 # ─── Scrape Engine ───────────────────────────────────
@@ -89,7 +93,7 @@ def run_scrape(db_path: str, mode: str = "full", delay: float = 0.3) -> dict:
     init_db(db_path)
     conn = get_conn(db_path)
     run_id = start_run(conn)
-    cycle = _next_cycle()
+    cycle = load_cycle_counter()
 
     if mode == "fast":
         companies = [c for c in COMPANIES if c.get("tier", 3) == 1]
@@ -107,45 +111,57 @@ def run_scrape(db_path: str, mode: str = "full", delay: float = 0.3) -> dict:
     for company in companies:
         scraper = SCRAPERS.get(company.get("ats", ""))
         if not scraper:
-            stats["errors"] += 1
+            if company.get("ats") != "playwright":
+                stats["errors"] += 1  # Only count as error if not playwright
             continue
 
-        try:
-            stats["companies"] += 1
-            co_relevant = 0
+        stats["companies"] += 1
+        co_relevant = 0
 
-            for raw_job in scraper.scrape(company):
-                stats["found"] += 1
-                if not engine.is_relevant_title(raw_job.get("title", "")):
-                    stats["skipped"] += 1
-                    continue
+        jobs_from_co = scrape_with_retry(
+            lambda: list(scraper.scrape(company)),
+            company["name"],
+        )
+        for raw_job in jobs_from_co:
+            stats["found"] += 1
+            if not engine.is_relevant_title(raw_job.get("title", "")):
+                stats["skipped"] += 1
+                continue
 
-                score, matched = engine.score(raw_job)
-                raw_job["relevance_score"] = score
-                raw_job["matched_skills"] = matched
-                raw_job["sponsorship"] = _detect_sponsorship(raw_job)
+            score, matched = engine.score(raw_job)
+            raw_job["relevance_score"] = score
+            raw_job["matched_skills"] = matched
+            raw_job["sponsorship"] = _detect_sponsorship(raw_job)
 
-                min_score = PROFILE.get("min_score_threshold", 0.30)
-                if score < min_score:
-                    stats["skipped"] += 1
-                    continue
+            # Assign tier label from company config
+            tier_label = "platinum" if company.get("tier") == 0 else f"tier{company.get('tier', 1)}"
+            raw_job["tier"] = tier_label
 
-                result = upsert_job(conn, raw_job)
-                if result == "new":
-                    stats["new"] += 1
-                elif result == "updated":
-                    stats["updated"] += 1
-                stats["relevant"] += 1
-                co_relevant += 1
+            # Parse salary from description if not already set
+            if not raw_job.get("salary_min") and not raw_job.get("salary_max"):
+                desc = raw_job.get("description", "")
+                sal_min, sal_max = parse_salary(desc)
+                if sal_min:
+                    raw_job["salary_min"] = sal_min
+                    raw_job["salary_max"] = sal_max
 
-            conn.commit()
-            tier_label = f"T{company.get('tier', '?')}"
-            log.info("✓ [%s] %s — %d relevant", tier_label, company["name"], co_relevant)
-            time.sleep(delay)
+            min_score = PROFILE.get("min_score_threshold", 0.30)
+            if score < min_score:
+                stats["skipped"] += 1
+                continue
 
-        except Exception as e:
-            log.error("✗ %s — %s", company["name"], e)
-            stats["errors"] += 1
+            result = upsert_job(conn, raw_job)
+            if result == "new":
+                stats["new"] += 1
+            elif result == "updated":
+                stats["updated"] += 1
+            stats["relevant"] += 1
+            co_relevant += 1
+
+        conn.commit()
+        tier_label = f"T{company.get('tier', '?')}"
+        log.info("✓ [%s] %s — %d relevant", tier_label, company["name"], co_relevant)
+        time.sleep(delay)
 
     mark_stale_jobs(conn, hours=96)
     conn.commit()
@@ -154,15 +170,18 @@ def run_scrape(db_path: str, mode: str = "full", delay: float = 0.3) -> dict:
 
     log.info("═══ Done — found=%d relevant=%d new=%d updated=%d errors=%d ═══",
              stats["found"], stats["relevant"], stats["new"], stats["updated"], stats["errors"])
+    stats["cycle"] = cycle
+    from alerts.notifier import alert_high_error_rate
+    alert_high_error_rate(stats)
     return stats
 
 
-def export_json(db_path: str) -> dict:
+def export_json(db_path: str, cycle: int = 0) -> dict:
     """Export DB → JSON for frontend static fallback."""
-    output = os.path.join(os.path.dirname(__file__), "..", "frontend", "public", "api-data.json")
+    output = JSON_OUTPUT_PATH
     os.makedirs(os.path.dirname(output), exist_ok=True)
     from export_data import export
-    data = export(db_path, output)
+    data = export(db_path, output, cycle_counter=cycle)
     log.info("Exported %d jobs → %s", data.get("stats", {}).get("total_jobs", 0), output)
     return data
 
@@ -199,8 +218,8 @@ def main():
         return
 
     mode = "fast" if args.fast else "full"
-    run_scrape(db, mode, args.delay)
-    export_json(db)
+    stats = run_scrape(db, mode, args.delay)
+    export_json(db, cycle=stats.get("cycle", 1))
 
     if args.notify_render:
         notify_render(args.notify_render)
