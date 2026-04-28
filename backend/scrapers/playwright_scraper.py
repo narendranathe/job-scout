@@ -23,7 +23,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "Jane Street",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://www.janestreet.com/join-jane-street/open-roles/",
         "job_container": ".opportunity-row, .job-listing, [data-role]",
         "title_selector": ".opportunity-title, .job-title, h3",
@@ -32,7 +32,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "Two Sigma",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://careers.twosigma.com/careers/JobList",
         "job_container": ".job-list-item, .career-row, tr[data-job]",
         "title_selector": ".job-title, td.position, a.job-link",
@@ -41,7 +41,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "HRT",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://www.hudsonrivertrading.com/careers/",
         "job_container": ".job-item, .opening-row, .career-position",
         "title_selector": ".job-title, .position-title, h3",
@@ -50,7 +50,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "D.E. Shaw",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://www.deshaw.com/careers/choose-your-path",
         "job_container": ".position-item, .job-card, .opening",
         "title_selector": ".position-title, .job-name, h4",
@@ -59,7 +59,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "AQR",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://careers.aqr.com/jobs",
         "job_container": ".job-result, .position-row, li.opening",
         "title_selector": ".job-title, .position-name, a.job-link",
@@ -68,7 +68,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "Jump Trading",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://www.jumptrading.com/careers/",
         "job_container": ".job-row, .career-item, .opening-card",
         "title_selector": ".job-title, .role-title, h3",
@@ -78,7 +78,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "Citadel Securities",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://www.citadelsecurities.com/careers/open-positions/",
         "job_container": ".job-listing, .position-card, [data-job], .opportunity-item",
         "title_selector": ".job-title, .position-title, h3, h4",
@@ -87,7 +87,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "SIG",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://careers.sig.com/job-search",
         "job_container": ".job-result, .career-listing, .vacancy-row, tr[class*='job']",
         "title_selector": ".job-title, .position-name, h3, td.title",
@@ -96,7 +96,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "IMC Trading",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://careers.imc.com/us/en/search-results",
         "job_container": ".job-listing, .phenom-card, li[class*='job'], .job-item",
         "title_selector": ".job-title, .card-title, h3, .position-title",
@@ -105,7 +105,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "Bridgewater Associates",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://www.bridgewater.com/career-opportunities/open-roles",
         "job_container": ".job-card, .role-card, .opening-row, [class*='position']",
         "title_selector": ".job-title, .role-title, h3, h4",
@@ -114,7 +114,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "Flow Traders",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://www.flowtraders.com/careers/vacancies",
         "job_container": ".vacancy-item, .job-listing, .career-item, article[class*='job']",
         "title_selector": ".vacancy-title, .job-title, h3, h2",
@@ -123,7 +123,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "Tower Research Capital",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://www.tower-research.com/open-positions",
         "job_container": ".position-row, tr.job-row, .opening-item, li[class*='position']",
         "title_selector": "td.position-title, .job-title, a, h3",
@@ -132,7 +132,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "Millennium Management",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://www.mlp.com/careers/",
         "job_container": ".job-listing, .vacancy-card, .position-item, [class*='career']",
         "title_selector": ".job-title, .position-title, h3, h4",
@@ -142,7 +142,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "Optiver",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://optiver.com/working-at-optiver/career-opportunities/",
         "job_container": ".job-listing, .vacancy-item, [class*='job'], article[class*='position']",
         "title_selector": ".job-title, h3, .vacancy-title, .position-title",
@@ -151,7 +151,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "BlackRock",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://careers.blackrock.com/job-search",
         "job_container": ".job-result, .job-card, [class*='job-listing'], li[class*='job']",
         "title_selector": ".job-title, h3, h2, .position-title",
@@ -160,7 +160,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "Morgan Stanley",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://www.morganstanley.com/people-opportunities/careers",
         "job_container": ".job-listing, .opportunity-card, [class*='position'], li[class*='job']",
         "title_selector": ".job-title, h3, h4, .position-title",
@@ -170,7 +170,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "Apple",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://jobs.apple.com/en-us/search?team=apps-and-frameworks-SFTWR-AF,machine-learning-and-ai-MLAI,devops-and-site-reliability-DOPS",
         "job_container": "[class*='table-col'], .table-row, [data-row-id], li[class*='result']",
         "title_selector": "[class*='table-col-1'] a, .job-title, h3",
@@ -179,7 +179,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "Google",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://www.google.com/about/careers/applications/jobs/results/?q=data+engineer&employment_type=FULL_TIME",
         "job_container": "li[class*='lLd3Je'], .sMn82b, [jsname='N818Id']",
         "title_selector": "h3[class*='QJPWVe'], .job-title, h3",
@@ -188,7 +188,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "Amazon",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://www.amazon.jobs/en/search?base_query=data+engineer&category%5B%5D=software-development",
         "job_container": ".job-tile, [class*='job-tile'], .result",
         "title_selector": "h3.job-title, .job-title, h3",
@@ -197,7 +197,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "Meta",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://www.metacareers.com/jobs/?offices[]=Remote&q=data+engineer",
         "job_container": "._9ata, [class*='_8g0h'], div[role='listitem']",
         "title_selector": "._8muv, .job-title, h2, h3",
@@ -206,7 +206,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "Goldman Sachs",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://www.goldmansachs.com/careers/students/programs-and-internships",
         "job_container": ".program-card, .career-card, [class*='program'], li[class*='result']",
         "title_selector": ".program-title, .card-title, h3, h4",
@@ -215,7 +215,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "Bloomberg",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://careers.bloomberg.com/job/search?category=Engineering",
         "job_container": ".job-listing, .job-item, [class*='job-result'], li[class*='job']",
         "title_selector": ".job-title, h3, h2, .position-title",
@@ -224,7 +224,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "JP Morgan Chase",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://jobs.jpmorganchase.com/search?keyword=data+engineer",
         "job_container": ".job-listing, .opportunity-row, [class*='job-card'], li[class*='job']",
         "title_selector": ".job-title, h3, .position-title",
@@ -233,7 +233,7 @@ PLAYWRIGHT_TARGETS = [
     {
         "name": "OpenAI",
         "ats": "custom",
-        "tier": "tier1",
+        "tier": "platinum",
         "url": "https://openai.com/careers/",
         "job_container": "[class*='PostingCard'], .job-listing, [data-id], li[class*='job']",
         "title_selector": "[class*='PostingTitle'], h3, .job-title",

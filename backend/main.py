@@ -128,14 +128,14 @@ def run_scrape(db_path: str, mode: str = "full", delay: float = 0.3) -> dict:
                 stats["skipped"] += 1
                 continue
 
+            # Assign tier BEFORE scoring so the Platinum boost fires correctly
+            tier_label = "platinum" if company.get("tier") == 0 else f"tier{company.get('tier', 1)}"
+            raw_job["tier"] = tier_label
+
             score, matched = engine.score(raw_job)
             raw_job["relevance_score"] = score
             raw_job["matched_skills"] = matched
             raw_job["sponsorship"] = _detect_sponsorship(raw_job)
-
-            # Assign tier label from company config
-            tier_label = "platinum" if company.get("tier") == 0 else f"tier{company.get('tier', 1)}"
-            raw_job["tier"] = tier_label
 
             # Parse salary from description if not already set
             if not raw_job.get("salary_min") and not raw_job.get("salary_max"):
@@ -171,6 +171,10 @@ def run_scrape(db_path: str, mode: str = "full", delay: float = 0.3) -> dict:
         from scrapers.playwright_scraper import scrape_all_playwright
         pw_jobs = scrape_all_playwright()
         for raw_job in pw_jobs:
+            # Playwright targets store their tier as "tier1" / "platinum" in the job dict
+            # Ensure platinum boost fires by normalising the tier field
+            if raw_job.get("tier") not in ("platinum", "tier1", "tier2", "tier3"):
+                raw_job["tier"] = "tier1"
             score, matched = engine.score(raw_job)
             raw_job["relevance_score"] = score
             raw_job["matched_skills"] = matched
