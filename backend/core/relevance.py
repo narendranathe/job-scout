@@ -10,6 +10,8 @@ from config.companies import RELEVANT_TITLE_KEYWORDS, EXCLUDE_TITLE_KEYWORDS
 
 log = logging.getLogger(__name__)
 
+PLATINUM_BOOST = 0.08
+
 
 class RelevanceEngine:
     def __init__(self):
@@ -129,6 +131,10 @@ class RelevanceEngine:
 
         # Clamp to [0.0, 1.0]
         score = max(0.0, min(1.0, score))
+
+        # ── Platinum company boost (8%) ──
+        if job.get("tier") == "platinum":
+            score = min(1.0, score + PLATINUM_BOOST)
 
         # Deduplicate while preserving insertion order (a skill could appear in both
         # core and secondary lists if profile.py was misconfigured)
