@@ -74,6 +74,70 @@ PLAYWRIGHT_TARGETS = [
         "title_selector": ".job-title, .role-title, h3",
         "link_selector": "a[href]",
     },
+    # ── Expanded quant/HFT/market-maker coverage ──
+    {
+        "name": "Citadel Securities",
+        "ats": "custom",
+        "tier": "tier1",
+        "url": "https://www.citadelsecurities.com/careers/open-positions/",
+        "job_container": ".job-listing, .position-card, [data-job], .opportunity-item",
+        "title_selector": ".job-title, .position-title, h3, h4",
+        "link_selector": "a[href]",
+    },
+    {
+        "name": "SIG",
+        "ats": "custom",
+        "tier": "tier1",
+        "url": "https://careers.sig.com/job-search",
+        "job_container": ".job-result, .career-listing, .vacancy-row, tr[class*='job']",
+        "title_selector": ".job-title, .position-name, h3, td.title",
+        "link_selector": "a[href]",
+    },
+    {
+        "name": "IMC Trading",
+        "ats": "custom",
+        "tier": "tier1",
+        "url": "https://careers.imc.com/us/en/search-results",
+        "job_container": ".job-listing, .phenom-card, li[class*='job'], .job-item",
+        "title_selector": ".job-title, .card-title, h3, .position-title",
+        "link_selector": "a[href]",
+    },
+    {
+        "name": "Bridgewater Associates",
+        "ats": "custom",
+        "tier": "tier1",
+        "url": "https://www.bridgewater.com/career-opportunities/open-roles",
+        "job_container": ".job-card, .role-card, .opening-row, [class*='position']",
+        "title_selector": ".job-title, .role-title, h3, h4",
+        "link_selector": "a[href]",
+    },
+    {
+        "name": "Flow Traders",
+        "ats": "custom",
+        "tier": "tier1",
+        "url": "https://www.flowtraders.com/careers/vacancies",
+        "job_container": ".vacancy-item, .job-listing, .career-item, article[class*='job']",
+        "title_selector": ".vacancy-title, .job-title, h3, h2",
+        "link_selector": "a[href]",
+    },
+    {
+        "name": "Tower Research Capital",
+        "ats": "custom",
+        "tier": "tier1",
+        "url": "https://www.tower-research.com/open-positions",
+        "job_container": ".position-row, tr.job-row, .opening-item, li[class*='position']",
+        "title_selector": "td.position-title, .job-title, a, h3",
+        "link_selector": "a[href]",
+    },
+    {
+        "name": "Millennium Management",
+        "ats": "custom",
+        "tier": "tier1",
+        "url": "https://www.mlp.com/careers/",
+        "job_container": ".job-listing, .vacancy-card, .position-item, [class*='career']",
+        "title_selector": ".job-title, .position-title, h3, h4",
+        "link_selector": "a[href]",
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -82,10 +146,13 @@ PLAYWRIGHT_TARGETS = [
 
 RELEVANT_PATTERNS = re.compile(
     r"(data\s+engineer|ml\s+engineer|machine\s+learning|quantitative|"
-    r"quant\s+researcher|quant\s+developer|platform\s+engineer|"
-    r"data\s+scientist|data\s+platform|data\s+infra|software\s+engineer|"
-    r"sre|reliability|devops|data\s+analyst|analytics\s+engineer|"
-    r"research\s+engineer|applied\s+scientist)",
+    r"quant\s+researcher|quant\s+developer|quant\s+analyst|quant\s+strat|"
+    r"platform\s+engineer|data\s+scientist|data\s+platform|data\s+infra|"
+    r"software\s+engineer|sre|reliability|devops|"
+    r"data\s+analyst|analytics\s+engineer|research\s+engineer|applied\s+scientist|"
+    r"systematic\s+researcher|trading\s+engineer|low\s+latency|"
+    r"financial\s+engineer|risk\s+engineer|execution\s+engineer|"
+    r"portfolio\s+analyst|algorithmic\s+trader|electronic\s+trading|strats)",
     re.IGNORECASE,
 )
 

@@ -32,6 +32,14 @@ COMPANIES = [
     {"name": "AQR Capital",          "ats": "playwright", "slug": "aqr",           "tier": 0},
     {"name": "D.E. Shaw",            "ats": "playwright", "slug": "deshaw",        "tier": 0},
     {"name": "Jump Trading",         "ats": "playwright", "slug": "jumptrading",   "tier": 0},
+    # Expanded quant/HFT/market-maker coverage
+    {"name": "Citadel Securities",   "ats": "playwright", "slug": "citadelsec",    "tier": 0},
+    {"name": "SIG",                  "ats": "playwright", "slug": "sig",           "tier": 0},
+    {"name": "IMC Trading",          "ats": "playwright", "slug": "imc",           "tier": 0},
+    {"name": "Bridgewater Associates","ats": "playwright", "slug": "bridgewater",  "tier": 0},
+    {"name": "Flow Traders",         "ats": "playwright", "slug": "flowtraders",   "tier": 0},
+    {"name": "Tower Research Capital","ats": "playwright", "slug": "towerresearch","tier": 0},
+    {"name": "Millennium Management","ats": "playwright", "slug": "millennium",    "tier": 0},
 
     # ═══════════════════════════════════════
     #  TIER 1 — Dream targets (every cycle)
@@ -44,6 +52,7 @@ COMPANIES = [
     {"name": "OpenAI",             "ats": "greenhouse", "slug": "openai",                "tier": 0},
     {"name": "Stripe",             "ats": "greenhouse", "slug": "stripe",                "tier": 0},
     {"name": "Databricks",         "ats": "greenhouse", "slug": "databricks",            "tier": 0},
+    {"name": "Point72",            "ats": "greenhouse", "slug": "point72",               "tier": 0},
     {"name": "Snowflake",          "ats": "greenhouse", "slug": "snowflakecomputing",    "tier": 1},
     {"name": "Palantir",           "ats": "greenhouse", "slug": "palantir",              "tier": 1},
     {"name": "Scale AI",           "ats": "greenhouse", "slug": "scaleai",               "tier": 1},
@@ -59,6 +68,10 @@ COMPANIES = [
     {"name": "Fivetran",           "ats": "greenhouse", "slug": "fivetran",              "tier": 1},
     {"name": "Confluent",          "ats": "greenhouse", "slug": "confluent",             "tier": 1},
     {"name": "Discord",            "ats": "greenhouse", "slug": "discord",               "tier": 1},
+    # Niche quant/finance firms on Greenhouse
+    {"name": "Optiver",            "ats": "greenhouse", "slug": "optiver",               "tier": 1},
+    {"name": "Virtu Financial",    "ats": "greenhouse", "slug": "virtu",                 "tier": 1},
+    {"name": "PIMCO",              "ats": "greenhouse", "slug": "pimco",                 "tier": 1},
 
     # ── Lever — Dream companies (Tier 1) ──
     {"name": "Netflix",            "ats": "lever",      "slug": "netflix",               "tier": 1},
@@ -185,6 +198,7 @@ COMPANIES = [
 
     # ── Dream finance/enterprise companies on Workday (Platinum — check every cycle) ──
     {"name": "Goldman Sachs",   "ats": "workday", "slug": "goldmansachs",  "wd_instance": "wd1", "wd_board": "GS",              "tier": 0},
+    {"name": "Morgan Stanley",  "ats": "workday", "slug": "morganstanley", "wd_instance": "wd5", "wd_board": "Careers",         "tier": 0},
     {"name": "JP Morgan Chase", "ats": "workday", "slug": "jpmc",          "wd_instance": "wd1", "wd_board": "JPMCCareerSite",  "tier": 1},
     {"name": "Fidelity",        "ats": "workday", "slug": "fidelity",      "wd_instance": "wd1", "wd_board": "fidelity-careers","tier": 1},
     {"name": "Citadel",         "ats": "workday", "slug": "citadel",       "wd_instance": "wd5", "wd_board": "Careers",         "tier": 0},
@@ -200,6 +214,8 @@ COMPANIES = [
     {"name": "Google",          "ats": "workday", "slug": "google",        "wd_instance": "wd5", "wd_board": "jobs",            "tier": 0},
 
     # ── Other dream companies on Workday (Tier 2) ──
+    {"name": "BlackRock",       "ats": "workday", "slug": "blackrock",     "wd_instance": "wd5", "wd_board": "Careers",         "tier": 1},
+    {"name": "Bank of America", "ats": "workday", "slug": "bankofamerica", "wd_instance": "wd5", "wd_board": "BofA_External",   "tier": 2},
     {"name": "Disney",          "ats": "workday", "slug": "disney",        "wd_instance": "wd5", "wd_board": "disneycareer",    "tier": 2},
     {"name": "Capital One",     "ats": "workday", "slug": "capitalone",    "wd_instance": "wd1", "wd_board": "Capital_One",     "tier": 2},
     {"name": "Amex",            "ats": "workday", "slug": "aexp",          "wd_instance": "wd5", "wd_board": "amex-careers",    "tier": 2},

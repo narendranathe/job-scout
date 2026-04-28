@@ -30,8 +30,21 @@ def test_playwright_targets_known_companies():
     from scrapers.playwright_scraper import PLAYWRIGHT_TARGETS
 
     names = {t["name"] for t in PLAYWRIGHT_TARGETS}
-    expected = {"Jane Street", "Two Sigma", "HRT", "D.E. Shaw", "AQR", "Jump Trading"}
-    assert expected == names
+    # Core 6 firms from initial launch — must always be present
+    core_firms = {"Jane Street", "Two Sigma", "HRT", "D.E. Shaw", "AQR", "Jump Trading"}
+    assert core_firms.issubset(names), f"Missing core firms: {core_firms - names}"
+
+
+def test_playwright_targets_expanded_quant_firms():
+    from scrapers.playwright_scraper import PLAYWRIGHT_TARGETS
+
+    names = {t["name"] for t in PLAYWRIGHT_TARGETS}
+    expanded = {
+        "Citadel Securities", "SIG", "IMC Trading",
+        "Bridgewater Associates", "Flow Traders",
+        "Tower Research Capital", "Millennium Management",
+    }
+    assert expanded.issubset(names), f"Missing expanded firms: {expanded - names}"
 
 
 def test_make_external_id_is_stable():
@@ -79,6 +92,20 @@ def test_relevant_patterns_match_quant():
     assert RELEVANT_PATTERNS.search("Quantitative Researcher")
     assert RELEVANT_PATTERNS.search("Quant Developer - C++")
     assert RELEVANT_PATTERNS.search("Research Engineer, Trading Systems")
+
+
+def test_relevant_patterns_match_niche_quant_roles():
+    from scrapers.playwright_scraper import RELEVANT_PATTERNS
+
+    assert RELEVANT_PATTERNS.search("Quant Analyst - Systematic Macro")
+    assert RELEVANT_PATTERNS.search("Systematic Researcher, Equities")
+    assert RELEVANT_PATTERNS.search("Trading Engineer - C++ Low Latency")
+    assert RELEVANT_PATTERNS.search("Low Latency Software Engineer")
+    assert RELEVANT_PATTERNS.search("Financial Engineer, Risk")
+    assert RELEVANT_PATTERNS.search("Electronic Trading Developer")
+    assert RELEVANT_PATTERNS.search("Quant Strat, FX")
+    assert RELEVANT_PATTERNS.search("Portfolio Analyst - Data Science")
+    assert RELEVANT_PATTERNS.search("Strats Developer, Equities")
 
 
 def test_relevant_patterns_no_match_non_technical():
