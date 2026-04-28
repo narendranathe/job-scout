@@ -213,6 +213,9 @@ function isSeniorFn(title) {
   return /senior|sr\b|staff\b|lead\b|principal|distinguished/i.test(title||"");
 }
 
+const isPlatinum = (job) => job?.tier === 'platinum';
+const isHighComp = (job) => (job?.salary_max >= 220000) || isPlatinum(job);
+
 /* ═══ Ranked search — alias-aware, with dream-company + role + seniority tiebreakers ═══
  *
  * Search quality tiers (primary sort):
@@ -460,8 +463,10 @@ export default function App() {
   const [selATS,setSelATS]         = useState([]);
   const [selSalary,setSelSalary]   = useState("All");
   const [selPosted,setSelPosted]   = useState("All");
-  const [remoteOnly,setRemoteOnly] = useState(false);
-  const [h1bOnly,setH1bOnly]       = useState(false);
+  const [remoteOnly,setRemoteOnly]       = useState(false);
+  const [h1bOnly,setH1bOnly]             = useState(false);
+  const [platinumOnly,setPlatinumOnly]   = useState(false);
+  const [highCompOnly,setHighCompOnly]   = useState(false);
   const [showFilters,setShowFilters] = useState(false);
   const [so,sSo]           = useState("relevance");
   const [cq,sCq]           = useState("");
@@ -618,6 +623,8 @@ export default function App() {
     if (selATS.length)   j = j.filter(x=>selATS.includes(x.ats));
     if (remoteOnly)      j = j.filter(x=>x._loc.isRemote||x.is_remote);
     if (h1bOnly)         j = j.filter(x=>x.sponsorship||likelySponsor(x));
+    if (platinumOnly)    j = j.filter(x=>isPlatinum(x));
+    if (highCompOnly)    j = j.filter(x=>isHighComp(x));
     if (selSalary!=="All") {
       const mins={"$100K+":1e5,"$130K+":13e4,"$160K+":16e4,"$200K+":2e5,"$250K+":25e4};
       j = j.filter(x=>(x.salary_max||0)>=(mins[selSalary]||0));
@@ -651,6 +658,9 @@ export default function App() {
     } else {
       // Default browse: salary/date as selected, or relevance with dream-company boost
       j.sort((a,b) => {
+        // Platinum always sorts first within any sort mode
+        if (isPlatinum(a) && !isPlatinum(b)) return -1;
+        if (!isPlatinum(a) && isPlatinum(b)) return 1;
         if (so==="salary") return (b.salary_max||0)-(a.salary_max||0);
         if (so==="date")   return new Date(b.posted_at||0)-new Date(a.posted_at||0);
         // Relevance sort: dream company gets +0.06 invisible boost so they surface first
@@ -665,13 +675,13 @@ export default function App() {
       });
     }
     return j;
-  }, [enriched,selRoles,selExp,selStates,selCities,selATS,remoteOnly,h1bOnly,selSalary,selPosted,q,so]);
+  }, [enriched,selRoles,selExp,selStates,selCities,selATS,remoteOnly,h1bOnly,platinumOnly,highCompOnly,selSalary,selPosted,q,so]);
 
   const activeN = [selRoles,selStates,selCities,selATS,selExp].reduce((n,a)=>n+a.length,0)
-    +(remoteOnly?1:0)+(h1bOnly?1:0)+(selSalary!=="All"?1:0)+(selPosted!=="All"?1:0);
+    +(remoteOnly?1:0)+(h1bOnly?1:0)+(platinumOnly?1:0)+(highCompOnly?1:0)+(selSalary!=="All"?1:0)+(selPosted!=="All"?1:0);
   const clearAll = () => {
     setSelRoles([]);setSelExp([]);setSelStates([]);setSelCities([]);
-    setSelATS([]);setRemoteOnly(false);setH1bOnly(false);
+    setSelATS([]);setRemoteOnly(false);setH1bOnly(false);setPlatinumOnly(false);setHighCompOnly(false);
     setSelSalary("All");setSelPosted("All");sQ("");
   };
 
@@ -794,6 +804,14 @@ export default function App() {
               style={{padding:"10px 14px",borderRadius:8,border:`1.5px solid ${h1bOnly?t.vi:t.bd}`,background:h1bOnly?`${t.vi}12`:"transparent",color:h1bOnly?t.vi:t.txM,fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
               🛂 H1B
             </button>
+            <button onClick={()=>setPlatinumOnly(r=>!r)}
+              style={{padding:"10px 14px",borderRadius:8,border:`1.5px solid ${platinumOnly?"#b8860b":t.bd}`,background:platinumOnly?"#b8860b18":"transparent",color:platinumOnly?"#b8860b":t.txM,fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
+              ✦ Platinum
+            </button>
+            <button onClick={()=>setHighCompOnly(r=>!r)}
+              style={{padding:"10px 14px",borderRadius:8,border:`1.5px solid ${highCompOnly?t.ok:t.bd}`,background:highCompOnly?`${t.ok}12`:"transparent",color:highCompOnly?t.ok:t.txM,fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
+              💰 $220K+
+            </button>
             <select value={selPosted} onChange={e=>setSelPosted(e.target.value)} style={selS}>
               <option value="All">📅 Any Time</option><option value="24h">Last 24h</option>
               <option value="3d">Last 3 days</option><option value="7d">Last 7 days</option>
@@ -853,8 +871,23 @@ export default function App() {
                           <Pill ch={catLbl} c={t.bl} t={t}/>
                           <Pill ch={`${ats.i} ${ats.l}`} c={ats.c} t={t}/>
                         </div>
-                        <div className="job-meta" style={{display:"flex",gap:12,fontSize:14,color:t.txS,flexWrap:"wrap"}}>
+                        <div className="job-meta" style={{display:"flex",gap:12,fontSize:14,color:t.txS,flexWrap:"wrap",alignItems:"center"}}>
                           <span style={{fontWeight:700}}>{j.company}</span>
+                          {isPlatinum(j) && (
+                            <span style={{
+                              background:'linear-gradient(135deg, #b8860b, #ffd700)',
+                              color:'#1a1a1a',
+                              fontSize:'10px',
+                              fontWeight:'700',
+                              padding:'2px 6px',
+                              borderRadius:'4px',
+                              marginLeft:'6px',
+                              letterSpacing:'0.5px',
+                              textTransform:'uppercase',
+                            }}>
+                              PLATINUM
+                            </span>
+                          )}
                           <span>{j._loc.display||"—"}</span>
                           {j._loc.state && <span style={{color:t.bl,fontWeight:600}}>📍 {j._loc.state}</span>}
                           {j._loc.isRemote && <span style={{color:t.ok,fontWeight:700}}>🏠 Remote</span>}
