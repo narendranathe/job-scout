@@ -244,6 +244,12 @@ RELEVANT_TITLE_KEYWORDS = [
     "platform engineer", "infrastructure engineer",
     "devops", "sre", "site reliability",
     "big data", "data architect", "data ops",
+    # Quant / HFT / systematic finance roles
+    "quantitative researcher", "quant researcher", "quant developer",
+    "quant analyst", "quant engineer", "quant strat", "quant strategist",
+    "trading engineer", "systematic researcher", "research engineer",
+    "financial engineer", "algorithmic trader", "electronic trading",
+    "low latency engineer", "execution engineer",
 ]
 
 EXCLUDE_TITLE_KEYWORDS = [

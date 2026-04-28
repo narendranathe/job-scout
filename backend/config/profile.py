@@ -27,12 +27,18 @@ PROFILE = {
         "pytorch", "tensorflow", "scikit-learn",
         "tableau", "powerbi", "looker",
         "flink", "kinesis", "data mesh",
+        # Quant/HFT skills — relevant for Jane Street, Two Sigma, Citadel etc.
+        "numpy", "pandas", "scipy", "quantitative", "statistical modeling",
+        "backtesting", "systematic", "low latency", "c++", "java",
+        "distributed systems", "high performance", "real-time",
+        "financial modeling", "time series", "algorithm",
     ],
 
     # ── Preferred locations (10% of score) ─────────────────────────────
-    # Remote always scores — TX cities are your preference
+    # Remote + TX cities are primary. NYC/Chicago added for quant firms.
     "preferred_locations": [
         "remote", "dallas", "tx", "texas", "austin", "plano",
+        "new york", "nyc", "new york city", "chicago",
     ],
 
     # ── Experience level keywords (10% of score) ────────────────────────
@@ -61,10 +67,14 @@ PROFILE = {
     "_dream_companies_reference": [
         "Anthropic", "OpenAI", "Stripe", "Databricks", "Snowflake",
         "Goldman Sachs", "Walmart", "Apple", "NVIDIA", "Google",
-        "Microsoft", "Disney", "Citadel", "AQR", "HRT",
+        "Microsoft", "Disney", "Citadel", "Citadel Securities", "AQR Capital",
+        "Hudson River Trading", "Jane Street", "Two Sigma", "Jump Trading",
+        "SIG", "IMC Trading", "Bridgewater Associates", "Flow Traders",
+        "Tower Research Capital", "Millennium Management",
+        "Point72", "Optiver", "Virtu Financial", "PIMCO",
         "Netflix", "Meta", "Spotify", "Fidelity", "Uber",
-        "Bloomberg", "Grubhub", "DoorDash", "Amazon", "Salesforce",
-        "JP Morgan Chase", "Two Sigma",
+        "Bloomberg", "Morgan Stanley", "BlackRock", "DoorDash", "Amazon",
+        "Salesforce", "JP Morgan Chase",
     ],
 
     # ── Dream role keywords ──────────────────────────────────────────────
@@ -74,5 +84,9 @@ PROFILE = {
         "ml engineer", "ai engineer", "analytics engineer", "analytical engineer",
         "data platform engineer", "staff data engineer", "principal data engineer",
         "lead data engineer",
+        # Quant/HFT roles
+        "quantitative researcher", "quant researcher", "quant developer",
+        "quant analyst", "trading engineer", "quant engineer",
+        "research engineer", "systematic researcher",
     ],
 }

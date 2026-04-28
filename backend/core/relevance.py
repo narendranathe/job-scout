@@ -106,8 +106,16 @@ class RelevanceEngine:
             title_score = 0.14
         elif any(kw in title for kw in ["analytics engineer", "data scientist"]):
             title_score = 0.12
+        elif any(kw in title for kw in [
+            "quantitative researcher", "quant researcher", "quant developer",
+            "quant analyst", "quant engineer", "quant strat", "trading engineer",
+            "systematic researcher", "research engineer", "financial engineer",
+        ]):
+            title_score = 0.13  # quant research/engineering — highly relevant
         elif any(kw in title for kw in ["platform engineer", "backend engineer"]):
             title_score = 0.08
+        elif any(kw in title for kw in ["quantitative", "quant", "algorithmic", "systematic"]):
+            title_score = 0.07  # broad quant signal
         elif "data" in title or "engineer" in title:
             title_score = 0.05
         score += title_score
