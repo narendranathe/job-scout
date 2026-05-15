@@ -13,6 +13,8 @@ import logging
 import re
 from typing import Generator
 
+from scrapers.utils import parse_posted_date
+
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -326,6 +328,15 @@ def scrape_playwright_company(target: dict) -> list[dict]:
                 job_url = href or target["url"]
                 ext_id = _make_external_id(target["name"], title, job_url)
 
+                # Try to lift a posted date from the card's visible text.
+                # Custom portals rarely surface a structured field, but many
+                # render "N days ago" or "2026-04-12" next to the title.
+                try:
+                    card_text = container.inner_text() or ""
+                except Exception:
+                    card_text = ""
+                posted_at = parse_posted_date(card_text)
+
                 jobs.append({
                     "external_id": ext_id,
                     "title": title,
@@ -337,7 +348,7 @@ def scrape_playwright_company(target: dict) -> list[dict]:
                     "ats": target["ats"],
                     "tier": target["tier"],
                     "is_remote": 0,
-                    "posted_at": None,
+                    "posted_at": posted_at,
                     "salary_min": 0,
                     "salary_max": 0,
                 })

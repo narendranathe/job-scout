@@ -597,13 +597,33 @@ export default function App() {
   const stats   = data?.stats  || {};
   const dist    = data?.distributions || {};
 
-  // Enrich jobs with derived fields
-  const enriched = useMemo(() => allJobs.map(j => ({
-    ...j,
-    _loc: normLoc(j.location, j.is_remote),
-    _cat: catOf(j.title),
-    _exp: expOf(j.title),
-  })), [allJobs]);
+  // Enrich jobs with derived fields. `_age_days` is computed from
+  // effective_date (posted_at || first_seen_at, from the backend) and used by
+  // the date filter AND the display-time relevance decay. Null when neither
+  // field is set — those jobs are treated as age-unknown and slip through the
+  // 30-day cap so we don't accidentally hide fresh ATS posts that lack dates.
+  const enriched = useMemo(() => allJobs.map(j => {
+    const eff = j.effective_date || j.posted_at || j.first_seen_at || "";
+    let ageDays = null;
+    if (eff) {
+      const t = new Date(eff).getTime();
+      if (!Number.isNaN(t)) {
+        ageDays = Math.max(0, (Date.now() - t) / 864e5);
+      }
+    }
+    // Display-only relevance: linear decay past day 14, floor at 0.5×.
+    // Original relevance_score is preserved for tracker/applications usage.
+    const base = j.relevance_score || 0;
+    const decay = ageDays == null ? 1 : Math.max(0.5, 1 - Math.max(0, ageDays - 14) / 60);
+    return {
+      ...j,
+      _loc: normLoc(j.location, j.is_remote),
+      _cat: catOf(j.title),
+      _exp: expOf(j.title),
+      _age_days: ageDays,
+      _display_score: base * decay,
+    };
+  }), [allJobs]);
 
   // Build company → applications map for "already applied here" intelligence
   const companyApps = useMemo(() => {
@@ -654,8 +674,15 @@ export default function App() {
     }
     if (selPosted!=="All") {
       const d={"24h":1,"3d":3,"7d":7,"14d":14,"30d":30}[selPosted]||9999;
-      j = j.filter(x=>x.posted_at&&(Date.now()-new Date(x.posted_at).getTime())<d*864e5);
+      // Age uses effective_date (posted_at || first_seen_at). Jobs with no
+      // date signal at all (_age_days === null) are excluded from explicit
+      // recency filters — we can't honestly claim they're under 7 days old.
+      j = j.filter(x => x._age_days != null && x._age_days < d);
     }
+    // Hard recency cap: hide jobs older than 30 days unless they're platinum
+    // tier (dream companies — keep them visible even if stale). Jobs with no
+    // effective_date pass through (we don't know they're old).
+    j = j.filter(x => x._age_days == null || x._age_days <= 30 || isPlatinum(x));
 
     if (q.trim()) {
       const ql = q.trim().toLowerCase();
@@ -676,7 +703,7 @@ export default function App() {
         if (bTarget !== aTarget) return bTarget - aTarget;
         const aSr = isSeniorFn(a.title)?1:0, bSr = isSeniorFn(b.title)?1:0;
         if (bSr !== aSr) return bSr - aSr;
-        return (b.relevance_score||0)-(a.relevance_score||0);
+        return (b._display_score||0)-(a._display_score||0);
       });
     } else {
       // Default browse: salary/date as selected, or relevance with dream-company boost
@@ -685,13 +712,14 @@ export default function App() {
         if (isPlatinum(a) && !isPlatinum(b)) return -1;
         if (!isPlatinum(a) && isPlatinum(b)) return 1;
         if (so==="salary") return (b.salary_max||0)-(a.salary_max||0);
-        if (so==="date")   return new Date(b.posted_at||0)-new Date(a.posted_at||0);
+        if (so==="date")   return new Date(b.effective_date||b.posted_at||0)-new Date(a.effective_date||a.posted_at||0);
         // Relevance sort: dream company gets +0.06 invisible boost so they surface first
-        // among jobs with nearly identical scores
-        const aScore = (a.relevance_score||0) + (isDreamCo(a.company)?0.06:0)
+        // among jobs with nearly identical scores. Uses the decayed display score
+        // so stale jobs sink even when nominally scored identically to fresh ones.
+        const aScore = (a._display_score||0) + (isDreamCo(a.company)?0.06:0)
                                                + (isTargetRoleFn(a.title)?0.03:0)
                                                + (isSeniorFn(a.title)?0.01:0);
-        const bScore = (b.relevance_score||0) + (isDreamCo(b.company)?0.06:0)
+        const bScore = (b._display_score||0) + (isDreamCo(b.company)?0.06:0)
                                                + (isTargetRoleFn(b.title)?0.03:0)
                                                + (isSeniorFn(b.title)?0.01:0);
         // Within a 0.05-wide score band, applied jobs drop to the bottom so

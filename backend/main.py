@@ -29,6 +29,7 @@ from config.profile import PROFILE
 from core.relevance import RelevanceEngine
 from storage.db import (
     init_db, get_conn, upsert_job, mark_stale_jobs,
+    increment_cycles_missing,
     start_run, finish_run, get_stats,
 )
 from scrapers.utils import scrape_with_retry, parse_salary
@@ -104,6 +105,15 @@ def run_scrape(db_path: str, mode: str = "full", delay: float = 0.3) -> dict:
         "companies": 0, "found": 0, "new": 0,
         "updated": 0, "errors": 0, "skipped": 0, "relevant": 0,
     }
+    # external_ids the scraper actually pulled THIS cycle, regardless of whether
+    # they passed our score filter. Drives cycle-absence inference
+    # (see increment_cycles_missing). Filtering would defeat the purpose:
+    # a still-listed job that dipped below threshold shouldn't be marked missing.
+    seen_external_ids: set[str] = set()
+    # Companies whose scrapers actually ran. Tier 2/3 only run every Nth cycle
+    # (see config.companies.get_batch), so jobs from other companies must be
+    # excluded from the absence penalty.
+    scraped_companies: set[str] = set()
 
     log.info("═══ %s cycle %d — %d companies of %d total ═══",
              mode.upper(), cycle, len(companies), TOTAL_COMPANIES)
@@ -116,6 +126,7 @@ def run_scrape(db_path: str, mode: str = "full", delay: float = 0.3) -> dict:
             continue
 
         stats["companies"] += 1
+        scraped_companies.add(company["name"])
         co_relevant = 0
 
         jobs_from_co = scrape_with_retry(
@@ -124,6 +135,9 @@ def run_scrape(db_path: str, mode: str = "full", delay: float = 0.3) -> dict:
         )
         for raw_job in jobs_from_co:
             stats["found"] += 1
+            ext_id = raw_job.get("external_id")
+            if ext_id:
+                seen_external_ids.add(ext_id)
             if not engine.is_relevant_title(raw_job.get("title", "")):
                 stats["skipped"] += 1
                 continue
@@ -167,10 +181,20 @@ def run_scrape(db_path: str, mode: str = "full", delay: float = 0.3) -> dict:
     conn.commit()
 
     # Playwright scrapers (quant/HFT firms with custom portals)
+    playwright_ran = False
     try:
-        from scrapers.playwright_scraper import scrape_all_playwright
+        from scrapers.playwright_scraper import scrape_all_playwright, PLAYWRIGHT_TARGETS
         pw_jobs = scrape_all_playwright()
+        playwright_ran = True
+        # Playwright targets aren't gated by tier rotation — they all run when
+        # playwright is available, so include their company names in the
+        # absence-eligibility set even if pw_jobs is empty.
+        for t in PLAYWRIGHT_TARGETS:
+            scraped_companies.add(t.get("name", ""))
         for raw_job in pw_jobs:
+            ext_id = raw_job.get("external_id")
+            if ext_id:
+                seen_external_ids.add(ext_id)
             # Mirror the title filter from the classical ATS path so Playwright
             # jobs with title-only descriptions can't pass on tier boost alone.
             if not engine.is_relevant_title(raw_job.get("title", "")):
@@ -196,6 +220,19 @@ def run_scrape(db_path: str, mode: str = "full", delay: float = 0.3) -> dict:
         log.info("Playwright: %d jobs processed", len(pw_jobs))
     except Exception as e:
         log.warning("Playwright scrape skipped (playwright may not be installed): %s", e)
+
+    # Cycle-absence inference — runs AFTER all scrapers so seen_external_ids
+    # is complete. If playwright didn't run, exclude its targets from eligibility
+    # so we don't penalize jobs the scraper couldn't possibly observe this cycle.
+    if not playwright_ran:
+        try:
+            from scrapers.playwright_scraper import PLAYWRIGHT_TARGETS
+            for t in PLAYWRIGHT_TARGETS:
+                scraped_companies.discard(t.get("name", ""))
+        except ImportError:
+            pass
+    increment_cycles_missing(conn, seen_external_ids, scraped_companies)
+    conn.commit()
 
     finish_run(conn, run_id, stats)
     conn.close()

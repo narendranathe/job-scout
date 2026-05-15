@@ -5,8 +5,77 @@ Shared utilities for all ATS scrapers.
 import re
 import time
 import logging
+from datetime import datetime, timezone, timedelta
 
 log = logging.getLogger(__name__)
+
+# Date-extraction patterns. Ordered by specificity so an absolute date
+# in the same blob beats a relative offset (e.g. "Posted 2025-04-15 · 99 days ago").
+_DATE_ISO_RE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+_DATE_US_RE = re.compile(r"(\d{1,2})/(\d{1,2})/(\d{4})")
+_DATE_DAYS_AGO_RE = re.compile(r"(\d+)\s+days?\s+ago", re.IGNORECASE)
+_DATE_HOURS_AGO_RE = re.compile(r"(\d+)\s+hours?\s+ago", re.IGNORECASE)
+_DATE_TODAY_RE = re.compile(r"\b(posted\s+today|just\s+posted|today)\b", re.IGNORECASE)
+
+
+def parse_posted_date(text: str) -> str | None:
+    """Extract a posted date from raw ATS/portal text → ISO-8601 UTC string.
+
+    Handles four formats commonly seen across ATS pages:
+        • ISO date     "2025-04-15"
+        • US date      "04/15/2025"   (MM/DD/YYYY — Workday convention)
+        • Relative     "5 days ago", "6 hours ago"
+        • Same-day     "Posted today", "Just posted"
+
+    Returns None when no signal is found (uniform across callers). Relative
+    offsets are anchored to `datetime.now(UTC)` at call time. Absolute dates
+    win over relative offsets when both appear in the same blob. Bounds-checked
+    on the relative offsets to prevent regex matches against unrelated numbers
+    (e.g. "10000 days ago" from a salary string) producing a 1970 date.
+    """
+    if not text:
+        return None
+
+    m = _DATE_ISO_RE.search(text)
+    if m:
+        try:
+            return datetime.strptime(m.group(1), "%Y-%m-%d").replace(
+                tzinfo=timezone.utc
+            ).isoformat()
+        except ValueError:
+            pass
+
+    m = _DATE_US_RE.search(text)
+    if m:
+        try:
+            return datetime.strptime(
+                f"{m.group(1)}/{m.group(2)}/{m.group(3)}", "%m/%d/%Y"
+            ).replace(tzinfo=timezone.utc).isoformat()
+        except ValueError:
+            pass
+
+    m = _DATE_DAYS_AGO_RE.search(text)
+    if m:
+        try:
+            days = int(m.group(1))
+            if 0 <= days <= 3650:
+                return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        except ValueError:
+            pass
+
+    m = _DATE_HOURS_AGO_RE.search(text)
+    if m:
+        try:
+            hours = int(m.group(1))
+            if 0 <= hours <= 24 * 365:
+                return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        except ValueError:
+            pass
+
+    if _DATE_TODAY_RE.search(text):
+        return datetime.now(timezone.utc).isoformat()
+
+    return None
 
 REMOTE_KEYWORDS = [
     "remote", "anywhere", "distributed", "work from home",
