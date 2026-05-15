@@ -24,6 +24,7 @@ import sys
 import json
 import time
 import logging
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config.companies import COMPANIES, get_batch, TOTAL_COMPANIES
 from config.profile import PROFILE
 from core.relevance import RelevanceEngine
+from core.scrape_status import broker
 from storage.db import (
     init_db, get_conn, upsert_job, mark_stale_jobs,
     start_run, finish_run, get_stats,
@@ -201,60 +203,82 @@ def run_scrape(mode: str = "fast") -> dict:
         "updated": 0,  "errors": 0, "skipped": 0, "relevant": 0,
     }
 
-    for company in companies:
-        scraper = SCRAPERS.get(company.get("ats", ""))
-        if not scraper:
-            stats["errors"] += 1
-            continue
+    # If the caller (POST /api/scrape) has already armed the broker via
+    # try_start(), skip the re-start so we don't reset started_at and clobber
+    # the snapshot the response already returned. Direct callers (main.py CLI,
+    # any future background cron) hit the True branch.
+    if not broker.is_running():
+        broker.start(mode, len(companies))
+    try:
+        for company in companies:
+            scraper = SCRAPERS.get(company.get("ats", ""))
+            if not scraper:
+                stats["errors"] += 1
+                broker.tick(company.get("name", "?"), error_delta=1)
+                continue
 
-        try:
-            stats["companies"] += 1
-            for raw_job in scraper.scrape(company):
-                stats["found"] += 1
+            company_found = 0
+            company_new = 0
+            try:
+                stats["companies"] += 1
+                for raw_job in scraper.scrape(company):
+                    stats["found"] += 1
+                    company_found += 1
 
-                if not engine.is_relevant_title(raw_job.get("title", "")):
-                    stats["skipped"] += 1
-                    continue
+                    if not engine.is_relevant_title(raw_job.get("title", "")):
+                        stats["skipped"] += 1
+                        continue
 
-                score, matched = engine.score(raw_job)
-                raw_job["relevance_score"] = score
-                raw_job["matched_skills"]  = matched
-                raw_job["sponsorship"]     = _detect_sponsorship(raw_job)
+                    score, matched = engine.score(raw_job)
+                    raw_job["relevance_score"] = score
+                    raw_job["matched_skills"]  = matched
+                    raw_job["sponsorship"]     = _detect_sponsorship(raw_job)
 
-                # Skip jobs below the minimum score threshold — keeps DB clean
-                # and prevents low-signal roles from appearing in the dashboard.
-                # Threshold set in profile.py → min_score_threshold (default 0.30)
-                min_score = PROFILE.get("min_score_threshold", 0.30)
-                if score < min_score:
-                    stats["skipped"] += 1
-                    continue
+                    # Skip jobs below the minimum score threshold — keeps DB clean
+                    # and prevents low-signal roles from appearing in the dashboard.
+                    # Threshold set in profile.py → min_score_threshold (default 0.30)
+                    min_score = PROFILE.get("min_score_threshold", 0.30)
+                    if score < min_score:
+                        stats["skipped"] += 1
+                        continue
 
-                result = upsert_job(conn, raw_job)
-                if result == "new":
-                    stats["new"] += 1
-                    # Fire dream-job alert for new matches
-                    _maybe_alert(raw_job)
-                elif result == "updated":
-                    stats["updated"] += 1
-                stats["relevant"] += 1
+                    result = upsert_job(conn, raw_job)
+                    if result == "new":
+                        stats["new"] += 1
+                        company_new += 1
+                        # Fire dream-job alert for new matches
+                        _maybe_alert(raw_job)
+                    elif result == "updated":
+                        stats["updated"] += 1
+                    stats["relevant"] += 1
 
-            conn.commit()
-            time.sleep(SCRAPE_DELAY)
-        except Exception as e:
-            log.error("✗ %s — %s", company["name"], e)
-            stats["errors"] += 1
+                conn.commit()
+                broker.tick(company["name"], found_delta=company_found, new_delta=company_new)
+                time.sleep(SCRAPE_DELAY)
+            except Exception as e:
+                log.error("✗ %s — %s", company["name"], e)
+                stats["errors"] += 1
+                broker.tick(company.get("name", "?"),
+                            found_delta=company_found,
+                            new_delta=company_new,
+                            error_delta=1)
 
-    mark_stale_jobs(conn, hours=96)
-    conn.commit()
-    finish_run(conn, run_id, stats)
-    conn.close()
+        mark_stale_jobs(conn, hours=96)
+        conn.commit()
+        finish_run(conn, run_id, stats)
+        conn.close()
 
-    log.info(
-        "═══ %s cycle %d — companies=%d found=%d relevant=%d new=%d errors=%d ═══",
-        mode.upper(), cycle, stats["companies"], stats["found"],
-        stats["relevant"], stats["new"], stats["errors"],
-    )
-    return stats
+        log.info(
+            "═══ %s cycle %d — companies=%d found=%d relevant=%d new=%d errors=%d ═══",
+            mode.upper(), cycle, stats["companies"], stats["found"],
+            stats["relevant"], stats["new"], stats["errors"],
+        )
+        return stats
+    finally:
+        # Always flip the broker out of is_running, even if the loop bails on
+        # an unhandled exception — otherwise the 10-min watchdog would have to
+        # eventually rescue it.
+        broker.finish(stats)
 
 
 def _maybe_alert(job: dict):
@@ -313,30 +337,94 @@ def api_stats():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/scrape", methods=["POST", "OPTIONS"])
-def api_trigger_scrape():
-    """Trigger an immediate full scrape (synchronous — GitHub Actions is the scheduler)."""
-    if request.method == "OPTIONS":
-        return "", 204
+def _count_fast_companies() -> int:
+    """Number of companies in 'fast' mode — Tier 0/1. Computed here so we can
+    pre-arm the broker with the real total inside the request handler, before
+    the worker thread starts. Keeps the snapshot returned by POST /api/scrape
+    immediately useful for the dashboard."""
+    return sum(1 for c in COMPANIES if c.get("tier", 3) in (0, 1))
 
-    if API_SECRET:
-        token = request.headers.get("Authorization", "").replace("Bearer ", "")
-        if token != API_SECRET:
-            return jsonify({"error": "unauthorized"}), 401
 
-    if state.is_scraping:
-        return jsonify({"status": "already_scraping", "message": "Scrape already running"}), 409
+def _run_scrape_async(mode: str = "fast") -> None:
+    """Background runner: executes a scrape, records cycle stats, rebuilds cache.
 
+    broker.finish() is guaranteed by run_scrape()'s own try/finally. We mirror
+    that pattern here so state.is_scraping is always cleared even on
+    unhandled-exception paths.
+    """
     state.is_scraping = True
     t0 = time.time()
     try:
-        stats = run_scrape("fast", delay=0.3)
+        stats = run_scrape(mode)
         state.record_cycle(time.time() - t0, stats)
         build_cache()
-        return jsonify({"ok": True, "stats": stats}), 200
     except Exception as e:
+        log.exception("Async scrape failed")
         state.record_cycle(0, {}, str(e))
-        return jsonify({"error": str(e)}), 500
+    finally:
+        # record_cycle() already clears is_scraping; keep this for the
+        # exception-before-record_cycle window.
+        state.is_scraping = False
+
+
+def _check_api_secret() -> bool:
+    """Returns True if the request is authorized (or no secret is configured)."""
+    if not API_SECRET:
+        return True
+    token = request.headers.get("Authorization", "").replace("Bearer ", "")
+    return token == API_SECRET
+
+
+@app.route("/api/scrape", methods=["POST", "OPTIONS"])
+def api_trigger_scrape():
+    """Trigger an immediate scrape in a background daemon thread.
+
+    Returns 202 with a status snapshot so the dashboard can poll
+    /api/scrape/status for live progress. A 409 is returned if a scrape is
+    already in flight (per the broker's 10-min watchdog).
+    """
+    if request.method == "OPTIONS":
+        return "", 204
+
+    if not _check_api_secret():
+        return jsonify({"error": "unauthorized"}), 401
+
+    # Atomic check-and-arm: closes the race where two concurrent POSTs both
+    # pass is_running() and spawn two scrape threads. The broker is armed
+    # synchronously before we return 202, so the embedded snapshot already
+    # shows is_running=True — no false "scrape complete" on the first poll.
+    if not broker.try_start("fast", _count_fast_companies()):
+        return jsonify({
+            "started":  False,
+            "reason":   "scrape_in_progress",
+            "snapshot": broker.snapshot(),
+        }), 409
+
+    threading.Thread(
+        target=_run_scrape_async,
+        args=("fast",),
+        daemon=True,
+        name="scrape-worker",
+    ).start()
+
+    return jsonify({
+        "started":  True,
+        "snapshot": broker.snapshot(),
+    }), 202
+
+
+@app.route("/api/scrape/status", methods=["GET"])
+def api_scrape_status():
+    """Live progress snapshot for the in-flight scrape (or last finished run).
+
+    Auth-gated symmetrically with POST /api/scrape: if API_SECRET is set, a
+    matching Bearer token is required. This prevents the snapshot leaking
+    cadence/company-name info to anonymous pollers in deployments that have
+    locked down the trigger.
+    """
+    if not _check_api_secret():
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify(broker.snapshot()), 200, {"Access-Control-Allow-Origin": "*"}
 
 
 # ─── Profile & Resume endpoints ────────────────────────────────────

@@ -493,27 +493,68 @@ export default function App() {
   const [applications, setApplications] = useState([]);
   const [appLoading, setAppLoading] = useState(false);
 
-  // Manual scrape trigger
-  const [scraping,setScraping]   = useState(false);
-  const [scrapeMsg,setScrapeMsg] = useState(null);
+  // Manual scrape trigger + live progress polling (#19).
+  // `scraping` reflects "we should keep polling the status endpoint" — set
+  // when the POST returns 202 or 409, and cleared once snapshot.is_running
+  // flips false. `scrapeProgress` is the latest snapshot from /api/scrape/status.
+  const [scraping,setScraping]         = useState(false);
+  const [scrapeMsg,setScrapeMsg]       = useState(null);
+  const [scrapeProgress,setScrapeProgress] = useState(null);
+
+  useEffect(() => {
+    if (!scraping || !RENDER_API) return;
+    let cancelled = false;
+    const tick = async () => {
+      // Skip polling while the tab is in the background — saves ~40 req/min
+      // per backgrounded tab on a free-tier Render instance.
+      if (typeof document !== "undefined" && document.hidden) return;
+      try {
+        const r = await fetch(`${RENDER_API}/api/scrape/status`,
+                              { signal: AbortSignal.timeout(5000) });
+        if (!r.ok) return;
+        const snap = await r.json();
+        if (cancelled) return;
+        setScrapeProgress(snap);
+        if (snap && snap.is_running === false) {
+          setScraping(false);
+          const s = snap.final_stats || {};
+          const totals = `companies=${s.companies ?? snap.companies_done ?? "?"} · `
+                       + `found=${s.found ?? snap.found ?? 0} · `
+                       + `new=${s.new ?? snap.new ?? 0}`;
+          setScrapeMsg(`✅ Scrape complete — ${totals}`);
+        }
+      } catch (_e) { /* transient — keep polling */ }
+    };
+    tick();
+    const id = setInterval(tick, 1500);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [scraping]);
 
   const triggerScrape = async () => {
     if (!RENDER_API) {
       setScrapeMsg("⚠️ No Render API configured. Set VITE_RENDER_URL in your .env file.");
       return;
     }
-    setScraping(true); setScrapeMsg(null);
+    setScrapeMsg(null);
     try {
       const resp = await fetch(`${RENDER_API}/api/scrape`, {
         method:"POST", headers:{"Content-Type":"application/json"},
         signal: AbortSignal.timeout(12000),
       });
-      const d = await resp.json();
-      if (resp.ok) setScrapeMsg("✅ Scrape triggered! New jobs will appear in ~2 minutes.");
-      else if (resp.status === 409) setScrapeMsg("⏳ Already scraping — please wait.");
-      else setScrapeMsg(`❌ Error: ${d.error || resp.status}`);
-    } catch(e) { setScrapeMsg(`❌ Could not reach Render: ${e.message}`); }
-    finally { setScraping(false); }
+      // 202 (new run) and 409 (already running) both transition us into the
+      // polling state — the snapshot endpoint is the single source of truth.
+      if (resp.status === 202 || resp.status === 409) {
+        const d = await resp.json().catch(() => ({}));
+        if (d && d.snapshot) setScrapeProgress(d.snapshot);
+        setScraping(true);
+        if (resp.status === 202) setScrapeMsg("🚀 Scrape started — live progress below.");
+        return;
+      }
+      const d = await resp.json().catch(() => ({}));
+      setScrapeMsg(`❌ Error: ${d.error || resp.status}`);
+    } catch(e) {
+      setScrapeMsg(`❌ Could not reach Render: ${e.message}`);
+    }
   };
 
   const fetchApplications = useCallback(async () => {
@@ -1756,8 +1797,18 @@ export default function App() {
                       fontFamily:"inherit",transition:"all .15s"}}>
                     {scraping?"⏳ Scraping...":"▶ Run Scrape Now"}
                   </button>
+                  {scraping && scrapeProgress && scrapeProgress.is_running && (
+                    <div style={{marginTop:10,fontSize:13,color:t.txS,fontWeight:500,lineHeight:1.5}}>
+                      Scraping: <strong style={{color:t.tx}}>{scrapeProgress.current_company || "starting…"}</strong>
+                      {" • "}{scrapeProgress.companies_done}/{scrapeProgress.companies_total} companies
+                      {" • "}{scrapeProgress.found} jobs found
+                      {scrapeProgress.new>0 && <> · <span style={{color:t.ok}}>{scrapeProgress.new} new</span></>}
+                      {scrapeProgress.eta_seconds!=null && scrapeProgress.eta_seconds>0 &&
+                        <> · ETA {Math.round(scrapeProgress.eta_seconds)}s</>}
+                    </div>
+                  )}
                   {scrapeMsg && (
-                    <div style={{marginTop:10,fontSize:14,color:scrapeMsg.startsWith("✅")?t.ok:scrapeMsg.startsWith("⏳")?t.wm:t.er,fontWeight:600}}>
+                    <div style={{marginTop:10,fontSize:14,color:scrapeMsg.startsWith("✅")?t.ok:scrapeMsg.startsWith("⏳")||scrapeMsg.startsWith("🚀")?t.wm:t.er,fontWeight:600}}>
                       {scrapeMsg}
                     </div>
                   )}
