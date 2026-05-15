@@ -881,10 +881,65 @@ def add_cors(response):
     return response
 
 
+# ─── Background scrape loop ───────────────────────────────────────
+# Wraps run_scrape() in a daemon thread so the dashboard sees the broker
+# tick in real time even when the cycle wasn't user-triggered. Skips when
+# the broker is already running (a manual POST /api/scrape can race the
+# cron tick — manual wins; this thread quietly waits for the next slot).
+def _bg_scrape_loop() -> None:
+    log.info("Background scraper enabled — interval=%ds", FAST_INTERVAL)
+    # First tick gets a short delay so the Flask boot path isn't competing
+    # with the scraper for SQLite init/imports on cold starts.
+    time.sleep(15)
+    while True:
+        try:
+            if is_quiet_hours():
+                log.debug("BG scrape: quiet hours, skipping")
+            elif not broker.try_start("fast", _count_fast_companies()):
+                # Atomic check-and-arm: must mirror POST /api/scrape's gate
+                # exactly. A plain `if broker.is_running()` check would leave
+                # a race window where a manual POST wins the broker while
+                # we're about to call run_scrape() — both threads would then
+                # tick the same broker and double-scrape the same companies.
+                log.debug("BG scrape: broker busy, skipping cycle")
+            else:
+                log.info("BG scrape: starting fast cycle")
+                threading.Thread(
+                    target=_run_scrape_async,
+                    args=("fast",),
+                    daemon=True,
+                    name="bg-scrape-worker",
+                ).start()
+        except Exception:
+            # Never let the loop die — log and continue. The 10-min watchdog
+            # in StatusBroker.is_running() rescues us if a scrape crashed
+            # before its finally-finish() ran.
+            log.exception("BG scrape loop tick failed")
+        time.sleep(FAST_INTERVAL)
+
+
+def _should_run_bg_scraper() -> bool:
+    """Background loop is opt-out via DISABLE_BG_SCRAPE=1, and auto-disabled
+    under pytest so test_client() reloads don't spawn rogue threads that
+    write to the test DB."""
+    if "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules:
+        return False
+    if os.environ.get("DISABLE_BG_SCRAPE", "").lower() in ("1", "true", "yes"):
+        return False
+    return os.environ.get("ENABLE_BG_SCRAPE", "1") == "1"
+
+
 # ─── Startup ──────────────────────────────────────────────────────
 init_db(DB_PATH)
-# Note: No background thread — GitHub Actions cron is the scheduler.
-# The /api/scrape endpoint can be called manually or by Actions to trigger a scrape.
+
+if _should_run_bg_scraper():
+    threading.Thread(
+        target=_bg_scrape_loop,
+        daemon=True,
+        name="bg-scrape-loop",
+    ).start()
+else:
+    log.info("Background scraper disabled (DISABLE_BG_SCRAPE set or running under pytest)")
 
 
 def main():
