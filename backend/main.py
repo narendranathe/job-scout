@@ -87,10 +87,29 @@ def _detect_sponsorship(job: dict) -> bool:
     return pos and not neg
 
 
+def _load_primary_resume_text(db_path: str) -> str | None:
+    """
+    Best-effort fetch of the most recent resume version's text for the
+    TF-IDF booster. Returns None on any error so scoring continues to work
+    with keyword-only logic when no resume has been uploaded.
+    """
+    try:
+        from storage.db import list_resume_versions
+        conn = get_conn(db_path)
+        versions = list_resume_versions(conn)
+        conn.close()
+        if not versions:
+            return None
+        return versions[0].get("resume_text") or None
+    except Exception as e:
+        log.debug("Resume load skipped: %s", e)
+        return None
+
+
 def run_scrape(db_path: str, mode: str = "full", delay: float = 0.3) -> dict:
     _load_scrapers()
-    engine = RelevanceEngine()
     init_db(db_path)
+    engine = RelevanceEngine(resume_text=_load_primary_resume_text(db_path))
     conn = get_conn(db_path)
     run_id = start_run(conn)
     cycle = load_cycle_counter()
@@ -132,18 +151,19 @@ def run_scrape(db_path: str, mode: str = "full", delay: float = 0.3) -> dict:
             tier_label = "platinum" if company.get("tier") == 0 else f"tier{company.get('tier', 1)}"
             raw_job["tier"] = tier_label
 
-            score, matched = engine.score(raw_job)
-            raw_job["relevance_score"] = score
-            raw_job["matched_skills"] = matched
-            raw_job["sponsorship"] = _detect_sponsorship(raw_job)
-
-            # Parse salary from description if not already set
+            # Parse salary BEFORE scoring so the salary tier boost (issue #10)
+            # can read salary_max/salary_min off the job dict.
             if not raw_job.get("salary_min") and not raw_job.get("salary_max"):
                 desc = raw_job.get("description", "")
                 sal_min, sal_max = parse_salary(desc)
                 if sal_min:
                     raw_job["salary_min"] = sal_min
                     raw_job["salary_max"] = sal_max
+
+            score, matched = engine.score(raw_job)
+            raw_job["relevance_score"] = score
+            raw_job["matched_skills"] = matched
+            raw_job["sponsorship"] = _detect_sponsorship(raw_job)
 
             min_score = PROFILE.get("min_score_threshold", 0.30)
             if score < min_score:
