@@ -22,16 +22,22 @@ def test_export_includes_cycle_counter():
 
 
 def test_load_cycle_from_json():
-    """load_cycle_counter() must read metadata.cycle_counter from api-data.json."""
+    """_load_cycle_counter() must read metadata.cycle_counter from api-data.json.
+
+    Moved from main.py to core/scrape_orchestrator in #21 so the CLI and
+    Flask handler share the same cycle-counter source.
+    """
     import tempfile
+    from pathlib import Path
     with tempfile.TemporaryDirectory() as d:
         json_path = os.path.join(d, "api-data.json")
         with open(json_path, "w") as f:
             json.dump({"metadata": {"cycle_counter": 42}}, f)
-        # Patch DEFAULT_OUTPUT temporarily
-        import main as m
-        original = m.JSON_OUTPUT_PATH
-        m.JSON_OUTPUT_PATH = json_path
-        result = m.load_cycle_counter()
-        m.JSON_OUTPUT_PATH = original
+        from core import scrape_orchestrator as orch
+        original = orch._JSON_OUTPUT_PATH
+        orch._JSON_OUTPUT_PATH = Path(json_path)
+        try:
+            result = orch._load_cycle_counter()
+        finally:
+            orch._JSON_OUTPUT_PATH = original
         assert result == 43, f"Expected 43 (42+1), got {result}"

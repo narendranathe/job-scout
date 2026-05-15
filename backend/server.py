@@ -26,21 +26,16 @@ import time
 import logging
 import threading
 from datetime import datetime, timezone
-from pathlib import Path
 
 
 from flask import Flask, jsonify, Response, request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from config.companies import COMPANIES, get_batch, TOTAL_COMPANIES
-from config.profile import PROFILE
-from core.relevance import RelevanceEngine
+from config.companies import COMPANIES, TOTAL_COMPANIES
 from core.scrape_status import broker
-from storage.db import (
-    init_db, get_conn, upsert_job, mark_stale_jobs,
-    start_run, finish_run, get_stats,
-)
+from core.scrape_orchestrator import run_scrape
+from storage.db import init_db, get_conn, get_stats
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,39 +47,19 @@ log = logging.getLogger("jobscout")
 # ─── Config ────────────────────────────────────────────────────────
 DB_PATH      = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "jobscout.db"))
 FAST_INTERVAL = int(os.environ.get("FAST_INTERVAL", "300"))    # seconds between cycles
-SCRAPE_DELAY  = float(os.environ.get("SCRAPE_DELAY", "0.3"))
+# Note: per-company delay is SCRAPE_DELAY in the env; the orchestrator
+# reads it directly. Kept out of this module to avoid two copies.
 PORT          = int(os.environ.get("PORT", "10000"))
 API_SECRET    = os.environ.get("API_SECRET", "")               # optional auth for POST /api/scrape
 
 app = Flask(__name__)
 
 
-# ─── Scraper Registry ──────────────────────────────────────────────
+# ─── Blueprints ────────────────────────────────────────────────────
 from routes.vault_routes import vault_bp
 app.register_blueprint(vault_bp)
 from routes.admin_routes import admin_bp
 app.register_blueprint(admin_bp)
-SCRAPERS: dict = {}
-
-def _load_scrapers():
-    global SCRAPERS
-    if SCRAPERS:
-        return
-    from scrapers import greenhouse, lever, ashby, smartrecruiters, bamboohr
-    SCRAPERS = {
-        "greenhouse": greenhouse,
-        "lever":      lever,
-        "ashby":      ashby,
-        "smartrecruiters": smartrecruiters,
-        "bamboohr":   bamboohr,
-    }
-    # Workday (optional — only loaded if workday.py exists)
-    try:
-        from scrapers import workday
-        SCRAPERS["workday"] = workday
-        log.info("Workday scraper loaded")
-    except ImportError:
-        log.warning("Workday scraper not found — skipping Workday companies")
 
 
 # ─── Shared State ──────────────────────────────────────────────────
@@ -135,19 +110,6 @@ class State:
 
 state = State()
 
-# ─── Cycle counter (reads from exported JSON) ─────────────────
-JSON_OUTPUT_PATH = Path(DB_PATH).parent.parent / "frontend" / "public" / "api-data.json"
-
-def load_cycle_counter() -> int:
-    """Read cycle counter from api-data.json metadata, increment, return new value."""
-    try:
-        with open(JSON_OUTPUT_PATH) as f:
-            data = json.load(f)
-        return data.get("metadata", {}).get("cycle_counter", 0) + 1
-    except Exception:
-        return 1
-
-
 # ─── Night quiet hours ────────────────────────────────────────────
 def is_quiet_hours() -> bool:
     """
@@ -159,137 +121,6 @@ def is_quiet_hours() -> bool:
     # 12:00am CST = 06:00 UTC = 360 min
     # 05:30am CST = 11:30 UTC = 690 min
     return 360 <= utc_mins < 690
-
-
-# ─── Scrape Engine ────────────────────────────────────────────────
-def _detect_sponsorship(job: dict) -> bool:
-    text = ((job.get("description") or "") + " " + (job.get("company") or "")).lower()
-    pos = any(kw in text for kw in ["visa sponsor", "h1b", "h-1b", "sponsorship available"])
-    neg = any(kw in text for kw in ["no sponsorship", "not sponsor", "unable to sponsor"])
-    return pos and not neg
-
-
-def run_scrape(mode: str = "fast") -> dict:
-    """
-    Execute one scrape cycle.
-      mode="fast" → Tier 1 only (~30s)
-      mode="full" → All tiers eligible this cycle (~3 min)
-    """
-    _load_scrapers()
-    init_db(DB_PATH)
-    # Best-effort: load the most recent resume text so the TF-IDF booster
-    # (issue #7) can refine core scores. Fails soft when none is uploaded.
-    resume_text = None
-    try:
-        from storage.db import list_resume_versions
-        _conn = get_conn(DB_PATH)
-        versions = list_resume_versions(_conn)
-        _conn.close()
-        if versions:
-            resume_text = versions[0].get("resume_text") or None
-    except Exception as e:
-        log.debug("Resume load skipped: %s", e)
-    engine = RelevanceEngine(resume_text=resume_text)
-    conn = get_conn(DB_PATH)
-    run_id = start_run(conn)
-    cycle = load_cycle_counter()
-
-    companies = (
-        [c for c in COMPANIES if c.get("tier", 3) in (0, 1)]
-        if mode == "fast"
-        else get_batch(cycle)
-    )
-
-    stats = {
-        "companies": 0, "found": 0, "new": 0,
-        "updated": 0,  "errors": 0, "skipped": 0, "relevant": 0,
-    }
-
-    # If the caller (POST /api/scrape) has already armed the broker via
-    # try_start(), skip the re-start so we don't reset started_at and clobber
-    # the snapshot the response already returned. Direct callers (main.py CLI,
-    # any future background cron) hit the True branch.
-    if not broker.is_running():
-        broker.start(mode, len(companies))
-    try:
-        for company in companies:
-            scraper = SCRAPERS.get(company.get("ats", ""))
-            if not scraper:
-                stats["errors"] += 1
-                broker.tick(company.get("name", "?"), error_delta=1)
-                continue
-
-            company_found = 0
-            company_new = 0
-            try:
-                stats["companies"] += 1
-                for raw_job in scraper.scrape(company):
-                    stats["found"] += 1
-                    company_found += 1
-
-                    if not engine.is_relevant_title(raw_job.get("title", "")):
-                        stats["skipped"] += 1
-                        continue
-
-                    score, matched = engine.score(raw_job)
-                    raw_job["relevance_score"] = score
-                    raw_job["matched_skills"]  = matched
-                    raw_job["sponsorship"]     = _detect_sponsorship(raw_job)
-
-                    # Skip jobs below the minimum score threshold — keeps DB clean
-                    # and prevents low-signal roles from appearing in the dashboard.
-                    # Threshold set in profile.py → min_score_threshold (default 0.30)
-                    min_score = PROFILE.get("min_score_threshold", 0.30)
-                    if score < min_score:
-                        stats["skipped"] += 1
-                        continue
-
-                    result = upsert_job(conn, raw_job)
-                    if result == "new":
-                        stats["new"] += 1
-                        company_new += 1
-                        # Fire dream-job alert for new matches
-                        _maybe_alert(raw_job)
-                    elif result == "updated":
-                        stats["updated"] += 1
-                    stats["relevant"] += 1
-
-                conn.commit()
-                broker.tick(company["name"], found_delta=company_found, new_delta=company_new)
-                time.sleep(SCRAPE_DELAY)
-            except Exception as e:
-                log.error("✗ %s — %s", company["name"], e)
-                stats["errors"] += 1
-                broker.tick(company.get("name", "?"),
-                            found_delta=company_found,
-                            new_delta=company_new,
-                            error_delta=1)
-
-        mark_stale_jobs(conn, hours=96)
-        conn.commit()
-        finish_run(conn, run_id, stats)
-        conn.close()
-
-        log.info(
-            "═══ %s cycle %d — companies=%d found=%d relevant=%d new=%d errors=%d ═══",
-            mode.upper(), cycle, stats["companies"], stats["found"],
-            stats["relevant"], stats["new"], stats["errors"],
-        )
-        return stats
-    finally:
-        # Always flip the broker out of is_running, even if the loop bails on
-        # an unhandled exception — otherwise the 10-min watchdog would have to
-        # eventually rescue it.
-        broker.finish(stats)
-
-
-def _maybe_alert(job: dict):
-    """Fire dream-job alert (silently swallow errors so scraping continues)."""
-    try:
-        from alerts.notifier import notify_dream_job
-        notify_dream_job(job)
-    except Exception as e:
-        log.debug("Alert check failed: %s", e)
 
 
 def build_cache():
@@ -350,14 +181,20 @@ def _count_fast_companies() -> int:
 def _run_scrape_async(mode: str = "fast") -> None:
     """Background runner: executes a scrape, records cycle stats, rebuilds cache.
 
-    broker.finish() is guaranteed by run_scrape()'s own try/finally. We mirror
-    that pattern here so state.is_scraping is always cleared even on
-    unhandled-exception paths.
+    SQLite connections are not thread-safe, so we open `conn` here inside the
+    worker thread rather than reusing one from the request thread. The
+    orchestrator's own try/finally guarantees broker.finish(); the inner
+    try/finally closes the conn even if the orchestrator raises. The outer
+    try/except mirrors that for state.is_scraping so it's always cleared.
     """
     state.is_scraping = True
     t0 = time.time()
     try:
-        stats = run_scrape(mode)
+        conn = get_conn(DB_PATH)
+        try:
+            stats = run_scrape(conn, mode=mode, status_broker=broker)
+        finally:
+            conn.close()
         state.record_cycle(time.time() - t0, stats)
         build_cache()
     except Exception as e:
