@@ -103,3 +103,176 @@ def test_doctor_check_crash_does_not_500(client, monkeypatch):
     statuses = [c["status"] for c in data["checks"]]
     assert "fail" in statuses
     assert data["overall"] == "fail"
+
+
+# ─── Purge-stale + Clear-cache (#23) ─────────────────────────────────
+
+
+def _insert_job(conn, ext_id, *, is_active, hours_ago):
+    """Test helper: insert a row with last_seen_at = N hours before now (UTC)."""
+    conn.execute(
+        "INSERT INTO jobs (external_id, title, company, is_active, "
+        "first_seen_at, last_seen_at) "
+        "VALUES (?, ?, ?, ?, datetime('now', '-' || ? || ' hours'), "
+        "                          datetime('now', '-' || ? || ' hours'))",
+        (ext_id, f"Title {ext_id}", "Test Co", is_active, hours_ago, hours_ago),
+    )
+
+
+def _idle_broker(monkeypatch):
+    """Force broker.is_running() → False regardless of module-level state."""
+    import routes.admin_routes as ar
+    monkeypatch.setattr(ar.broker, "is_running", lambda: False)
+
+
+def _busy_broker(monkeypatch):
+    """Force broker.is_running() → True to simulate an active scrape."""
+    import routes.admin_routes as ar
+    monkeypatch.setattr(ar.broker, "is_running", lambda: True)
+
+
+def test_purge_stale_basic(client, monkeypatch):
+    """Five jobs >200h old + is_active=0 → all five purged."""
+    _idle_broker(monkeypatch)
+    import routes.admin_routes as ar
+    from storage.db import get_conn
+
+    conn = get_conn(ar.DB_PATH)
+    for i in range(5):
+        _insert_job(conn, f"stale_{i}", is_active=0, hours_ago=200)
+    conn.commit()
+    conn.close()
+
+    resp = client.post("/api/admin/purge-stale", json={})
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["purged"] == 5
+    assert data["hours_threshold"] == 96
+
+    conn = get_conn(ar.DB_PATH)
+    remaining = conn.execute(
+        "SELECT COUNT(*) FROM jobs WHERE is_active = 0"
+    ).fetchone()[0]
+    conn.close()
+    assert remaining == 0
+
+
+def test_purge_stale_respects_threshold(client, monkeypatch):
+    """Three inactive jobs (50h, 100h, 200h). hours=96 → 2 purged (100h, 200h)."""
+    _idle_broker(monkeypatch)
+    import routes.admin_routes as ar
+    from storage.db import get_conn
+
+    conn = get_conn(ar.DB_PATH)
+    _insert_job(conn, "young",  is_active=0, hours_ago=50)
+    _insert_job(conn, "middle", is_active=0, hours_ago=100)
+    _insert_job(conn, "old",    is_active=0, hours_ago=200)
+    conn.commit()
+    conn.close()
+
+    resp = client.post("/api/admin/purge-stale", json={"hours": 96})
+    assert resp.status_code == 200
+    assert resp.get_json()["purged"] == 2
+
+    conn = get_conn(ar.DB_PATH)
+    rows = conn.execute("SELECT external_id FROM jobs").fetchall()
+    conn.close()
+    assert [r["external_id"] for r in rows] == ["young"]
+
+
+def test_purge_stale_ignores_active_jobs(client, monkeypatch):
+    """Active jobs (is_active=1) must never be purged even when ancient."""
+    _idle_broker(monkeypatch)
+    import routes.admin_routes as ar
+    from storage.db import get_conn
+
+    conn = get_conn(ar.DB_PATH)
+    _insert_job(conn, "ancient_active",   is_active=1, hours_ago=500)
+    _insert_job(conn, "ancient_inactive", is_active=0, hours_ago=500)
+    conn.commit()
+    conn.close()
+
+    resp = client.post("/api/admin/purge-stale", json={"hours": 96})
+    assert resp.status_code == 200
+    assert resp.get_json()["purged"] == 1
+
+    conn = get_conn(ar.DB_PATH)
+    rows = [r["external_id"] for r in conn.execute("SELECT external_id FROM jobs").fetchall()]
+    conn.close()
+    assert rows == ["ancient_active"]
+
+
+def test_purge_stale_during_scrape(client, monkeypatch):
+    """While broker.is_running() is True, purge-stale must 409 (no DB write)."""
+    _busy_broker(monkeypatch)
+    import routes.admin_routes as ar
+    from storage.db import get_conn
+
+    conn = get_conn(ar.DB_PATH)
+    _insert_job(conn, "would_be_purged", is_active=0, hours_ago=200)
+    conn.commit()
+    conn.close()
+
+    resp = client.post("/api/admin/purge-stale", json={"hours": 96})
+    assert resp.status_code == 409
+    data = resp.get_json()
+    assert data["error"] == "scrape_in_progress"
+    assert isinstance(data.get("retry_after_seconds"), int)
+
+    # Critical: confirm we did NOT touch the table.
+    conn = get_conn(ar.DB_PATH)
+    cnt = conn.execute("SELECT COUNT(*) FROM jobs WHERE is_active=0").fetchone()[0]
+    conn.close()
+    assert cnt == 1
+
+
+def test_purge_stale_rejects_zero_hours(client, monkeypatch):
+    """hours=0 would wipe every inactive row ever — must be rejected outright."""
+    _idle_broker(monkeypatch)
+    resp = client.post("/api/admin/purge-stale", json={"hours": 0})
+    assert resp.status_code == 400
+
+
+def test_clear_cache_returns_bytes(client, monkeypatch):
+    """Insert + delete bulk rows to inflate the freelist, then VACUUM must
+    reclaim a non-negative byte count and return both before/after sizes."""
+    _idle_broker(monkeypatch)
+    import routes.admin_routes as ar
+    from storage.db import get_conn
+
+    conn = get_conn(ar.DB_PATH)
+    # 100 rows with a chunky description column to make the page-level
+    # reclaim measurable even on a freshly-init'd DB.
+    bulk_desc = "x" * 4096
+    for i in range(100):
+        conn.execute(
+            "INSERT INTO jobs (external_id, title, company, description, "
+            "is_active, first_seen_at, last_seen_at) "
+            "VALUES (?, ?, 'Co', ?, 1, datetime('now'), datetime('now'))",
+            (f"bulk_{i}", f"Job {i}", bulk_desc),
+        )
+    conn.commit()
+    conn.execute("DELETE FROM jobs WHERE external_id LIKE 'bulk_%'")
+    conn.commit()
+    conn.close()
+
+    resp = client.post("/api/admin/clear-cache")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert "bytes_reclaimed" in data
+    assert "db_size_before"  in data
+    assert "db_size_after"   in data
+    assert data["bytes_reclaimed"] >= 0
+    assert data["db_size_after"] <= data["db_size_before"]
+    # On a 100×4KB-description insert+delete, VACUUM should reclaim
+    # something. If the build's SQLite is so aggressive it auto-vacuumed,
+    # the assertion still holds at 0 — but in CI it consistently >0.
+    assert data["bytes_reclaimed"] > 0
+
+
+def test_clear_cache_during_scrape(client, monkeypatch):
+    """clear-cache must refuse with 409 while a scrape is running."""
+    _busy_broker(monkeypatch)
+    resp = client.post("/api/admin/clear-cache")
+    assert resp.status_code == 409
+    assert resp.get_json()["error"] == "scrape_in_progress"

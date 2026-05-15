@@ -6,7 +6,9 @@ Plug into server.py with:
     app.register_blueprint(admin_bp)
 
 Endpoints:
-    GET /api/admin/doctor   — Server health probe (DB, scrapers, env, vault, disk)
+    GET  /api/admin/doctor       — Server health probe (DB, scrapers, env, vault, disk)
+    POST /api/admin/purge-stale  — Delete inactive jobs older than N hours
+    POST /api/admin/clear-cache  — VACUUM SQLite DB to reclaim space
 """
 
 import importlib
@@ -16,6 +18,9 @@ import shutil
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
+
+from core.scrape_status import broker
+from storage.db_admin import purge_inactive_jobs, vacuum_db
 
 log = logging.getLogger(__name__)
 
@@ -155,16 +160,23 @@ DOCTOR_CHECKS = [
 ]
 
 
+def _check_auth() -> bool:
+    """Bearer-token gate shared by all admin endpoints. Returns True when the
+    request is allowed (either API_SECRET is unset, or the header matches)."""
+    if not API_SECRET:
+        return True
+    token = request.headers.get("Authorization", "").replace("Bearer ", "")
+    return token == API_SECRET
+
+
 @admin_bp.route("/doctor", methods=["GET", "OPTIONS"])
 def doctor():
     """Run all health probes; return per-check results + aggregated overall status."""
     if request.method == "OPTIONS":
         return "", 200
 
-    if API_SECRET:
-        token = request.headers.get("Authorization", "").replace("Bearer ", "")
-        if token != API_SECRET:
-            return jsonify({"error": "unauthorized"}), 401
+    if not _check_auth():
+        return jsonify({"error": "unauthorized"}), 401
 
     checks = []
     for fn in DOCTOR_CHECKS:
@@ -179,6 +191,114 @@ def doctor():
         "checks": checks,
         "overall": _aggregate(checks),
         "generated_at": datetime.now(timezone.utc).isoformat(),
+    }), 200
+
+
+def _scrape_in_progress_response():
+    """Standard 409 envelope returned by every destructive op when a scrape is
+    holding write locks. retry_after_seconds is a soft hint for the UI; the
+    real watchdog timeout lives in core/scrape_status.WATCHDOG_SECONDS."""
+    return jsonify({
+        "error": "scrape_in_progress",
+        "retry_after_seconds": 300,
+    }), 409
+
+
+@admin_bp.route("/purge-stale", methods=["POST", "OPTIONS"])
+def purge_stale():
+    """Permanently delete jobs that have been is_active=0 and unseen for >N hours.
+
+    Default 96h matches the cycle-absence threshold (3 misses * ~hourly sweep
+    + buffer). Refuses to run while a scrape is in progress so it cannot
+    contend with the scraper's UPDATE traffic on the same rows.
+    """
+    if request.method == "OPTIONS":
+        return "", 200
+
+    if not _check_auth():
+        return jsonify({"error": "unauthorized"}), 401
+
+    if broker.is_running():
+        return _scrape_in_progress_response()
+
+    body = request.get_json(silent=True) or {}
+    try:
+        hours = int(body.get("hours", 96))
+    except (TypeError, ValueError):
+        return jsonify({"error": "hours must be an integer"}), 400
+    # Reject zero/negative thresholds — these would delete every inactive job
+    # ever recorded (or worse) and there's no legitimate operator scenario
+    # for it from a confirm-dialog UI.
+    if hours < 1:
+        return jsonify({"error": "hours must be >= 1"}), 400
+
+    try:
+        purged = purge_inactive_jobs(DB_PATH, hours)
+    except Exception as e:
+        log.exception("purge-stale failed")
+        return jsonify({"error": f"purge failed: {e.__class__.__name__}"}), 500
+
+    log.info("Purged %d stale jobs older than %dh", purged, hours)
+    return jsonify({"purged": purged, "hours_threshold": hours}), 200
+
+
+@admin_bp.route("/clear-cache", methods=["POST", "OPTIONS"])
+def clear_cache():
+    """Run VACUUM on the SQLite DB to reclaim freelist space.
+
+    VACUUM rewrites the entire database into a fresh file. Must be executed
+    on a dedicated connection with isolation_level=None — sqlite3's default
+    autocommit wrapper opens an implicit transaction around DML, and VACUUM
+    is illegal inside an active transaction.
+
+    Like purge-stale, refuses while a scrape is in progress: VACUUM takes an
+    exclusive lock and would block (or be blocked by) the scraper's writes.
+    """
+    if request.method == "OPTIONS":
+        return "", 200
+
+    if not _check_auth():
+        return jsonify({"error": "unauthorized"}), 401
+
+    if broker.is_running():
+        return _scrape_in_progress_response()
+
+    if not os.path.exists(DB_PATH):
+        return jsonify({"error": f"db not found at {DB_PATH}"}), 500
+
+    def _close_server_cached_conn():
+        """Drop the long-lived sqlite3.Connection that server.py caches in
+        `_conn`. If we don't, sqlite refuses VACUUM with 'cannot VACUUM from
+        within a transaction' the moment that connection has any pending
+        implicit txn. The next request lazy-reopens via get_conn(), so no
+        functional impact."""
+        try:
+            import server as _srv  # type: ignore
+        except Exception:
+            return
+        cached = getattr(_srv, "_conn", None)
+        if cached is None:
+            return
+        try:
+            cached.close()
+        except Exception:
+            pass
+        _srv._conn = None
+
+    try:
+        size_before, size_after = vacuum_db(
+            DB_PATH, on_before_vacuum=_close_server_cached_conn,
+        )
+    except Exception as e:
+        log.exception("clear-cache VACUUM failed")
+        return jsonify({"error": f"vacuum failed: {e.__class__.__name__}: {e}"}), 500
+
+    reclaimed = max(size_before - size_after, 0)
+    log.info("VACUUM reclaimed %d bytes (%d -> %d)", reclaimed, size_before, size_after)
+    return jsonify({
+        "bytes_reclaimed": reclaimed,
+        "db_size_before": size_before,
+        "db_size_after":  size_after,
     }), 200
 
 
