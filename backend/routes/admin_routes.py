@@ -28,7 +28,10 @@ admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "..", "jobscout.db"))
 API_SECRET = os.environ.get("API_SECRET", "")
 
-VAULT_ROOT = os.path.join(os.path.dirname(__file__), "..", "resume_vault")
+VAULT_ROOT = os.environ.get(
+    "RESUME_VAULT_PATH",
+    os.path.join(os.path.dirname(__file__), "..", "resume_vault"),
+)
 SCRAPER_MODULES = ["greenhouse", "lever", "ashby", "smartrecruiters", "bamboohr", "workday"]
 
 
