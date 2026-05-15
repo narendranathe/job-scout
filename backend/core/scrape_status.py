@@ -29,6 +29,7 @@ class StatusBroker:
         self._state: dict = {
             "is_running":       False,
             "started_at":       None,
+            "last_tick_at":     None,
             "finished_at":      None,
             "mode":             None,
             "companies_done":   0,
@@ -43,9 +44,11 @@ class StatusBroker:
 
     def start(self, mode: str, total: int) -> None:
         with self._lock:
+            now = _now_iso()
             self._state.update({
                 "is_running":      True,
-                "started_at":      _now_iso(),
+                "started_at":      now,
+                "last_tick_at":    now,
                 "finished_at":     None,
                 "mode":            mode,
                 "companies_done":  0,
@@ -77,6 +80,10 @@ class StatusBroker:
             self._state["found"]          += int(found_delta)
             self._state["new"]            += int(new_delta)
             self._state["errors"]         += int(error_delta)
+            # Liveness signal for the watchdog — without this, a long but
+            # healthy scrape would be auto-killed at WATCHDOG_SECONDS even
+            # though it's still making progress.
+            self._state["last_tick_at"] = _now_iso()
 
             done  = self._state["companies_done"]
             total = self._state["companies_total"]
@@ -104,12 +111,16 @@ class StatusBroker:
         with self._lock:
             if not self._state["is_running"]:
                 return False
-            started = self._state["started_at"]
-            if not started:
+            # Watchdog uses last_tick_at (set by tick()) so a healthy
+            # long-running scrape can't be auto-killed — only one that has
+            # gone silent for WATCHDOG_SECONDS counts as wedged. Falls back
+            # to started_at for runs that haven't ticked yet.
+            last = self._state.get("last_tick_at") or self._state.get("started_at")
+            if not last:
                 return False
             try:
                 age = (datetime.now(timezone.utc)
-                       - datetime.fromisoformat(started)).total_seconds()
+                       - datetime.fromisoformat(last)).total_seconds()
             except Exception:
                 return False
             if age > WATCHDOG_SECONDS:
