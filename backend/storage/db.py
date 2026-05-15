@@ -122,6 +122,9 @@ def init_db(db_path: str = DB_PATH):
     for ddl in (
         "ALTER TABLE jobs ADD COLUMN content_hash TEXT",
         "ALTER TABLE applications ADD COLUMN content_hash TEXT",
+        # cycles_missing: counts consecutive scrape cycles where a job's external_id
+        # was NOT seen. Used to distinguish "scraper hiccup" from "really removed".
+        "ALTER TABLE jobs ADD COLUMN cycles_missing INTEGER DEFAULT 0",
     ):
         try:
             conn.execute(ddl)
@@ -179,7 +182,8 @@ def upsert_job(conn: sqlite3.Connection, job: dict) -> str:
         ))
         return "new"
     else:
-        # Update last_seen and any changed fields
+        # Update last_seen and any changed fields. Reset cycles_missing on every
+        # sighting — a job that reappears after vanishing is treated as live again.
         conn.execute("""
             UPDATE jobs SET
                 title = ?, location = ?, department = ?,
@@ -187,7 +191,7 @@ def upsert_job(conn: sqlite3.Connection, job: dict) -> str:
                 salary_min = ?, salary_max = ?,
                 relevance_score = ?, matched_skills = ?,
                 sponsorship = ?, last_seen_at = ?, is_active = 1,
-                tier = ?, content_hash = ?
+                tier = ?, content_hash = ?, cycles_missing = 0
             WHERE external_id = ?
         """, (
             job["title"], job.get("location", ""), job.get("department", ""),
@@ -203,7 +207,10 @@ def upsert_job(conn: sqlite3.Connection, job: dict) -> str:
 
 
 def mark_stale_jobs(conn: sqlite3.Connection, hours: int = 72):
-    """Mark jobs not seen in the last N hours as inactive (likely taken down)."""
+    """Mark jobs not seen in the last N hours as inactive (likely taken down).
+
+    This is the time-based fallback; for cycle-driven scrapes prefer
+    increment_cycles_missing() which understands "missed N scrapes in a row"."""
     from datetime import timedelta
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
     result = conn.execute(
@@ -212,6 +219,105 @@ def mark_stale_jobs(conn: sqlite3.Connection, hours: int = 72):
     )
     if result.rowcount > 0:
         log.info("Marked %d stale jobs as inactive", result.rowcount)
+
+
+def increment_cycles_missing(
+    conn: sqlite3.Connection,
+    seen_external_ids: set,
+    scraped_companies: set | None = None,
+    threshold: int = 3,
+) -> dict:
+    """Cycle-absence inference for active jobs.
+
+    For every is_active=1 job whose external_id is NOT in `seen_external_ids`,
+    bump `cycles_missing` by 1. Jobs that reach `threshold` consecutive misses
+    are flipped to is_active=0 (assumed taken down). A job that reappears in a
+    later cycle has its counter reset by upsert_job() — including jobs already
+    deactivated, which re-activate cleanly on the next sighting.
+
+    Args:
+        conn: open DB connection (caller owns commit).
+        seen_external_ids: external_ids observed in the just-finished cycle.
+        scraped_companies: company names whose scrapers actually ran this cycle.
+            Jobs from OTHER companies are left alone (they're on a rotating
+            schedule — see config.companies.get_batch). When None, all active
+            jobs are eligible for the penalty (callers must guarantee a full
+            sweep ran; partial sweeps will incorrectly penalise out-of-batch
+            jobs).
+        threshold: consecutive misses before deactivation. Default 3 — at one
+            full sweep per hour that's ≥2h of disappearance, which absorbs
+            transient ATS errors while still retiring genuinely removed posts.
+
+    Returns:
+        {"incremented": N, "deactivated": M} for logging.
+    """
+    if not isinstance(seen_external_ids, (set, frozenset)):
+        seen_external_ids = set(seen_external_ids or [])
+    if scraped_companies is not None and not isinstance(
+        scraped_companies, (set, frozenset)
+    ):
+        scraped_companies = set(scraped_companies or [])
+
+    # Run the increment + deactivate as one transaction. SQLite is single-writer
+    # under WAL — if a second writer (manual /api/scrape, parallel Actions run)
+    # is mid-write, `BEGIN IMMEDIATE` fails fast with SQLITE_BUSY instead of
+    # letting the two passes interleave and leave counters partially advanced.
+    # The `with conn:` block commits on clean exit and rolls back on exception,
+    # so a crash between the two UPDATEs cannot leave the table half-updated.
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+    except sqlite3.OperationalError as e:
+        log.warning("Cycle absence skipped — DB busy: %s", e)
+        return {"incremented": 0, "deactivated": 0}
+
+    try:
+        # Pull active jobs along with company so we can scope penalties to the
+        # companies that actually ran this cycle. Avoid a single giant NOT IN
+        # (...) against external_ids (SQLite var limit ~999) by diffing in
+        # Python.
+        active_rows = conn.execute(
+            "SELECT external_id, company FROM jobs WHERE is_active = 1"
+        ).fetchall()
+
+        if scraped_companies is not None:
+            candidate_rows = [r for r in active_rows if r[1] in scraped_companies]
+        else:
+            candidate_rows = active_rows
+
+        missing_ids = [r[0] for r in candidate_rows if r[0] not in seen_external_ids]
+        if not missing_ids:
+            conn.commit()
+            return {"incremented": 0, "deactivated": 0}
+
+        incremented = 0
+        CHUNK = 500
+        for i in range(0, len(missing_ids), CHUNK):
+            batch = missing_ids[i:i + CHUNK]
+            placeholders = ",".join("?" * len(batch))
+            cur = conn.execute(
+                f"UPDATE jobs SET cycles_missing = COALESCE(cycles_missing, 0) + 1 "
+                f"WHERE external_id IN ({placeholders}) AND is_active = 1",
+                batch,
+            )
+            incremented += cur.rowcount
+
+        cur = conn.execute(
+            "UPDATE jobs SET is_active = 0 "
+            "WHERE is_active = 1 AND COALESCE(cycles_missing, 0) >= ?",
+            (threshold,)
+        )
+        deactivated = cur.rowcount
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+    if incremented or deactivated:
+        log.info(
+            "Cycle absence: %d jobs incremented, %d deactivated (threshold=%d)",
+            incremented, deactivated, threshold,
+        )
+    return {"incremented": incremented, "deactivated": deactivated}
 
 
 def start_run(conn: sqlite3.Connection) -> int:

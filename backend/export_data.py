@@ -4,6 +4,7 @@ Called after every scrape cycle.
 """
 
 import json
+import re
 import sqlite3
 import os
 import logging
@@ -12,6 +13,26 @@ from collections import Counter
 from statistics import quantiles
 
 log = logging.getLogger(__name__)
+
+# Matches a naive ISO-8601 timestamp emitted by greenhouse.py / ashby.py /
+# bamboohr.py (they slice the source ATS string with `[:19]`, dropping any
+# trailing Z/offset). The frontend's `new Date(str)` parses such strings as
+# LOCAL time per ECMAScript, which mis-ages jobs by up to a full day for
+# non-UTC users. We pin them to UTC here so the dashboard sees one timezone.
+_NAIVE_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
+
+
+def _normalize_to_utc(s: str) -> str:
+    """Append +00:00 to a naive ISO timestamp; pass-through anything else.
+
+    A string with an existing offset or `Z` is left untouched. Empty / non-ISO
+    strings (e.g. legacy `YYYY-MM-DD HH:MM:SS` rows from very old data) are
+    returned as-is — they were already broken for `Date()` parsing and the
+    frontend treats them as null-age (passes the 30-day cap, no decay).
+    """
+    if s and _NAIVE_ISO_RE.match(s):
+        return s + "+00:00"
+    return s
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "jobscout.db"))
 DEFAULT_OUTPUT = os.path.join(os.path.dirname(__file__), "..", "frontend", "public", "api-data.json")
@@ -70,6 +91,15 @@ def export(db_path: str = DB_PATH, output_path: str = None, cycle_counter: int =
         j = dict(r)
         if isinstance(j.get("matched_skills"), str):
             j["matched_skills"] = _parse_skills(j["matched_skills"])
+        # Single age signal the frontend consumes. posted_at is preferred (it's
+        # the ATS-reported date) but is missing for Playwright targets and weak
+        # for Workday. first_seen_at is our discovery timestamp — always set, so
+        # it bounds the worst-case age estimate at "first time JobScout saw it".
+        # Naive timestamps from greenhouse/ashby/bamboohr get pinned to UTC here
+        # so the frontend's Date() parser doesn't reinterpret them as local time.
+        posted = (j.get("posted_at") or "").strip()
+        first_seen = (j.get("first_seen_at") or "").strip()
+        j["effective_date"] = _normalize_to_utc(posted if posted else first_seen)
         jobs.append(j)
 
     total = len(jobs)
