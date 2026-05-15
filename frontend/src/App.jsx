@@ -516,6 +516,34 @@ export default function App() {
     finally { setScraping(false); }
   };
 
+  // Doctor health-check
+  const [doctorLoading,setDoctorLoading] = useState(false);
+  const [doctorResult,setDoctorResult]   = useState(null);
+  const [doctorErr,setDoctorErr]         = useState(null);
+
+  const runDoctor = async () => {
+    if (!RENDER_API) {
+      setDoctorErr("No Render API configured. Set VITE_RENDER_URL in your .env file.");
+      return;
+    }
+    setDoctorLoading(true); setDoctorErr(null); setDoctorResult(null);
+    try {
+      const resp = await fetch(`${RENDER_API}/api/admin/doctor`, {
+        signal: AbortSignal.timeout(15000),
+      });
+      const d = await resp.json();
+      if (!resp.ok) {
+        setDoctorErr(d.error || `HTTP ${resp.status}`);
+      } else {
+        setDoctorResult(d);
+      }
+    } catch(e) {
+      setDoctorErr(`Could not reach Render: ${e.message}`);
+    } finally {
+      setDoctorLoading(false);
+    }
+  };
+
   const fetchApplications = useCallback(async () => {
     setAppLoading(true);
     try {
@@ -1761,6 +1789,56 @@ export default function App() {
                       {scrapeMsg}
                     </div>
                   )}
+                </div>
+
+                {/* Doctor health-check */}
+                <div style={{padding:18,borderRadius:12,background:t.bgS,border:`1px solid ${t.bd}`}}>
+                  <div style={{fontSize:15,fontWeight:700,color:t.tx,marginBottom:6}}>🩺 Doctor</div>
+                  <div style={{fontSize:13,color:t.txM,marginBottom:14}}>
+                    Run server health probes: DB connectivity, scraper imports, recent scrape success, env vars, vault dirs, disk space.
+                    {!RENDER_API && <span style={{color:t.er}}> (Set VITE_RENDER_URL to enable)</span>}
+                  </div>
+                  <button onClick={runDoctor} disabled={doctorLoading||!RENDER_API}
+                    style={{padding:"11px 22px",borderRadius:9,border:"none",
+                      background:doctorLoading?t.bgS:(RENDER_API?t.gP:`${t.txM}20`),
+                      color:doctorLoading||!RENDER_API?t.txM:"#fff",
+                      fontSize:14,fontWeight:700,cursor:doctorLoading||!RENDER_API?"not-allowed":"pointer",
+                      fontFamily:"inherit",transition:"all .15s"}}>
+                    {doctorLoading?"⏳ Running checks…":"▶ Run Doctor"}
+                  </button>
+                  {doctorErr && (
+                    <div style={{marginTop:10,fontSize:14,color:t.er,fontWeight:600}}>❌ {doctorErr}</div>
+                  )}
+                  {doctorResult && (() => {
+                    const overall = doctorResult.overall;
+                    const overallColor = overall==="pass"?"#4ADE80":overall==="warn"?"#F59E0B":"#EF4444";
+                    return (
+                      <div style={{marginTop:14}}>
+                        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:12,padding:"10px 14px",
+                          background:`${overallColor}15`,border:`1px solid ${overallColor}40`,borderRadius:8}}>
+                          <span style={{fontSize:13,color:t.txM,fontWeight:700,textTransform:"uppercase",letterSpacing:".06em"}}>Overall</span>
+                          <span style={{fontSize:15,fontWeight:800,color:overallColor,textTransform:"uppercase",letterSpacing:".05em"}}>{overall}</span>
+                        </div>
+                        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                          {(doctorResult.checks||[]).map((c,i) => {
+                            const color = c.status==="pass"?"#4ADE80":c.status==="warn"?"#F59E0B":"#EF4444";
+                            return (
+                              <div key={i} style={{padding:"10px 12px",borderRadius:8,
+                                background:t.cd,border:`1px solid ${t.bd}`}}>
+                                <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:4}}>
+                                  <span style={{fontSize:11,fontWeight:800,color:"#fff",
+                                    background:color,padding:"2px 8px",borderRadius:4,
+                                    textTransform:"uppercase",letterSpacing:".05em"}}>{c.status}</span>
+                                  <span style={{fontSize:14,fontWeight:700,color:t.tx,fontFamily:"monospace"}}>{c.name}</span>
+                                </div>
+                                <div style={{fontSize:13,color:t.txM,marginLeft:2}}>{c.detail}</div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* GitHub Actions button */}
