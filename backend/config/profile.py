@@ -6,6 +6,22 @@ Skills are extracted from your resume automatically when you POST to /api/resume
 but the values here act as permanent defaults that always apply.
 """
 
+# Niche AI/LLM-tooling terms. Surfaced as a separate UI lane (not a score boost)
+# so the signal stays interpretable on a small job corpus where IDF is unstable.
+RARE_SKILLS_WATCH = [
+    "llamaindex",
+    "model context protocol",
+    "mcp",
+    "vllm",
+    "agentic eval",
+    "rag eval",
+    "langgraph",
+    "anthropic sdk",
+    "claude api",
+    "fine-tuning",
+    "prompt caching",
+]
+
 PROFILE = {
     # ── Core skills (40% of score) ─────────────────────────────────────
     # Your strongest, most used skills — weight these the highest

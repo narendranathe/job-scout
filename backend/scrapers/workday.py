@@ -17,6 +17,8 @@ import logging
 import re
 from datetime import datetime, timezone, timedelta
 
+from .utils import parse_salary, parse_posted_date
+
 log = logging.getLogger(__name__)
 
 TIMEOUT = 20
@@ -42,26 +44,12 @@ SEARCH_TERMS = [
 
 
 def _parse_posted_date(posted_str: str) -> str:
-    """Parse Workday posted date formats to ISO 8601."""
-    if not posted_str:
-        return ""
-    # Format: "01/15/2024"
-    if re.match(r"\d{2}/\d{2}/\d{4}", posted_str):
-        try:
-            return datetime.strptime(posted_str, "%m/%d/%Y").replace(
-                tzinfo=timezone.utc
-            ).isoformat()
-        except Exception:
-            pass
-    # Format: "Posted 2 Days Ago"
-    m = re.search(r"(\d+)\s+day", posted_str.lower())
-    if m:
-        days = int(m.group(1))
-        return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    # Format: "Posted Today"
-    if "today" in posted_str.lower():
-        return datetime.now(timezone.utc).isoformat()
-    return ""
+    """Workday-specific wrapper around the shared parse_posted_date helper.
+
+    Preserves the legacy contract of returning "" (not None) for unparseable
+    input so existing callers / upsert paths don't see a type change.
+    """
+    return parse_posted_date(posted_str) or ""
 
 
 def scrape(company: dict):
@@ -130,19 +118,25 @@ def scrape(company: dict):
                         f"{base_url}/{board}{job_path}" if job_path else f"{base_url}/{board}"
                     )
 
+                    # Workday list payload omits comp; description here is just the
+                    # title, so parse_salary rarely fires — but call it for parity
+                    # with greenhouse in case a future fix populates description.
+                    desc = raw_title
+                    sal_min, sal_max = parse_salary(desc) if desc else (0, 0)
+
                     yield {
                         "external_id": ext_id,
                         "title": raw_title,
                         "company": name,
                         "location": location_text,
                         "department": "",
-                        "description": raw_title,  # full desc needs a 2nd fetch; title gives scoring signal
+                        "description": desc,
                         "url": job_url,
                         "ats": "workday",
                         "is_remote": is_remote,
                         "posted_at": posted_iso,
-                        "salary_min": 0,
-                        "salary_max": 0,
+                        "salary_min": sal_min,
+                        "salary_max": sal_max,
                     }
                     total += 1
 
