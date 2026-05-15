@@ -11,6 +11,7 @@ can't accidentally regress the scraper.
 import logging
 import os
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger(__name__)
 
@@ -19,19 +20,26 @@ def purge_inactive_jobs(db_path: str, hours: int) -> int:
     """DELETE jobs that have been is_active=0 with last_seen_at older than
     `hours`. Returns the rowcount.
 
-    Parameter binding uses `'-' || ? || ' hours'` so the integer flows
-    through sqlite3's placeholder layer instead of f-string concatenation
-    — no SQL-injection surface even if `hours` ever came from an untrusted
-    source.
+    Critical detail: `jobs.last_seen_at` is written by `upsert_job` via
+    `datetime.now(timezone.utc).isoformat()` — which produces
+    `2026-05-15T12:26:34.834925+00:00` (note the `T` separator). SQLite's
+    own `datetime('now', '-? hours')` returns `2026-05-15 16:26:34`
+    (space separator). Comparing those as TEXT lex-orders the `T` (ASCII
+    84) AFTER the space (ASCII 32), so ISO timestamps on the same
+    calendar day as the cutoff appear "newer" than the cutoff and would
+    be silently skipped.
+
+    Match the format `storage.db.mark_stale_jobs` already uses — compute
+    the cutoff in Python with `.isoformat()` and compare both sides as
+    ISO strings.
     """
     from .db import get_conn  # local import keeps db_admin importable in tests that stub db.py
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=int(hours))).isoformat()
     conn = get_conn(db_path)
     try:
         cur = conn.execute(
-            "DELETE FROM jobs "
-            "WHERE is_active = 0 "
-            "AND last_seen_at < datetime('now', '-' || ? || ' hours')",
-            (int(hours),),
+            "DELETE FROM jobs WHERE is_active = 0 AND last_seen_at < ?",
+            (cutoff,),
         )
         conn.commit()
         return cur.rowcount

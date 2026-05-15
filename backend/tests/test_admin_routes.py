@@ -109,13 +109,20 @@ def test_doctor_check_crash_does_not_500(client, monkeypatch):
 
 
 def _insert_job(conn, ext_id, *, is_active, hours_ago):
-    """Test helper: insert a row with last_seen_at = N hours before now (UTC)."""
+    """Test helper: insert a row with last_seen_at = N hours before now (UTC).
+
+    Writes the timestamp in the exact same ISO format that the real
+    `storage.db.upsert_job` uses (`datetime.now(tz).isoformat()`, with a
+    `T` separator and microseconds). Using SQLite's `datetime('now', ...)`
+    here would produce a space-separated string and the test would pass
+    even against a buggy lex-comparison purge query.
+    """
+    from datetime import datetime, timedelta, timezone
+    ts = (datetime.now(timezone.utc) - timedelta(hours=hours_ago)).isoformat()
     conn.execute(
         "INSERT INTO jobs (external_id, title, company, is_active, "
-        "first_seen_at, last_seen_at) "
-        "VALUES (?, ?, ?, ?, datetime('now', '-' || ? || ' hours'), "
-        "                          datetime('now', '-' || ? || ' hours'))",
-        (ext_id, f"Title {ext_id}", "Test Co", is_active, hours_ago, hours_ago),
+        "first_seen_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (ext_id, f"Title {ext_id}", "Test Co", is_active, ts, ts),
     )
 
 
@@ -231,6 +238,37 @@ def test_purge_stale_rejects_zero_hours(client, monkeypatch):
     _idle_broker(monkeypatch)
     resp = client.post("/api/admin/purge-stale", json={"hours": 0})
     assert resp.status_code == 400
+
+
+def test_purge_stale_matches_production_iso_format(client, monkeypatch):
+    """Regression: `last_seen_at` is written by upsert_job() as ISO
+    (`2026-05-15T12:26:34.834925+00:00`). An earlier version of the
+    purge query compared that against SQLite's `datetime('now', ...)`
+    space-separated format — lexically, the `T` (84) sorted after the
+    space (32), so a same-calendar-day cutoff treated stale rows as
+    "newer" and skipped them. Drive the test through the real
+    upsert_job() path to lock this in."""
+    from datetime import datetime, timedelta, timezone
+    from storage.db import upsert_job, get_conn
+    import routes.admin_routes as ar
+
+    _idle_broker(monkeypatch)
+
+    conn = get_conn(ar.DB_PATH)
+    upsert_job(conn, {"external_id": "iso_row", "title": "T", "company": "Co", "description": ""})
+    # Mark inactive and backdate 5h using the real ISO format.
+    backdate = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
+    conn.execute(
+        "UPDATE jobs SET is_active=0, last_seen_at=? WHERE external_id=?",
+        (backdate, "iso_row"),
+    )
+    conn.commit()
+    conn.close()
+
+    # 1h threshold — the 5h-old row must be purged.
+    resp = client.post("/api/admin/purge-stale", json={"hours": 1})
+    assert resp.status_code == 200
+    assert resp.get_json()["purged"] == 1
 
 
 def test_clear_cache_returns_bytes(client, monkeypatch):

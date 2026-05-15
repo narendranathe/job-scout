@@ -266,29 +266,12 @@ def clear_cache():
     if not os.path.exists(DB_PATH):
         return jsonify({"error": f"db not found at {DB_PATH}"}), 500
 
-    def _close_server_cached_conn():
-        """Drop the long-lived sqlite3.Connection that server.py caches in
-        `_conn`. If we don't, sqlite refuses VACUUM with 'cannot VACUUM from
-        within a transaction' the moment that connection has any pending
-        implicit txn. The next request lazy-reopens via get_conn(), so no
-        functional impact."""
-        try:
-            import server as _srv  # type: ignore
-        except Exception:
-            return
-        cached = getattr(_srv, "_conn", None)
-        if cached is None:
-            return
-        try:
-            cached.close()
-        except Exception:
-            pass
-        _srv._conn = None
-
+    # No worker-cached connection to close: every handler in server.py opens
+    # a fresh sqlite3.Connection per request and closes it in a finally. If a
+    # long-lived cached connection is ever introduced, pass it through
+    # `vacuum_db(..., on_before_vacuum=...)` to close it before the rewrite.
     try:
-        size_before, size_after = vacuum_db(
-            DB_PATH, on_before_vacuum=_close_server_cached_conn,
-        )
+        size_before, size_after = vacuum_db(DB_PATH)
     except Exception as e:
         log.exception("clear-cache VACUUM failed")
         return jsonify({"error": f"vacuum failed: {e.__class__.__name__}: {e}"}), 500
