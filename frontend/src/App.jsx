@@ -706,6 +706,97 @@ export default function App() {
     }
   };
 
+  // Purge stale jobs (#23) — destructive, scrape-gated.
+  const [purgeDays,setPurgeDays]       = useState(4);
+  const [purgeLoading,setPurgeLoading] = useState(false);
+  const [purgeMsg,setPurgeMsg]         = useState(null);
+  const [purgeIsErr,setPurgeIsErr]     = useState(false);
+
+  const runPurgeStale = async () => {
+    if (!RENDER_API) {
+      setPurgeIsErr(true);
+      setPurgeMsg("No Render API configured. Set VITE_RENDER_URL in your .env file.");
+      return;
+    }
+    const days = Number(purgeDays);
+    if (!Number.isFinite(days) || days < 1) {
+      setPurgeIsErr(true);
+      setPurgeMsg("Days inactive must be a positive integer (≥ 1).");
+      return;
+    }
+    const ok = window.confirm(
+      `Permanently delete jobs inactive for ${days} day${days===1?"":"s"}? This cannot be undone.`
+    );
+    if (!ok) return;
+    setPurgeLoading(true); setPurgeMsg(null); setPurgeIsErr(false);
+    try {
+      const resp = await fetch(`${RENDER_API}/api/admin/purge-stale`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({hours: days * 24}),
+        signal: AbortSignal.timeout(30000),
+      });
+      const d = await resp.json().catch(() => ({}));
+      if (resp.status === 409) {
+        setPurgeIsErr(true);
+        setPurgeMsg("Cannot purge while scrape is running. Retry in a few minutes.");
+      } else if (!resp.ok) {
+        setPurgeIsErr(true);
+        setPurgeMsg(d.error || `HTTP ${resp.status}`);
+      } else {
+        setPurgeIsErr(false);
+        setPurgeMsg(`Purged ${d.purged} jobs (threshold: ${d.hours_threshold}h).`);
+      }
+    } catch(e) {
+      setPurgeIsErr(true);
+      setPurgeMsg(`Could not reach Render: ${e.message}`);
+    } finally {
+      setPurgeLoading(false);
+    }
+  };
+
+  // Clear DB cache (VACUUM) — destructive, scrape-gated.
+  const [vacuumLoading,setVacuumLoading] = useState(false);
+  const [vacuumMsg,setVacuumMsg]         = useState(null);
+  const [vacuumIsErr,setVacuumIsErr]     = useState(false);
+
+  const runClearCache = async () => {
+    if (!RENDER_API) {
+      setVacuumIsErr(true);
+      setVacuumMsg("No Render API configured. Set VITE_RENDER_URL in your .env file.");
+      return;
+    }
+    const ok = window.confirm(
+      "Run VACUUM on the database? This reclaims unused space and may take a few seconds."
+    );
+    if (!ok) return;
+    setVacuumLoading(true); setVacuumMsg(null); setVacuumIsErr(false);
+    try {
+      const resp = await fetch(`${RENDER_API}/api/admin/clear-cache`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        signal: AbortSignal.timeout(60000),
+      });
+      const d = await resp.json().catch(() => ({}));
+      if (resp.status === 409) {
+        setVacuumIsErr(true);
+        setVacuumMsg("Cannot clear cache while scrape is running. Retry in a few minutes.");
+      } else if (!resp.ok) {
+        setVacuumIsErr(true);
+        setVacuumMsg(d.error || `HTTP ${resp.status}`);
+      } else {
+        const mb = (d.bytes_reclaimed / 1024 / 1024).toFixed(2);
+        setVacuumIsErr(false);
+        setVacuumMsg(`Reclaimed ${mb} MB (${d.db_size_before} → ${d.db_size_after} bytes).`);
+      }
+    } catch(e) {
+      setVacuumIsErr(true);
+      setVacuumMsg(`Could not reach Render: ${e.message}`);
+    } finally {
+      setVacuumLoading(false);
+    }
+  };
+
   // Re-extract skills across all resume_versions rows (#24)
   const [reextractLoading,setReextractLoading] = useState(false);
   const [reextractMsg,setReextractMsg]         = useState(null);
@@ -2065,6 +2156,43 @@ export default function App() {
                   })()}
                 </div>
 
+                {/* Purge Stale Jobs (#23) */}
+                <div style={{padding:18,borderRadius:12,background:t.bgS,border:`1px solid ${t.bd}`}}>
+                  <div style={{fontSize:15,fontWeight:700,color:t.tx,marginBottom:6}}>🗑️ Purge Stale Jobs</div>
+                  <div style={{fontSize:13,color:t.txM,marginBottom:14}}>
+                    Permanently delete inactive jobs (is_active=0) older than the threshold below. Refuses to run during an active scrape.
+                    {!RENDER_API && <span style={{color:t.er}}> (Set VITE_RENDER_URL to enable)</span>}
+                  </div>
+                  <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12,flexWrap:"wrap"}}>
+                    <label htmlFor="purge-days" style={{fontSize:13,color:t.txS,fontWeight:600}}>Days inactive:</label>
+                    <input id="purge-days" type="number" min="1" step="1" value={purgeDays}
+                      onChange={e=>setPurgeDays(e.target.value)}
+                      disabled={purgeLoading||!RENDER_API}
+                      style={{width:80,padding:"7px 10px",borderRadius:7,border:`1px solid ${t.bd}`,
+                        background:t.cd,color:t.tx,fontSize:14,fontFamily:"inherit"}}/>
+                    <span style={{fontSize:12,color:t.txM}}>
+                      = {Number(purgeDays)>0 ? Number(purgeDays)*24 : 0}h threshold
+                    </span>
+                  </div>
+                  <button onClick={runPurgeStale} disabled={purgeLoading||!RENDER_API}
+                    style={{padding:"11px 22px",borderRadius:9,border:"none",
+                      background:purgeLoading?t.bgS:(RENDER_API?"#DC2626":`${t.txM}20`),
+                      color:purgeLoading||!RENDER_API?t.txM:"#fff",
+                      fontSize:14,fontWeight:700,cursor:purgeLoading||!RENDER_API?"not-allowed":"pointer",
+                      fontFamily:"inherit",transition:"all .15s"}}>
+                    {purgeLoading?"⏳ Purging…":"🗑 Purge Now"}
+                  </button>
+                  {purgeMsg && (
+                    <div style={{marginTop:10,padding:"8px 12px",borderRadius:8,
+                      background:purgeIsErr?`${t.er}15`:`${t.ok}15`,
+                      border:`1px solid ${purgeIsErr?t.er:t.ok}40`,
+                      fontSize:14,color:purgeIsErr?t.er:t.ok,fontWeight:600}}>
+                      {purgeIsErr?"❌ ":"✅ "}{purgeMsg}
+                    </div>
+                  )}
+                </div>
+
+
                 {/* Re-extract skills (#24) */}
                 <div style={{padding:18,borderRadius:12,background:t.bgS,border:`1px solid ${t.bd}`}}>
                   <div style={{fontSize:15,fontWeight:700,color:t.tx,marginBottom:6}}>🧠 Re-extract Skills</div>
@@ -2085,6 +2213,31 @@ export default function App() {
                     <div style={{marginTop:10,fontSize:14,fontWeight:600,
                       color:reextractMsg.type==="ok"?t.ok:t.er}}>
                       {reextractMsg.text}
+                    </div>
+                  )}
+                </div>
+
+                {/* Clear DB Cache / VACUUM (#23) */}
+                <div style={{padding:18,borderRadius:12,background:t.bgS,border:`1px solid ${t.bd}`}}>
+                  <div style={{fontSize:15,fontWeight:700,color:t.tx,marginBottom:6}}>♻️ Clear DB Cache</div>
+                  <div style={{fontSize:13,color:t.txM,marginBottom:14}}>
+                    Run <code style={{fontFamily:"monospace",fontSize:12,background:t.cd,padding:"1px 5px",borderRadius:4}}>VACUUM</code> on the SQLite database to reclaim freelist space. Holds an exclusive lock — refuses during active scrapes.
+                    {!RENDER_API && <span style={{color:t.er}}> (Set VITE_RENDER_URL to enable)</span>}
+                  </div>
+                  <button onClick={runClearCache} disabled={vacuumLoading||!RENDER_API}
+                    style={{padding:"11px 22px",borderRadius:9,border:"none",
+                      background:vacuumLoading?t.bgS:(RENDER_API?"#DC2626":`${t.txM}20`),
+                      color:vacuumLoading||!RENDER_API?t.txM:"#fff",
+                      fontSize:14,fontWeight:700,cursor:vacuumLoading||!RENDER_API?"not-allowed":"pointer",
+                      fontFamily:"inherit",transition:"all .15s"}}>
+                    {vacuumLoading?"⏳ Vacuuming…":"♻ Run VACUUM"}
+                  </button>
+                  {vacuumMsg && (
+                    <div style={{marginTop:10,padding:"8px 12px",borderRadius:8,
+                      background:vacuumIsErr?`${t.er}15`:`${t.ok}15`,
+                      border:`1px solid ${vacuumIsErr?t.er:t.ok}40`,
+                      fontSize:14,color:vacuumIsErr?t.er:t.ok,fontWeight:600}}>
+                      {vacuumIsErr?"❌ ":"✅ "}{vacuumMsg}
                     </div>
                   )}
                 </div>
