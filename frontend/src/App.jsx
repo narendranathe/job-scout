@@ -213,6 +213,9 @@ function isSeniorFn(title) {
   return /senior|sr\b|staff\b|lead\b|principal|distinguished/i.test(title||"");
 }
 
+const isPlatinum = (job) => job?.tier === 'platinum';
+const isHighComp = (job) => (job?.salary_max >= 220000) || isPlatinum(job);
+
 /* ═══ Ranked search — alias-aware, with dream-company + role + seniority tiebreakers ═══
  *
  * Search quality tiers (primary sort):
@@ -460,8 +463,10 @@ export default function App() {
   const [selATS,setSelATS]         = useState([]);
   const [selSalary,setSelSalary]   = useState("All");
   const [selPosted,setSelPosted]   = useState("All");
-  const [remoteOnly,setRemoteOnly] = useState(false);
-  const [h1bOnly,setH1bOnly]       = useState(false);
+  const [remoteOnly,setRemoteOnly]       = useState(false);
+  const [h1bOnly,setH1bOnly]             = useState(false);
+  const [platinumOnly,setPlatinumOnly]   = useState(false);
+  const [highCompOnly,setHighCompOnly]   = useState(false);
   const [showFilters,setShowFilters] = useState(false);
   const [so,sSo]           = useState("relevance");
   const [cq,sCq]           = useState("");
@@ -483,6 +488,10 @@ export default function App() {
   const [compareA, setCompareA]   = useState("");
   const [compareB, setCompareB]   = useState("");
   const [compareResult, setCompareResult] = useState(null);
+
+  // Pipeline kanban — API-backed application list
+  const [applications, setApplications] = useState([]);
+  const [appLoading, setAppLoading] = useState(false);
 
   // Manual scrape trigger
   const [scraping,setScraping]   = useState(false);
@@ -506,6 +515,25 @@ export default function App() {
     } catch(e) { setScrapeMsg(`❌ Could not reach Render: ${e.message}`); }
     finally { setScraping(false); }
   };
+
+  const fetchApplications = useCallback(async () => {
+    setAppLoading(true);
+    try {
+      const base = RENDER_API;
+      if (!base) return;
+      const resp = await fetch(`${base}/api/applications`, {signal: AbortSignal.timeout(8000)});
+      if (resp.ok) {
+        const data = await resp.json();
+        setApplications(Array.isArray(data) ? data : (data.applications || []));
+      }
+    } catch (e) {
+      console.warn('Could not fetch applications:', e);
+    } finally {
+      setAppLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchApplications(); }, [fetchApplications]);
 
   const fetchResumeVersions = useCallback(async () => {
     if (!RENDER_API) return;
@@ -618,6 +646,8 @@ export default function App() {
     if (selATS.length)   j = j.filter(x=>selATS.includes(x.ats));
     if (remoteOnly)      j = j.filter(x=>x._loc.isRemote||x.is_remote);
     if (h1bOnly)         j = j.filter(x=>x.sponsorship||likelySponsor(x));
+    if (platinumOnly)    j = j.filter(x=>isPlatinum(x));
+    if (highCompOnly)    j = j.filter(x=>isHighComp(x));
     if (selSalary!=="All") {
       const mins={"$100K+":1e5,"$130K+":13e4,"$160K+":16e4,"$200K+":2e5,"$250K+":25e4};
       j = j.filter(x=>(x.salary_max||0)>=(mins[selSalary]||0));
@@ -651,6 +681,9 @@ export default function App() {
     } else {
       // Default browse: salary/date as selected, or relevance with dream-company boost
       j.sort((a,b) => {
+        // Platinum always sorts first within any sort mode
+        if (isPlatinum(a) && !isPlatinum(b)) return -1;
+        if (!isPlatinum(a) && isPlatinum(b)) return 1;
         if (so==="salary") return (b.salary_max||0)-(a.salary_max||0);
         if (so==="date")   return new Date(b.posted_at||0)-new Date(a.posted_at||0);
         // Relevance sort: dream company gets +0.06 invisible boost so they surface first
@@ -661,17 +694,25 @@ export default function App() {
         const bScore = (b.relevance_score||0) + (isDreamCo(b.company)?0.06:0)
                                                + (isTargetRoleFn(b.title)?0.03:0)
                                                + (isSeniorFn(b.title)?0.01:0);
+        // Within a 0.05-wide score band, applied jobs drop to the bottom so
+        // the user's eye lands on fresh roles first without losing context.
+        const aBand = Math.floor(aScore * 20);
+        const bBand = Math.floor(bScore * 20);
+        if (aBand !== bBand) return bBand - aBand;
+        const aApplied = a.application_status === 'applied' ? 1 : 0;
+        const bApplied = b.application_status === 'applied' ? 1 : 0;
+        if (aApplied !== bApplied) return aApplied - bApplied;
         return bScore - aScore;
       });
     }
     return j;
-  }, [enriched,selRoles,selExp,selStates,selCities,selATS,remoteOnly,h1bOnly,selSalary,selPosted,q,so]);
+  }, [enriched,selRoles,selExp,selStates,selCities,selATS,remoteOnly,h1bOnly,platinumOnly,highCompOnly,selSalary,selPosted,q,so]);
 
   const activeN = [selRoles,selStates,selCities,selATS,selExp].reduce((n,a)=>n+a.length,0)
-    +(remoteOnly?1:0)+(h1bOnly?1:0)+(selSalary!=="All"?1:0)+(selPosted!=="All"?1:0);
+    +(remoteOnly?1:0)+(h1bOnly?1:0)+(platinumOnly?1:0)+(highCompOnly?1:0)+(selSalary!=="All"?1:0)+(selPosted!=="All"?1:0);
   const clearAll = () => {
     setSelRoles([]);setSelExp([]);setSelStates([]);setSelCities([]);
-    setSelATS([]);setRemoteOnly(false);setH1bOnly(false);
+    setSelATS([]);setRemoteOnly(false);setH1bOnly(false);setPlatinumOnly(false);setHighCompOnly(false);
     setSelSalary("All");setSelPosted("All");sQ("");
   };
 
@@ -726,7 +767,15 @@ export default function App() {
   );
 
   const trackerCount = Object.keys(apps).length;
-  const TABS = ["jobs","analytics","companies","trends","tracker","monitor"];
+  const TABS = ["jobs","analytics","companies","trends","tracker","pipeline","monitor"];
+
+  const PIPELINE_STAGES = [
+    { key: 'saved',      label: 'Saved',        color: '#6b7280' },
+    { key: 'applied',    label: 'Applied',      color: '#3b82f6' },
+    { key: 'interview',  label: 'Phone Screen', color: '#f59e0b' },
+    { key: 'offer',      label: 'Offer',        color: '#22c55e' },
+    { key: 'rejected',   label: 'Rejected',     color: '#ef4444' },
+  ];
 
   return (
     <div style={{minHeight:"100vh",background:t.bg,fontFamily:"'Source Sans 3',sans-serif",color:t.tx,fontSize:16}}>
@@ -749,7 +798,7 @@ export default function App() {
                   color:tab===tb?"#fff":t.txM,
                   fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit",
                   textTransform:"capitalize",transition:"all .15s",flexShrink:0}}>
-                {tb==="monitor"?"🖥 Monitor":tb==="tracker"?`📋 Tracker${trackerCount?" ("+trackerCount+")":""}`:tb}
+                {tb==="monitor"?"🖥 Monitor":tb==="tracker"?`📋 Tracker${trackerCount?" ("+trackerCount+")":""}`:tb==="pipeline"?`🗂 Pipeline${applications.length?" ("+applications.length+")":""}`:tb}
               </button>
             ))}
           </div>
@@ -793,6 +842,14 @@ export default function App() {
             <button onClick={()=>setH1bOnly(r=>!r)}
               style={{padding:"10px 14px",borderRadius:8,border:`1.5px solid ${h1bOnly?t.vi:t.bd}`,background:h1bOnly?`${t.vi}12`:"transparent",color:h1bOnly?t.vi:t.txM,fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
               🛂 H1B
+            </button>
+            <button onClick={()=>setPlatinumOnly(r=>!r)}
+              style={{padding:"10px 14px",borderRadius:8,border:`1.5px solid ${platinumOnly?"#b8860b":t.bd}`,background:platinumOnly?"#b8860b18":"transparent",color:platinumOnly?"#b8860b":t.txM,fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
+              ✦ Platinum
+            </button>
+            <button onClick={()=>setHighCompOnly(r=>!r)}
+              style={{padding:"10px 14px",borderRadius:8,border:`1.5px solid ${highCompOnly?t.ok:t.bd}`,background:highCompOnly?`${t.ok}12`:"transparent",color:highCompOnly?t.ok:t.txM,fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
+              💰 $220K+
             </button>
             <select value={selPosted} onChange={e=>setSelPosted(e.target.value)} style={selS}>
               <option value="All">📅 Any Time</option><option value="24h">Last 24h</option>
@@ -841,20 +898,37 @@ export default function App() {
               const sc=j.relevance_score||0, open=xJ===j.external_id;
               const ats=ATS_META[j.ats]||ATS_META.unknown;
               const catLbl=ROLE_CATS.find(r=>r.id===j._cat)?.label||"Other";
+              const isApplied = j.application_status === 'applied';
               return (
                 <div key={j.external_id} onClick={()=>setXJ(open?null:j.external_id)}
-                  style={{background:t.cd,borderRadius:12,border:`1px solid ${t.bd}`,overflow:"hidden",cursor:"pointer",transition:"all .2s",boxShadow:open?t.sh:t.shS}}>
+                  style={{background:t.cd,borderRadius:12,border:`1px solid ${t.bd}`,overflow:"hidden",cursor:"pointer",transition:"all .2s",boxShadow:open?t.sh:t.shS,opacity:isApplied?0.45:1}}>
                   <div className="job-card-top" style={{padding:"16px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:12}}>
                     <div style={{display:"flex",alignItems:"center",gap:14,flex:1,minWidth:0}}>
                       <LogoImg name={j.company} size={40} t={t}/>
                       <div style={{flex:1,minWidth:0}}>
                         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:5,flexWrap:"wrap"}}>
                           <span style={{fontSize:17,fontWeight:700,color:t.tx,fontFamily:"'Playfair Display',serif"}}>{j.title}</span>
+                          {isApplied && <Pill ch={ST_LABEL.applied} c={ST_COLOR.applied} t={t}/>}
                           <Pill ch={catLbl} c={t.bl} t={t}/>
                           <Pill ch={`${ats.i} ${ats.l}`} c={ats.c} t={t}/>
                         </div>
-                        <div className="job-meta" style={{display:"flex",gap:12,fontSize:14,color:t.txS,flexWrap:"wrap"}}>
+                        <div className="job-meta" style={{display:"flex",gap:12,fontSize:14,color:t.txS,flexWrap:"wrap",alignItems:"center"}}>
                           <span style={{fontWeight:700}}>{j.company}</span>
+                          {isPlatinum(j) && (
+                            <span style={{
+                              background:'linear-gradient(135deg, #b8860b, #ffd700)',
+                              color:'#1a1a1a',
+                              fontSize:'10px',
+                              fontWeight:'700',
+                              padding:'2px 6px',
+                              borderRadius:'4px',
+                              marginLeft:'6px',
+                              letterSpacing:'0.5px',
+                              textTransform:'uppercase',
+                            }}>
+                              PLATINUM
+                            </span>
+                          )}
                           <span>{j._loc.display||"—"}</span>
                           {j._loc.state && <span style={{color:t.bl,fontWeight:600}}>📍 {j._loc.state}</span>}
                           {j._loc.isRemote && <span style={{color:t.ok,fontWeight:700}}>🏠 Remote</span>}
@@ -909,6 +983,47 @@ export default function App() {
                           style={{display:"inline-block",padding:"11px 24px",borderRadius:9,background:t.gP,color:"#fff",fontSize:15,fontWeight:700,textDecoration:"none",boxShadow:`0 3px 12px ${t.ac}30`}}>
                           Apply →
                         </a>
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            const base = RENDER_API;
+                            if (!base) return;
+                            try {
+                              const resp = await fetch(`${base}/api/applications`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                  external_id: j.external_id,
+                                  title: j.title,
+                                  company: j.company,
+                                  url: j.url || '',
+                                  status: 'applied',
+                                  relevance_score: j.relevance_score || 0,
+                                  salary_min: j.salary_min || 0,
+                                  salary_max: j.salary_max || 0,
+                                  location: j.location || '',
+                                }),
+                              });
+                              if (resp.ok) {
+                                const newApp = await resp.json();
+                                setApplications(prev => {
+                                  const filtered = prev.filter(a => a.external_id !== j.external_id);
+                                  return [...filtered, newApp];
+                                });
+                              }
+                            } catch (err) {
+                              console.warn('Mark applied failed:', err);
+                            }
+                          }}
+                          style={{
+                            background: 'rgba(59,130,246,0.15)', color: '#3b82f6',
+                            border: '1px solid rgba(59,130,246,0.3)', borderRadius: '4px',
+                            padding: '3px 8px', fontSize: '11px', cursor: 'pointer',
+                            marginLeft: '6px',
+                          }}
+                        >
+                          ✓ Applied
+                        </button>
                         <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
                           {Object.keys(ST_LABEL).map(st => {
                             const cur = apps[j.external_id];
@@ -995,7 +1110,7 @@ export default function App() {
                   [`${stats.h1b_pct||0}%`,"H1B Sponsors",t.vi],
                   [`${stats.remote_pct||0}%`,"Remote Jobs",t.ok],
                   [`${stats.companies_tracked||0}`,"Companies",t.ac],
-                  [`${stats.high_match||0}`,"High Match (70%+)",t.wm],
+                  [`${stats.high_match||0}`,`High Match (top 10% • ≥${stats.high_match_threshold?.toFixed(2)||"0.70"})`,t.wm],
                 ].map(([v,l,c])=>(
                   <div key={l} style={{padding:18,borderRadius:12,background:`${c}08`,border:`1px solid ${c}20`,textAlign:"center"}}>
                     <div style={{fontSize:34,fontWeight:700,color:c,fontFamily:"'Playfair Display',serif"}}>{v}</div>
@@ -1383,6 +1498,116 @@ export default function App() {
             </div>
           );
         })()}
+
+        {/* ════════════ PIPELINE ════════════ */}
+        {tab==="pipeline" && (
+          <div>
+            {/* Stats bar */}
+            <div style={{ display: 'flex', gap: '20px', marginBottom: '20px', flexWrap: 'wrap', fontSize: '14px', color: t.txS }}>
+              <span>📨 Applied this week: <strong style={{color: t.tx}}>{applications.filter(a =>
+                a.status === 'applied' && a.applied_at &&
+                new Date(a.applied_at) > new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+              ).length}</strong></span>
+              <span>📞 In phone screen: <strong style={{color: t.tx}}>{applications.filter(a => a.status === 'interview').length}</strong></span>
+              <span>🎯 Offers: <strong style={{color: t.tx}}>{applications.filter(a => a.status === 'offer').length}</strong></span>
+              <span>📋 Total tracked: <strong style={{color: t.tx}}>{applications.length}</strong></span>
+              {appLoading && <span style={{color: t.txM, fontStyle: 'italic'}}>Loading...</span>}
+              {!RENDER_API && <span style={{color: t.er}}>⚠️ Set VITE_RENDER_URL to enable pipeline sync</span>}
+              {RENDER_API && !appLoading && (
+                <button onClick={fetchApplications}
+                  style={{padding:'3px 10px',borderRadius:6,border:`1px solid ${t.bd}`,background:'transparent',color:t.txM,fontSize:12,cursor:'pointer',fontFamily:'inherit'}}>
+                  ↻ Refresh
+                </button>
+              )}
+            </div>
+
+            {/* Kanban columns */}
+            <div style={{ display: 'flex', gap: '12px', overflowX: 'auto', alignItems: 'flex-start', paddingBottom: '12px' }}>
+              {PIPELINE_STAGES.map(stage => {
+                const stageApps = applications.filter(a => a.status === stage.key);
+                return (
+                  <div key={stage.key} style={{
+                    minWidth: '200px', flex: '0 0 200px',
+                    background: 'rgba(255,255,255,0.03)',
+                    border: `1px solid ${stage.color}30`,
+                    borderRadius: '10px', padding: '12px',
+                  }}>
+                    <div style={{
+                      fontWeight: '700', fontSize: '12px', textTransform: 'uppercase',
+                      letterSpacing: '0.8px', color: stage.color, marginBottom: '10px',
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    }}>
+                      {stage.label}
+                      <span style={{
+                        background: stage.color + '22', color: stage.color,
+                        borderRadius: '10px', padding: '1px 7px', fontSize: '11px',
+                      }}>{stageApps.length}</span>
+                    </div>
+                    {stageApps.length === 0 && (
+                      <div style={{fontSize:'12px',color:t.txM,fontStyle:'italic',padding:'8px 4px',textAlign:'center'}}>empty</div>
+                    )}
+                    {stageApps.map(app => (
+                      <div key={app.external_id} style={{
+                        background: t.cd,
+                        borderRadius: '6px', padding: '10px', marginBottom: '8px',
+                        borderLeft: `3px solid ${stage.color}`,
+                        boxShadow: t.shS,
+                      }}>
+                        <div style={{ fontWeight: '600', fontSize: '13px', marginBottom: '2px', color: t.tx }}>
+                          {app.company}
+                          {app.tier === 'platinum' && (
+                            <span style={{
+                              background: 'linear-gradient(135deg, #b8860b, #ffd700)',
+                              color: '#1a1a1a', fontSize: '9px', fontWeight: '700',
+                              padding: '1px 4px', borderRadius: '3px', marginLeft: '5px',
+                            }}>PLATINUM</span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: '11px', color: t.txM, marginBottom: '6px' }}>
+                          {app.title}
+                        </div>
+                        {(app.salary_min > 0) && (
+                          <div style={{ fontSize: '11px', color: '#22c55e', marginBottom: '4px' }}>
+                            ${Math.round(app.salary_min / 1000)}K–${Math.round((app.salary_max || app.salary_min) / 1000)}K
+                          </div>
+                        )}
+                        <select
+                          value={app.status}
+                          onClick={e => e.stopPropagation()}
+                          onChange={async (e) => {
+                            const newStatus = e.target.value;
+                            setApplications(prev => prev.map(a =>
+                              a.external_id === app.external_id ? { ...a, status: newStatus } : a
+                            ));
+                            try {
+                              await fetch(`${RENDER_API}/api/applications/${app.external_id}`, {
+                                method: 'PATCH',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ status: newStatus }),
+                              });
+                            } catch (err) {
+                              console.warn('Failed to update status:', err);
+                            }
+                          }}
+                          style={{
+                            width: '100%', fontSize: '11px', padding: '3px',
+                            background: t.inp, color: t.tx,
+                            border: `1px solid ${t.bd}`, borderRadius: '4px',
+                            fontFamily: 'inherit', cursor: 'pointer',
+                          }}
+                        >
+                          {PIPELINE_STAGES.map(s => (
+                            <option key={s.key} value={s.key}>{s.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* ════════════ MONITOR ════════════ */}
         {tab==="monitor" && (

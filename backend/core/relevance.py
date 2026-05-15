@@ -10,6 +10,8 @@ from config.companies import RELEVANT_TITLE_KEYWORDS, EXCLUDE_TITLE_KEYWORDS
 
 log = logging.getLogger(__name__)
 
+PLATINUM_BOOST = 0.08
+
 
 class RelevanceEngine:
     def __init__(self):
@@ -104,8 +106,16 @@ class RelevanceEngine:
             title_score = 0.14
         elif any(kw in title for kw in ["analytics engineer", "data scientist"]):
             title_score = 0.12
+        elif any(kw in title for kw in [
+            "quantitative researcher", "quant researcher", "quant developer",
+            "quant analyst", "quant engineer", "quant strat", "trading engineer",
+            "systematic researcher", "research engineer", "financial engineer",
+        ]):
+            title_score = 0.13  # quant research/engineering — highly relevant
         elif any(kw in title for kw in ["platform engineer", "backend engineer"]):
             title_score = 0.08
+        elif any(kw in title for kw in ["quantitative", "quant", "algorithmic", "systematic"]):
+            title_score = 0.07  # broad quant signal
         elif "data" in title or "engineer" in title:
             title_score = 0.05
         score += title_score
@@ -129,6 +139,10 @@ class RelevanceEngine:
 
         # Clamp to [0.0, 1.0]
         score = max(0.0, min(1.0, score))
+
+        # ── Platinum company boost (8%) ──
+        if job.get("tier") == "platinum":
+            score = min(1.0, score + PLATINUM_BOOST)
 
         # Deduplicate while preserving insertion order (a skill could appear in both
         # core and secondary lists if profile.py was misconfigured)

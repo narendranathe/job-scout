@@ -9,6 +9,7 @@ import os
 import logging
 from datetime import datetime, timezone
 from collections import Counter
+from statistics import quantiles
 
 log = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ def _parse_skills(val: str) -> list[str]:
     return [s.strip() for s in val.split(",") if s.strip()]
 
 
-def export(db_path: str = DB_PATH, output_path: str = None) -> dict:
+def export(db_path: str = DB_PATH, output_path: str = None, cycle_counter: int = 0) -> dict:
     if not os.path.exists(db_path):
         log.warning("No DB at %s", db_path)
         return _empty()
@@ -37,9 +38,32 @@ def export(db_path: str = DB_PATH, output_path: str = None) -> dict:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 
-    rows = conn.execute(
-        "SELECT * FROM jobs WHERE is_active = 1 ORDER BY relevance_score DESC LIMIT 500"
-    ).fetchall()
+    # LEFT JOIN applications so the dashboard knows which jobs the user already
+    # applied to. Match by external_id OR content_hash — content_hash catches
+    # the case where Greenhouse/Lever republishes the same req with a new ID.
+    # Priority-based aggregation (applied > saved > others) so a job matched
+    # by BOTH a 'saved' row (old external_id) and an 'applied' row (content_hash)
+    # surfaces as 'applied' — MAX() over the status string sorts 'saved' first
+    # lexicographically, which would silently defeat the dedup.
+    rows = conn.execute("""
+        SELECT j.*,
+               CASE
+                 WHEN SUM(CASE WHEN a.status = 'applied' THEN 1 ELSE 0 END) > 0 THEN 'applied'
+                 WHEN SUM(CASE WHEN a.status = 'saved'   THEN 1 ELSE 0 END) > 0 THEN 'saved'
+                 ELSE NULL
+               END AS application_status,
+               MAX(CASE WHEN a.status = 'applied' THEN a.applied_at END) AS application_applied_at
+        FROM jobs j
+        LEFT JOIN applications a
+               ON (a.external_id = j.external_id
+                   OR (a.content_hash IS NOT NULL
+                       AND a.content_hash = j.content_hash))
+              AND a.status != 'removed'
+        WHERE j.is_active = 1
+        GROUP BY j.id
+        ORDER BY j.relevance_score DESC
+        LIMIT 500
+    """).fetchall()
 
     jobs = []
     for r in rows:
@@ -49,7 +73,16 @@ def export(db_path: str = DB_PATH, output_path: str = None) -> dict:
         jobs.append(j)
 
     total = len(jobs)
-    high = sum(1 for j in jobs if (j.get("relevance_score") or 0) >= 0.7)
+
+    # HIGH MATCH = top 10% by relevance, recalibrated each cycle.
+    # Falls back to 0.70 only when corpus is too small to compute a stable percentile.
+    score_pool = [j["relevance_score"] for j in jobs if j.get("relevance_score")]
+    if len(score_pool) >= 10:
+        high_match_threshold = float(quantiles(score_pool, n=10)[8])
+    else:
+        high_match_threshold = 0.7
+    high = sum(1 for j in jobs if (j.get("relevance_score") or 0) >= high_match_threshold)
+
     remote_n = sum(1 for j in jobs if j.get("is_remote"))
     salaries = [j["salary_max"] for j in jobs if j.get("salary_max") and j["salary_max"] > 0]
     avg_sal = round(sum(salaries) / len(salaries)) if salaries else 0
@@ -79,6 +112,7 @@ def export(db_path: str = DB_PATH, output_path: str = None) -> dict:
         "jobs": jobs,
         "stats": {
             "total_jobs": total, "high_match": high,
+            "high_match_threshold": round(high_match_threshold, 3),
             "remote_pct": round(remote_n/total*100) if total else 0,
             "avg_salary": avg_sal,
             "h1b_pct": round(h1b_n/total*100) if total else 0,
@@ -93,6 +127,11 @@ def export(db_path: str = DB_PATH, output_path: str = None) -> dict:
         "trend": sorted([{"date":k,"count":v} for k,v in date_c.items()], key=lambda x: x["date"])[-30:],
         "runs": runs,
         "exported_at": datetime.now(timezone.utc).isoformat(),
+        "metadata": {
+            "cycle_counter": cycle_counter,
+            "last_run_at": datetime.now(timezone.utc).isoformat(),
+            "jobs_total": total,
+        },
     }
 
     if output_path:

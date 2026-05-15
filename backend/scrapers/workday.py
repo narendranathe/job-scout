@@ -136,7 +136,7 @@ def scrape(company: dict):
                         "company": name,
                         "location": location_text,
                         "department": "",
-                        "description": "",
+                        "description": raw_title,  # full desc needs a 2nd fetch; title gives scoring signal
                         "url": job_url,
                         "ats": "workday",
                         "is_remote": is_remote,

@@ -23,7 +23,6 @@ import os
 import sys
 import json
 import time
-import threading
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -87,7 +86,6 @@ def _load_scrapers():
 # ─── Shared State ──────────────────────────────────────────────────
 class State:
     def __init__(self):
-        self._lock = threading.Lock()
         self.started_at   = datetime.now(timezone.utc).isoformat()
         self.last_scrape_at = None
         self.last_duration  = 0
@@ -99,54 +97,51 @@ class State:
         self._cached_at     = None
 
     def update_cache(self, data: dict):
-        with self._lock:
-            self._cached_json = json.dumps(data, default=str, separators=(",", ":"))
-            self._cached_at   = datetime.now(timezone.utc).isoformat()
+        self._cached_json = json.dumps(data, default=str, separators=(",", ":"))
+        self._cached_at   = datetime.now(timezone.utc).isoformat()
 
     def get_cache(self) -> str | None:
-        with self._lock:
-            return self._cached_json
+        return self._cached_json
 
     def record_cycle(self, duration: float, stats: dict, error: str = None):
-        with self._lock:
-            self.last_scrape_at = datetime.now(timezone.utc).isoformat()
-            self.last_duration  = round(duration, 1)
-            self.total_cycles  += 1
-            self.total_new     += stats.get("new", 0)
-            self.last_error     = error
-            self.is_scraping    = False
+        self.last_scrape_at = datetime.now(timezone.utc).isoformat()
+        self.last_duration  = round(duration, 1)
+        self.total_cycles  += 1
+        self.total_new     += stats.get("new", 0)
+        self.last_error     = error
+        self.is_scraping    = False
 
     def health(self) -> dict:
-        with self._lock:
-            return {
-                "status":            "scraping" if self.is_scraping else "idle",
-                "started_at":        self.started_at,
-                "uptime_hours":      round(
-                    (datetime.now(timezone.utc) - datetime.fromisoformat(self.started_at)).total_seconds() / 3600, 1
-                ),
-                "last_scrape_at":    self.last_scrape_at,
-                "last_duration_sec": self.last_duration,
-                "total_cycles":      self.total_cycles,
-                "total_new_jobs":    self.total_new,
-                "last_error":        self.last_error,
-                "cache_fresh_at":    self._cached_at,
-                "companies_tracked": TOTAL_COMPANIES,
-                "fast_interval_sec": FAST_INTERVAL,
-            }
+        return {
+            "status":            "scraping" if self.is_scraping else "idle",
+            "started_at":        self.started_at,
+            "uptime_hours":      round(
+                (datetime.now(timezone.utc) - datetime.fromisoformat(self.started_at)).total_seconds() / 3600, 1
+            ),
+            "last_scrape_at":    self.last_scrape_at,
+            "last_duration_sec": self.last_duration,
+            "total_cycles":      self.total_cycles,
+            "total_new_jobs":    self.total_new,
+            "last_error":        self.last_error,
+            "cache_fresh_at":    self._cached_at,
+            "companies_tracked": TOTAL_COMPANIES,
+            "fast_interval_sec": FAST_INTERVAL,
+        }
 
 
 state = State()
 
-# ─── Cycle counter (persists on disk) ─────────────────────────────
-COUNTER_PATH = Path(DB_PATH).parent / ".cycle_counter"
+# ─── Cycle counter (reads from exported JSON) ─────────────────
+JSON_OUTPUT_PATH = Path(DB_PATH).parent.parent / "frontend" / "public" / "api-data.json"
 
-def _next_cycle() -> int:
+def load_cycle_counter() -> int:
+    """Read cycle counter from api-data.json metadata, increment, return new value."""
     try:
-        n = int(COUNTER_PATH.read_text().strip()) + 1
+        with open(JSON_OUTPUT_PATH) as f:
+            data = json.load(f)
+        return data.get("metadata", {}).get("cycle_counter", 0) + 1
     except Exception:
-        n = 1
-    COUNTER_PATH.write_text(str(n))
-    return n
+        return 1
 
 
 # ─── Night quiet hours ────────────────────────────────────────────
@@ -181,10 +176,10 @@ def run_scrape(mode: str = "fast") -> dict:
     init_db(DB_PATH)
     conn = get_conn(DB_PATH)
     run_id = start_run(conn)
-    cycle = _next_cycle()
+    cycle = load_cycle_counter()
 
     companies = (
-        [c for c in COMPANIES if c.get("tier", 3) == 1]
+        [c for c in COMPANIES if c.get("tier", 3) in (0, 1)]
         if mode == "fast"
         else get_batch(cycle)
     )
@@ -270,38 +265,6 @@ def build_cache():
         log.error("Cache rebuild failed: %s", e)
 
 
-# ─── Background scraper loop ──────────────────────────────────────
-def scraper_loop():
-    log.info("Background scraper started — interval=%ds", FAST_INTERVAL)
-    local_cycle = 0
-
-    while True:
-        # ── Night quiet hours: skip and sleep ──
-        if is_quiet_hours():
-            log.info("😴 Quiet hours (12am–5:30am CST) — skipping cycle")
-            time.sleep(FAST_INTERVAL)
-            continue
-
-        try:
-            local_cycle += 1
-            state.is_scraping = True
-            mode = "full" if local_cycle % 12 == 0 else "fast"
-
-            t0 = time.time()
-            stats = run_scrape(mode)
-            duration = time.time() - t0
-
-            state.record_cycle(duration, stats)
-            build_cache()
-
-        except Exception as e:
-            log.error("Scraper loop error: %s", e)
-            state.record_cycle(0, {}, str(e))
-
-        log.info("💤 Next scrape in %ds...", FAST_INTERVAL)
-        time.sleep(FAST_INTERVAL)
-
-
 # ─── Flask routes ─────────────────────────────────────────────────
 
 @app.route("/ping")
@@ -340,7 +303,7 @@ def api_stats():
 
 @app.route("/api/scrape", methods=["POST", "OPTIONS"])
 def api_trigger_scrape():
-    """Trigger an immediate full scrape (manual button or GitHub Actions)."""
+    """Trigger an immediate full scrape (synchronous — GitHub Actions is the scheduler)."""
     if request.method == "OPTIONS":
         return "", 204
 
@@ -352,18 +315,16 @@ def api_trigger_scrape():
     if state.is_scraping:
         return jsonify({"status": "already_scraping", "message": "Scrape already running"}), 409
 
-    def _trigger():
-        state.is_scraping = True
-        t0 = time.time()
-        try:
-            stats = run_scrape("full")
-            state.record_cycle(time.time() - t0, stats)
-            build_cache()
-        except Exception as e:
-            state.record_cycle(0, {}, str(e))
-
-    threading.Thread(target=_trigger, daemon=True).start()
-    return jsonify({"status": "scrape_triggered", "message": "Full scrape started — refresh in ~2 min"}), 202
+    state.is_scraping = True
+    t0 = time.time()
+    try:
+        stats = run_scrape("fast", delay=0.3)
+        state.record_cycle(time.time() - t0, stats)
+        build_cache()
+        return jsonify({"ok": True, "stats": stats}), 200
+    except Exception as e:
+        state.record_cycle(0, {}, str(e))
+        return jsonify({"error": str(e)}), 500
 
 
 # ─── Profile & Resume endpoints ────────────────────────────────────
@@ -443,10 +404,10 @@ def api_get_applications():
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM applications ORDER BY updated_at DESC"
+                "SELECT * FROM applications WHERE status != 'removed' ORDER BY updated_at DESC"
             ).fetchall()
         conn.close()
-        return jsonify([dict(r) for r in rows]), 200, {"Access-Control-Allow-Origin": "*"}
+        return jsonify({"applications": [dict(r) for r in rows]}), 200, {"Access-Control-Allow-Origin": "*"}
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -474,12 +435,23 @@ def api_save_application():
             existing["applied_at"] if existing else None
         ) if existing else None
 
+        # Look up content_hash from the job row so applied-job dedup survives
+        # external_id churn (Greenhouse/Lever req republish).
+        content_hash = None
+        if new_status == "applied":
+            job_row = conn.execute(
+                "SELECT content_hash FROM jobs WHERE external_id = ?", (ext_id,)
+            ).fetchone()
+            if job_row and job_row["content_hash"]:
+                content_hash = job_row["content_hash"]
+
         if existing:
             conn.execute("""
                 UPDATE applications SET
                     status = ?, notes = COALESCE(?, notes),
                     resume_version = COALESCE(?, resume_version),
                     applied_at = COALESCE(?, applied_at),
+                    content_hash = COALESCE(?, content_hash),
                     updated_at = ?
                 WHERE external_id = ?
             """, (
@@ -487,6 +459,7 @@ def api_save_application():
                 data.get("notes"),
                 data.get("resume_version"),
                 now if new_status == "applied" else None,
+                content_hash,
                 now, ext_id,
             ))
             action = "updated"
@@ -495,8 +468,8 @@ def api_save_application():
                 INSERT INTO applications
                     (external_id, title, company, url, status, relevance_score,
                      salary_min, salary_max, location, notes, resume_version,
-                     saved_at, applied_at, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     saved_at, applied_at, updated_at, content_hash)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 ext_id,
                 data.get("title", ""),
@@ -512,6 +485,7 @@ def api_save_application():
                 now,
                 now if new_status == "applied" else None,
                 now,
+                content_hash,
             ))
             action = "saved"
 
@@ -526,15 +500,62 @@ def api_save_application():
 
 @app.route("/api/applications/<ext_id>", methods=["DELETE", "OPTIONS"])
 def api_delete_application(ext_id):
-    """Remove a job from the tracker."""
+    """Soft-delete a job from the tracker (sets status to 'removed')."""
     if request.method == "OPTIONS":
         return "", 204
     try:
+        now = datetime.now(timezone.utc).isoformat()
         conn = get_conn(DB_PATH)
-        conn.execute("DELETE FROM applications WHERE external_id = ?", (ext_id,))
+        conn.execute(
+            "UPDATE applications SET status = 'removed', updated_at = ? WHERE external_id = ?",
+            (now, ext_id)
+        )
         conn.commit()
         conn.close()
-        return jsonify({"status": "deleted"}), 200, {"Access-Control-Allow-Origin": "*"}
+        return jsonify({"ok": True, "removed": ext_id}), 200, {"Access-Control-Allow-Origin": "*"}
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/applications/<string:ext_id>", methods=["PATCH"])
+def patch_application(ext_id):
+    """Partially update an application (status, notes, resume_version)."""
+    data = request.get_json() or {}
+    allowed = {"status", "notes", "resume_version"}
+    updates = {k: v for k, v in data.items() if k in allowed}
+    if not updates:
+        return jsonify({"error": "No valid fields"}), 400
+    # Handle applied_at automatically when status becomes 'applied'
+    if updates.get("status") == "applied":
+        updates["applied_at"] = datetime.now(timezone.utc).isoformat()
+    updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+    SAFE_COLS = {"status", "notes", "resume_version", "applied_at", "updated_at", "content_hash"}
+    try:
+        conn = get_conn(DB_PATH)
+        # When transitioning to 'applied', pin the job's content_hash onto the
+        # application row so export-side dedup still catches it after the
+        # underlying req gets republished with a new external_id. A manual
+        # application with no matching job row simply leaves content_hash NULL.
+        if updates.get("status") == "applied":
+            job_row = conn.execute(
+                "SELECT content_hash FROM jobs WHERE external_id = ?", (ext_id,)
+            ).fetchone()
+            if job_row and job_row["content_hash"]:
+                updates["content_hash"] = job_row["content_hash"]
+        set_parts = [f"{k} = ?" for k in updates if k in SAFE_COLS]
+        values = [v for k, v in updates.items() if k in SAFE_COLS] + [ext_id]
+        conn.execute(
+            f"UPDATE applications SET {', '.join(set_parts)} WHERE external_id = ?",
+            values
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM applications WHERE external_id = ?", (ext_id,)
+        ).fetchone()
+        conn.close()
+        if row is None:
+            return jsonify({"error": "Not found"}), 404
+        return jsonify(dict(row)), 200, {"Access-Control-Allow-Origin": "*"}
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -760,10 +781,8 @@ def add_cors(response):
 
 # ─── Startup ──────────────────────────────────────────────────────
 init_db(DB_PATH)
-
-_scraper_thread = threading.Thread(target=scraper_loop, daemon=True, name="scraper")
-_scraper_thread.start()
-log.info("Background scraper thread started (interval=%ds)", FAST_INTERVAL)
+# Note: No background thread — GitHub Actions cron is the scheduler.
+# The /api/scrape endpoint can be called manually or by Actions to trigger a scrape.
 
 
 def main():
