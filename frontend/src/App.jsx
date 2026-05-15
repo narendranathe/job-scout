@@ -908,20 +908,7 @@ export default function App() {
                       <div style={{flex:1,minWidth:0}}>
                         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:5,flexWrap:"wrap"}}>
                           <span style={{fontSize:17,fontWeight:700,color:t.tx,fontFamily:"'Playfair Display',serif"}}>{j.title}</span>
-                          {isApplied && (
-                            <span style={{
-                              background:ST_COLOR.applied,
-                              color:'#fff',
-                              fontSize:'10px',
-                              fontWeight:'700',
-                              padding:'2px 7px',
-                              borderRadius:'4px',
-                              letterSpacing:'0.4px',
-                              textTransform:'uppercase',
-                            }}>
-                              ✓ Applied
-                            </span>
-                          )}
+                          {isApplied && <Pill ch={ST_LABEL.applied} c={ST_COLOR.applied} t={t}/>}
                           <Pill ch={catLbl} c={t.bl} t={t}/>
                           <Pill ch={`${ats.i} ${ats.l}`} c={ats.c} t={t}/>
                         </div>

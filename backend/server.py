@@ -529,26 +529,21 @@ def patch_application(ext_id):
     if updates.get("status") == "applied":
         updates["applied_at"] = datetime.now(timezone.utc).isoformat()
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
-    # When transitioning to 'applied', pin the job's content_hash onto the
-    # application row so the export-side dedup still catches it after the
-    # underlying req gets republished with a new external_id.
-    if updates.get("status") == "applied":
-        try:
-            conn = get_conn(DB_PATH)
-            row = conn.execute(
-                "SELECT content_hash FROM jobs WHERE external_id = ?", (ext_id,)
-            ).fetchone()
-            conn.close()
-            if row and row["content_hash"]:
-                updates["content_hash"] = row["content_hash"]
-        except Exception as e:
-            log.warning("content_hash lookup failed for %s: %s", ext_id, e)
-    # Build SET clause from KNOWN-SAFE column names only
     SAFE_COLS = {"status", "notes", "resume_version", "applied_at", "updated_at", "content_hash"}
-    set_parts = [f"{k} = ?" for k in updates if k in SAFE_COLS]
-    values = [v for k, v in updates.items() if k in SAFE_COLS] + [ext_id]
     try:
         conn = get_conn(DB_PATH)
+        # When transitioning to 'applied', pin the job's content_hash onto the
+        # application row so export-side dedup still catches it after the
+        # underlying req gets republished with a new external_id. A manual
+        # application with no matching job row simply leaves content_hash NULL.
+        if updates.get("status") == "applied":
+            job_row = conn.execute(
+                "SELECT content_hash FROM jobs WHERE external_id = ?", (ext_id,)
+            ).fetchone()
+            if job_row and job_row["content_hash"]:
+                updates["content_hash"] = job_row["content_hash"]
+        set_parts = [f"{k} = ?" for k in updates if k in SAFE_COLS]
+        values = [v for k, v in updates.items() if k in SAFE_COLS] + [ext_id]
         conn.execute(
             f"UPDATE applications SET {', '.join(set_parts)} WHERE external_id = ?",
             values

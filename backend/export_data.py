@@ -41,11 +41,18 @@ def export(db_path: str = DB_PATH, output_path: str = None, cycle_counter: int =
     # LEFT JOIN applications so the dashboard knows which jobs the user already
     # applied to. Match by external_id OR content_hash — content_hash catches
     # the case where Greenhouse/Lever republishes the same req with a new ID.
-    # COALESCE picks the freshest applied_at when both legs of the OR hit.
+    # Priority-based aggregation (applied > saved > others) so a job matched
+    # by BOTH a 'saved' row (old external_id) and an 'applied' row (content_hash)
+    # surfaces as 'applied' — MAX() over the status string sorts 'saved' first
+    # lexicographically, which would silently defeat the dedup.
     rows = conn.execute("""
         SELECT j.*,
-               MAX(a.status)     AS application_status,
-               MAX(a.applied_at) AS application_applied_at
+               CASE
+                 WHEN SUM(CASE WHEN a.status = 'applied' THEN 1 ELSE 0 END) > 0 THEN 'applied'
+                 WHEN SUM(CASE WHEN a.status = 'saved'   THEN 1 ELSE 0 END) > 0 THEN 'saved'
+                 ELSE NULL
+               END AS application_status,
+               MAX(CASE WHEN a.status = 'applied' THEN a.applied_at END) AS application_applied_at
         FROM jobs j
         LEFT JOIN applications a
                ON (a.external_id = j.external_id
