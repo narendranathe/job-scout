@@ -17,7 +17,9 @@ Zero-cost, real-time job scraper + intelligent React dashboard built for data en
 | **"Applied here" badge** | Expand any job card to see your history at that company |
 | **Profile & PIN** | Store preferences, dream companies, access PIN via Render API |
 | **Mobile responsive** | Works on phone, tablet, desktop |
-| **Manual triggers** | Dashboard button + GitHub Actions dispatch |
+| **Manual triggers panel** | Live progress bar + concurrency-safe scrape + 5 admin ops (Doctor, Purge, Re-extract, Vault Re-index, Clear Cache) |
+| **Live scrape progress** | Real-time polling: current company, completed/total, jobs found, ETA |
+| **Doctor health-check** | One-click readiness probe: DB, scrapers, recent runs, env vars, vault, disk |
 | **Dark / Light theme** | Persists in memory |
 
 ## Architecture
@@ -239,20 +241,65 @@ curl https://your-render-url.onrender.com/api/applications/company/Goldman%20Sac
 
 ---
 
-## Manual Triggers
+## Manual Triggers Panel (Monitor tab)
 
-### Dashboard (Monitor tab)
-- **Trigger Render Scrape** — kicks off a full scrape on Render immediately
-- **Open GitHub Actions** — link to run the workflow manually (full or fast mode)
+The dashboard ships a six-card maintenance panel for live operations. Every card respects the same `API_SECRET` Bearer auth as `/api/scrape`.
 
-### GitHub Actions (manual dispatch)
-Go to: `Actions → Full Sweep & Deploy → Run workflow`
-- Choose `full` (all 130+ companies, ~3 min) or `fast` (Tier 1 only, ~30 sec)
+| Card | What it does | Endpoint |
+|------|--------------|----------|
+| 🚀 **Trigger Render Scrape** | Fires a fast scrape (Tier 1, ~30s). Returns `202` and starts streaming live progress (current company, X/Y companies, jobs found). Returns `409` if a scrape is already running; UI shows the running scrape's progress bar instead of the button. | `POST /api/scrape` + `GET /api/scrape/status` |
+| ⚡ **Trigger GitHub Actions** | External link to the workflow manual dispatch (full or fast). | — |
+| 🩺 **Doctor** | Health-check probe: DB connectivity, all 6 scrapers importable, recent successful scrape run, env vars, vault dirs writable, disk space. Each check returns pass/warn/fail. | `GET /api/admin/doctor` |
+| 🗑️ **Purge Stale Jobs** | Deletes inactive jobs older than N hours (default 96). Returns count. Refuses (`409`) during an active scrape. Confirm dialog before fire. | `POST /api/admin/purge-stale` |
+| 🧠 **Re-extract Skills** | Reruns skill extraction across all stored resume versions. Returns count updated. | `POST /api/admin/reextract-skills` |
+| 📚 **Vault Re-index** | Rebuilds the in-memory TF-IDF index from `resume_vault/text/`. Returns count + duration. | `POST /api/admin/vault-reindex` |
+| ♻️ **Clear DB Cache** | Runs `VACUUM` on the SQLite DB. Returns bytes reclaimed. Refuses (`409`) during an active scrape. Confirm dialog before fire. | `POST /api/admin/clear-cache` |
 
-### API
+### Live Progress Architecture
+
+```
+                 broker.start(mode, total)
+                 broker.tick(company, found, new)
+                 broker.finish(stats)
+                       │
+            ┌──────────┴──────────┐
+            │                     │
+   /api/scrape (manual)     5-min background thread
+            │                     │
+            └─────────┬───────────┘
+                      ▼
+               core/scrape_status.py (singleton broker)
+                      ▲
+                      │ GET /api/scrape/status (1.5s polling)
+                      │
+                Frontend progress bar
+```
+
+A single thread-safe broker (`core/scrape_status.py`) tracks scrape state. Both the manual trigger and the 5-min cron report through it. The broker has a 10-min watchdog — if a scrape thread dies without calling `finish()`, the next status read reports `is_running: false`.
+
+### Backend CLI
+
 ```bash
+# Manual scrape — same orchestrator, no progress feedback
+python main.py            # full sweep (all 130+ companies)
+python main.py --fast     # Tier 1 only (~30 sec)
+
+# Adjust per-request delay (formerly the --delay flag; now an env var)
+SCRAPE_DELAY=0.5 python main.py --fast
+```
+
+### Direct API
+
+```bash
+# Trigger scrape (returns 202 with snapshot, or 409 if running)
 curl -X POST https://your-render-url.onrender.com/api/scrape \
   -H "Authorization: Bearer YOUR_API_SECRET"
+
+# Poll status (returns broker snapshot)
+curl https://your-render-url.onrender.com/api/scrape/status
+
+# Run doctor (read-only health-check)
+curl https://your-render-url.onrender.com/api/admin/doctor | python -m json.tool
 ```
 
 ---
@@ -274,15 +321,22 @@ job-scout/
 │   │   ├── workday.py           # 7 finance companies
 │   │   └── utils.py             # shared HTTP helpers
 │   ├── core/
-│   │   └── relevance.py         # Keyword scoring engine (0–100%)
+│   │   ├── relevance.py          # Keyword scoring engine (0–100%)
+│   │   ├── scrape_orchestrator.py # Canonical run_scrape() — shared by CLI + server
+│   │   └── scrape_status.py      # Thread-safe broker for live progress
+│   ├── routes/
+│   │   ├── vault_routes.py       # 8 resume-vault endpoints
+│   │   └── admin_routes.py       # Doctor + 5 destructive/maintenance ops
 │   ├── storage/
-│   │   ├── db.py                # SQLite: jobs + applications + resume_versions
-│   │   └── profile_manager.py   # Profile + resume storage + skill extraction
+│   │   ├── db.py                 # SQLite: jobs + applications + resume_versions
+│   │   ├── db_admin.py           # Purge + VACUUM helpers used by admin_routes
+│   │   ├── profile_manager.py    # Profile + resume storage + skill extraction
+│   │   └── resume_vault.py       # PDF vault + TF-IDF engine
 │   ├── alerts/
-│   │   └── notifier.py          # Discord + Telegram dream-job alerts
-│   ├── server.py                # Flask API + background scraper + night skip
-│   ├── main.py                  # CLI (GitHub Actions + local testing)
-│   ├── export_data.py           # DB → api-data.json
+│   │   └── notifier.py           # Discord + Telegram dream-job alerts
+│   ├── server.py                 # Flask API + background scraper + night skip
+│   ├── main.py                   # CLI (GitHub Actions + local testing)
+│   ├── export_data.py            # DB → api-data.json
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
