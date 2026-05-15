@@ -694,6 +694,14 @@ export default function App() {
         const bScore = (b.relevance_score||0) + (isDreamCo(b.company)?0.06:0)
                                                + (isTargetRoleFn(b.title)?0.03:0)
                                                + (isSeniorFn(b.title)?0.01:0);
+        // Within a 0.05-wide score band, applied jobs drop to the bottom so
+        // the user's eye lands on fresh roles first without losing context.
+        const aBand = Math.floor(aScore * 20);
+        const bBand = Math.floor(bScore * 20);
+        if (aBand !== bBand) return bBand - aBand;
+        const aApplied = a.application_status === 'applied' ? 1 : 0;
+        const bApplied = b.application_status === 'applied' ? 1 : 0;
+        if (aApplied !== bApplied) return aApplied - bApplied;
         return bScore - aScore;
       });
     }
@@ -890,15 +898,17 @@ export default function App() {
               const sc=j.relevance_score||0, open=xJ===j.external_id;
               const ats=ATS_META[j.ats]||ATS_META.unknown;
               const catLbl=ROLE_CATS.find(r=>r.id===j._cat)?.label||"Other";
+              const isApplied = j.application_status === 'applied';
               return (
                 <div key={j.external_id} onClick={()=>setXJ(open?null:j.external_id)}
-                  style={{background:t.cd,borderRadius:12,border:`1px solid ${t.bd}`,overflow:"hidden",cursor:"pointer",transition:"all .2s",boxShadow:open?t.sh:t.shS}}>
+                  style={{background:t.cd,borderRadius:12,border:`1px solid ${t.bd}`,overflow:"hidden",cursor:"pointer",transition:"all .2s",boxShadow:open?t.sh:t.shS,opacity:isApplied?0.45:1}}>
                   <div className="job-card-top" style={{padding:"16px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:12}}>
                     <div style={{display:"flex",alignItems:"center",gap:14,flex:1,minWidth:0}}>
                       <LogoImg name={j.company} size={40} t={t}/>
                       <div style={{flex:1,minWidth:0}}>
                         <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:5,flexWrap:"wrap"}}>
                           <span style={{fontSize:17,fontWeight:700,color:t.tx,fontFamily:"'Playfair Display',serif"}}>{j.title}</span>
+                          {isApplied && <Pill ch={ST_LABEL.applied} c={ST_COLOR.applied} t={t}/>}
                           <Pill ch={catLbl} c={t.bl} t={t}/>
                           <Pill ch={`${ats.i} ${ats.l}`} c={ats.c} t={t}/>
                         </div>

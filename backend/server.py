@@ -435,12 +435,23 @@ def api_save_application():
             existing["applied_at"] if existing else None
         ) if existing else None
 
+        # Look up content_hash from the job row so applied-job dedup survives
+        # external_id churn (Greenhouse/Lever req republish).
+        content_hash = None
+        if new_status == "applied":
+            job_row = conn.execute(
+                "SELECT content_hash FROM jobs WHERE external_id = ?", (ext_id,)
+            ).fetchone()
+            if job_row and job_row["content_hash"]:
+                content_hash = job_row["content_hash"]
+
         if existing:
             conn.execute("""
                 UPDATE applications SET
                     status = ?, notes = COALESCE(?, notes),
                     resume_version = COALESCE(?, resume_version),
                     applied_at = COALESCE(?, applied_at),
+                    content_hash = COALESCE(?, content_hash),
                     updated_at = ?
                 WHERE external_id = ?
             """, (
@@ -448,6 +459,7 @@ def api_save_application():
                 data.get("notes"),
                 data.get("resume_version"),
                 now if new_status == "applied" else None,
+                content_hash,
                 now, ext_id,
             ))
             action = "updated"
@@ -456,8 +468,8 @@ def api_save_application():
                 INSERT INTO applications
                     (external_id, title, company, url, status, relevance_score,
                      salary_min, salary_max, location, notes, resume_version,
-                     saved_at, applied_at, updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     saved_at, applied_at, updated_at, content_hash)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """, (
                 ext_id,
                 data.get("title", ""),
@@ -473,6 +485,7 @@ def api_save_application():
                 now,
                 now if new_status == "applied" else None,
                 now,
+                content_hash,
             ))
             action = "saved"
 
@@ -516,12 +529,21 @@ def patch_application(ext_id):
     if updates.get("status") == "applied":
         updates["applied_at"] = datetime.now(timezone.utc).isoformat()
     updates["updated_at"] = datetime.now(timezone.utc).isoformat()
-    # Build SET clause from KNOWN-SAFE column names only
-    SAFE_COLS = {"status", "notes", "resume_version", "applied_at", "updated_at"}
-    set_parts = [f"{k} = ?" for k in updates if k in SAFE_COLS]
-    values = [v for k, v in updates.items() if k in SAFE_COLS] + [ext_id]
+    SAFE_COLS = {"status", "notes", "resume_version", "applied_at", "updated_at", "content_hash"}
     try:
         conn = get_conn(DB_PATH)
+        # When transitioning to 'applied', pin the job's content_hash onto the
+        # application row so export-side dedup still catches it after the
+        # underlying req gets republished with a new external_id. A manual
+        # application with no matching job row simply leaves content_hash NULL.
+        if updates.get("status") == "applied":
+            job_row = conn.execute(
+                "SELECT content_hash FROM jobs WHERE external_id = ?", (ext_id,)
+            ).fetchone()
+            if job_row and job_row["content_hash"]:
+                updates["content_hash"] = job_row["content_hash"]
+        set_parts = [f"{k} = ?" for k in updates if k in SAFE_COLS]
+        values = [v for k, v in updates.items() if k in SAFE_COLS] + [ext_id]
         conn.execute(
             f"UPDATE applications SET {', '.join(set_parts)} WHERE external_id = ?",
             values

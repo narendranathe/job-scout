@@ -38,9 +38,32 @@ def export(db_path: str = DB_PATH, output_path: str = None, cycle_counter: int =
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 
-    rows = conn.execute(
-        "SELECT * FROM jobs WHERE is_active = 1 ORDER BY relevance_score DESC LIMIT 500"
-    ).fetchall()
+    # LEFT JOIN applications so the dashboard knows which jobs the user already
+    # applied to. Match by external_id OR content_hash — content_hash catches
+    # the case where Greenhouse/Lever republishes the same req with a new ID.
+    # Priority-based aggregation (applied > saved > others) so a job matched
+    # by BOTH a 'saved' row (old external_id) and an 'applied' row (content_hash)
+    # surfaces as 'applied' — MAX() over the status string sorts 'saved' first
+    # lexicographically, which would silently defeat the dedup.
+    rows = conn.execute("""
+        SELECT j.*,
+               CASE
+                 WHEN SUM(CASE WHEN a.status = 'applied' THEN 1 ELSE 0 END) > 0 THEN 'applied'
+                 WHEN SUM(CASE WHEN a.status = 'saved'   THEN 1 ELSE 0 END) > 0 THEN 'saved'
+                 ELSE NULL
+               END AS application_status,
+               MAX(CASE WHEN a.status = 'applied' THEN a.applied_at END) AS application_applied_at
+        FROM jobs j
+        LEFT JOIN applications a
+               ON (a.external_id = j.external_id
+                   OR (a.content_hash IS NOT NULL
+                       AND a.content_hash = j.content_hash))
+              AND a.status != 'removed'
+        WHERE j.is_active = 1
+        GROUP BY j.id
+        ORDER BY j.relevance_score DESC
+        LIMIT 500
+    """).fetchall()
 
     jobs = []
     for r in rows:
