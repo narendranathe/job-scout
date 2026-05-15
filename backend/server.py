@@ -60,8 +60,10 @@ app = Flask(__name__)
 
 
 # ─── Scraper Registry ──────────────────────────────────────────────
-from routes.vault_routes import vault_bp 
+from routes.vault_routes import vault_bp
 app.register_blueprint(vault_bp)
+from routes.admin_routes import admin_bp
+app.register_blueprint(admin_bp)
 SCRAPERS: dict = {}
 
 def _load_scrapers():
