@@ -11,7 +11,7 @@ import logging
 import requests
 from typing import Generator
 
-from .utils import is_remote, strip_html
+from .utils import is_remote, parse_salary, strip_html
 
 log = logging.getLogger(__name__)
 
@@ -70,6 +70,9 @@ def scrape(company: dict) -> Generator[dict, None, None]:
             job_id = job.get("id", "")
             apply_url = f"https://boards.greenhouse.io/{slug}/jobs/{job_id}"
 
+            # Greenhouse API exposes no comp field — backfill from JD text.
+            sal_min, sal_max = parse_salary(description) if description else (0, 0)
+
             yield {
                 "external_id": f"gh-{slug}-{job_id}",
                 "title": title_str.strip(),
@@ -81,8 +84,8 @@ def scrape(company: dict) -> Generator[dict, None, None]:
                 "ats": "greenhouse",
                 "is_remote": remote,
                 "posted_at": (job.get("updated_at") or job.get("first_published_at") or "")[:19],
-                "salary_min": 0,
-                "salary_max": 0,
+                "salary_min": sal_min,
+                "salary_max": sal_max,
             }
         except Exception as e:
             log.warning("Greenhouse [%s] job parse error: %s", name, e)
