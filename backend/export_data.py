@@ -12,7 +12,30 @@ from datetime import datetime, timezone
 from collections import Counter
 from statistics import quantiles
 
+try:
+    from config.profile import RARE_SKILLS_WATCH
+except ImportError:
+    from backend.config.profile import RARE_SKILLS_WATCH
+
 log = logging.getLogger(__name__)
+
+# Pre-compiled word-boundary regex per rare-skill term. Word boundaries keep
+# short terms like "mcp" from matching inside unrelated words.
+_RARE_PATTERNS = [
+    (term, re.compile(r"\b" + re.escape(term) + r"\b", re.IGNORECASE))
+    for term in RARE_SKILLS_WATCH
+]
+
+
+def _find_rare_hits(job: dict) -> list[str]:
+    haystack = f"{job.get('title') or ''} {job.get('description') or ''}"
+    if not haystack.strip():
+        return []
+    hits = []
+    for term, pat in _RARE_PATTERNS:
+        if pat.search(haystack):
+            hits.append(term)
+    return hits
 
 # Matches a naive ISO-8601 timestamp emitted by greenhouse.py / ashby.py /
 # bamboohr.py (they slice the source ATS string with `[:19]`, dropping any
@@ -100,6 +123,7 @@ def export(db_path: str = DB_PATH, output_path: str = None, cycle_counter: int =
         posted = (j.get("posted_at") or "").strip()
         first_seen = (j.get("first_seen_at") or "").strip()
         j["effective_date"] = _normalize_to_utc(posted if posted else first_seen)
+        j["rare_skill_hits"] = _find_rare_hits(j)
         jobs.append(j)
 
     total = len(jobs)
@@ -117,6 +141,7 @@ def export(db_path: str = DB_PATH, output_path: str = None, cycle_counter: int =
     salaries = [j["salary_max"] for j in jobs if j.get("salary_max") and j["salary_max"] > 0]
     avg_sal = round(sum(salaries) / len(salaries)) if salaries else 0
     h1b_n = sum(1 for j in jobs if j.get("sponsorship"))
+    rare_n = sum(1 for j in jobs if j.get("rare_skill_hits"))
 
     ats_c = Counter(j.get("ats", "unknown") for j in jobs)
     city_c = Counter()
@@ -146,6 +171,7 @@ def export(db_path: str = DB_PATH, output_path: str = None, cycle_counter: int =
             "remote_pct": round(remote_n/total*100) if total else 0,
             "avg_salary": avg_sal,
             "h1b_pct": round(h1b_n/total*100) if total else 0,
+            "rare_skills": rare_n,
             "companies_tracked": len(co_c),
         },
         "distributions": {
@@ -174,4 +200,4 @@ def export(db_path: str = DB_PATH, output_path: str = None, cycle_counter: int =
 
 
 def _empty():
-    return {"jobs":[],"stats":{"total_jobs":0,"high_match":0,"remote_pct":0,"avg_salary":0,"h1b_pct":0,"companies_tracked":0},"distributions":{"ats":[],"cities":[],"salary_buckets":[]},"top_companies":[],"trend":[],"runs":[],"exported_at":datetime.now(timezone.utc).isoformat()}
+    return {"jobs":[],"stats":{"total_jobs":0,"high_match":0,"remote_pct":0,"avg_salary":0,"h1b_pct":0,"rare_skills":0,"companies_tracked":0},"distributions":{"ats":[],"cities":[],"salary_buckets":[]},"top_companies":[],"trend":[],"runs":[],"exported_at":datetime.now(timezone.utc).isoformat()}
