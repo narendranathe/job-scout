@@ -1,5 +1,6 @@
-"""Tests for /api/admin/doctor health-check endpoint."""
+"""Tests for /api/admin/doctor health-check endpoint and admin maintenance ops."""
 import importlib
+import json
 import os
 import sys
 
@@ -314,3 +315,145 @@ def test_clear_cache_during_scrape(client, monkeypatch):
     resp = client.post("/api/admin/clear-cache")
     assert resp.status_code == 409
     assert resp.get_json()["error"] == "scrape_in_progress"
+
+
+# ─── /api/admin/reextract-skills ────────────────────────────────────
+
+
+def _seed_resume_versions(db_path, rows):
+    """Insert raw resume_versions rows with empty extracted_skills."""
+    from storage.db import get_conn
+    conn = get_conn(db_path)
+    for key, text in rows:
+        conn.execute(
+            "INSERT INTO resume_versions (version_key, display_name, resume_text, "
+            "extracted_skills, target_roles, target_companies, notes) "
+            "VALUES (?, ?, ?, '[]', '[]', '[]', '')",
+            (key, key, text),
+        )
+    conn.commit()
+    conn.close()
+
+
+def test_reextract_skills_updates_all(client):
+    import routes.admin_routes as ar
+    _seed_resume_versions(ar.DB_PATH, [
+        ("rv_de",  "Senior Data Engineer with Python, SQL, Spark, Kafka, Airflow, AWS."),
+        ("rv_ml",  "ML engineer fluent in PyTorch, TensorFlow, scikit-learn, MLOps."),
+        ("rv_min", "Built REST APIs with Flask and Docker on GCP."),
+    ])
+
+    resp = client.post("/api/admin/reextract-skills")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data == {"updated": 3, "total": 3, "errors": 0}
+
+    # Each row's extracted_skills must now be a JSON-encoded non-empty list.
+    from storage.db import get_conn
+    conn = get_conn(ar.DB_PATH)
+    rows = conn.execute(
+        "SELECT version_key, extracted_skills FROM resume_versions ORDER BY version_key"
+    ).fetchall()
+    conn.close()
+    assert len(rows) == 3
+    for r in rows:
+        parsed = json.loads(r["extracted_skills"])
+        assert isinstance(parsed, list)
+        assert len(parsed) > 0, f"{r['version_key']} got empty skills"
+
+    by_key = {r["version_key"]: json.loads(r["extracted_skills"]) for r in rows}
+    assert "python" in by_key["rv_de"] and "spark" in by_key["rv_de"]
+    assert "pytorch" in by_key["rv_ml"]
+    assert "flask" in by_key["rv_min"] and "docker" in by_key["rv_min"]
+
+
+def test_reextract_skills_handles_errors(client, monkeypatch):
+    import routes.admin_routes as ar
+    _seed_resume_versions(ar.DB_PATH, [
+        ("rv_ok_1", "Python and SQL."),
+        ("rv_bad",  "this row will explode"),
+        ("rv_ok_2", "Spark and Kafka."),
+    ])
+
+    from storage import profile_manager
+    real = profile_manager.extract_skills_from_resume
+
+    def flaky(text):
+        if "explode" in text:
+            raise RuntimeError("boom")
+        return real(text)
+
+    # Patch the symbol where reextract_skills() imports it.
+    monkeypatch.setattr(profile_manager, "extract_skills_from_resume", flaky)
+
+    resp = client.post("/api/admin/reextract-skills")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["total"] == 3
+    assert data["updated"] == 2
+    assert data["errors"] == 1
+
+
+def test_reextract_skills_empty_table(client):
+    """No resume_versions rows → 0/0/0, no crash."""
+    resp = client.post("/api/admin/reextract-skills")
+    assert resp.status_code == 200
+    assert resp.get_json() == {"updated": 0, "total": 0, "errors": 0}
+
+
+# ─── /api/admin/vault-reindex ───────────────────────────────────────
+
+
+@pytest.fixture
+def vault_dir(tmp_path, monkeypatch):
+    """Override the resume_vault path to a tmp dir so reindex is hermetic."""
+    root = tmp_path / "resume_vault"
+    (root / "text").mkdir(parents=True)
+    (root / "pdf").mkdir()
+    # Patch the module-level VAULT_DIR after import so rebuild_index() picks it up.
+    if "storage.resume_vault" in sys.modules:
+        del sys.modules["storage.resume_vault"]
+    import storage.resume_vault as rv
+    monkeypatch.setattr(rv, "VAULT_DIR", str(root))
+    return root
+
+
+def test_vault_reindex_returns_count(client, vault_dir):
+    text_dir = vault_dir / "text"
+    for i in range(5):
+        (text_dir / f"resume_{i}.txt").write_text(
+            f"Data engineer #{i} with Python, SQL, Spark, Airflow.",
+            encoding="utf-8",
+        )
+
+    resp = client.post("/api/admin/vault-reindex")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["indexed"] == 5
+    assert data["files_scanned"] == 5
+    assert isinstance(data["duration_ms"], int)
+    assert data["duration_ms"] >= 0
+
+
+def test_vault_reindex_empty(client, vault_dir):
+    """Empty text/ dir → indexed=0, no error."""
+    resp = client.post("/api/admin/vault-reindex")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["indexed"] == 0
+    assert data["files_scanned"] == 0
+    assert isinstance(data["duration_ms"], int)
+
+
+def test_vault_reindex_skips_non_txt(client, vault_dir):
+    """Non-.txt files in text/ are ignored by files_scanned."""
+    text_dir = vault_dir / "text"
+    (text_dir / "a.txt").write_text("python sql spark", encoding="utf-8")
+    (text_dir / "b.txt").write_text("kafka airflow dbt", encoding="utf-8")
+    (text_dir / "ignored.md").write_text("not a resume", encoding="utf-8")
+
+    resp = client.post("/api/admin/vault-reindex")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["files_scanned"] == 2
+    assert data["indexed"] == 2

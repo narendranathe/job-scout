@@ -802,6 +802,44 @@ def find_best_resume_for_job(
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  REINDEX — rebuild TF-IDF matrix from disk
+# ═══════════════════════════════════════════════════════════════════
+
+def rebuild_index() -> dict:
+    """
+    Re-read every .txt file in resume_vault/text/, retokenize, and recompute
+    the TF-IDF matrix. The vault has no persistent in-memory cache today
+    (every compare/best-match call rebuilds on demand), so this primarily
+    serves as a non-destructive warmup + sanity check after bulk-importing
+    new PDFs.
+
+    Returns {"indexed": N, "files_scanned": M}.
+    """
+    _ensure_vault()
+    text_dir = os.path.join(VAULT_DIR, "text")
+    files = sorted(f for f in os.listdir(text_dir) if f.lower().endswith(".txt"))
+
+    docs: list[list[str]] = []
+    indexed = 0
+    for name in files:
+        try:
+            with open(os.path.join(text_dir, name), "r",
+                      encoding="utf-8", errors="ignore") as fh:
+                text = fh.read()
+            tokens = _tokenize(text)
+            if tokens:
+                docs.append(tokens)
+                indexed += 1
+        except Exception as e:
+            log.warning("rebuild_index: skipping %s (%s)", name, e.__class__.__name__)
+
+    if docs:
+        _build_tfidf(docs)  # exercise the matrix build; result discarded
+    log.info("Vault reindex: %d/%d files indexed", indexed, len(files))
+    return {"indexed": indexed, "files_scanned": len(files)}
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  VAULT STATS
 # ═══════════════════════════════════════════════════════════════════
 

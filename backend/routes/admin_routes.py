@@ -6,15 +6,19 @@ Plug into server.py with:
     app.register_blueprint(admin_bp)
 
 Endpoints:
-    GET  /api/admin/doctor       — Server health probe (DB, scrapers, env, vault, disk)
-    POST /api/admin/purge-stale  — Delete inactive jobs older than N hours
-    POST /api/admin/clear-cache  — VACUUM SQLite DB to reclaim space
+    GET  /api/admin/doctor             — Server health probe (DB, scrapers, env, vault, disk)
+    POST /api/admin/purge-stale        — Delete inactive jobs older than N hours
+    POST /api/admin/clear-cache        — VACUUM SQLite DB to reclaim space
+    POST /api/admin/reextract-skills   — Re-run skill extraction over all resume_versions rows
+    POST /api/admin/vault-reindex      — Rebuild TF-IDF index from resume_vault/text/ on disk
 """
 
 import importlib
+import json
 import logging
 import os
 import shutil
+import time
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
@@ -29,7 +33,10 @@ admin_bp = Blueprint("admin", __name__, url_prefix="/api/admin")
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "..", "jobscout.db"))
 API_SECRET = os.environ.get("API_SECRET", "")
 
-VAULT_ROOT = os.path.join(os.path.dirname(__file__), "..", "resume_vault")
+VAULT_ROOT = os.environ.get(
+    "RESUME_VAULT_PATH",
+    os.path.join(os.path.dirname(__file__), "..", "resume_vault"),
+)
 SCRAPER_MODULES = ["greenhouse", "lever", "ashby", "smartrecruiters", "bamboohr", "workday"]
 
 
@@ -283,6 +290,96 @@ def clear_cache():
         "db_size_before": size_before,
         "db_size_after":  size_after,
     }), 200
+
+
+@admin_bp.route("/reextract-skills", methods=["POST", "OPTIONS"])
+def reextract_skills():
+    """
+    Re-run profile_manager.extract_skills_from_resume() over every row in
+    resume_versions. Non-destructive: only the extracted_skills column is
+    rewritten — resume_text, target_roles, etc. are untouched.
+
+    Returns {"updated": N, "total": M, "errors": E}.
+    """
+    if request.method == "OPTIONS":
+        return "", 200
+
+    if not _check_auth():
+        return jsonify({"error": "unauthorized"}), 401
+
+    try:
+        from storage.db import get_conn
+        from storage.profile_manager import extract_skills_from_resume
+    except Exception as e:
+        log.exception("reextract-skills: import failure")
+        return jsonify({"error": f"import failed: {e.__class__.__name__}"}), 500
+
+    updated, errors = 0, 0
+    now = datetime.now(timezone.utc).isoformat()
+
+    conn = get_conn(DB_PATH)
+    try:
+        rows = conn.execute(
+            "SELECT id, resume_text FROM resume_versions"
+        ).fetchall()
+        total = len(rows)
+        for row in rows:
+            row_id = row["id"]
+            text = row["resume_text"] or ""
+            try:
+                skills = extract_skills_from_resume(text)
+                conn.execute(
+                    "UPDATE resume_versions SET extracted_skills = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(skills), now, row_id),
+                )
+                updated += 1
+            except Exception as e:
+                log.warning("reextract-skills: row id=%s failed (%s)", row_id, e.__class__.__name__)
+                errors += 1
+        conn.commit()
+    finally:
+        conn.close()
+
+    log.info("reextract-skills: updated=%d total=%d errors=%d", updated, total, errors)
+    return jsonify({"updated": updated, "total": total, "errors": errors}), 200
+
+
+@admin_bp.route("/vault-reindex", methods=["POST", "OPTIONS"])
+def vault_reindex():
+    """
+    Rebuild the resume vault TF-IDF index from disk. Re-reads every .txt file
+    in resume_vault/text/ and recomputes term-document vectors. Read-only with
+    respect to historical data — does not delete or rewrite any file.
+
+    Returns {"indexed": N, "files_scanned": M, "duration_ms": int}.
+    """
+    if request.method == "OPTIONS":
+        return "", 200
+
+    if not _check_auth():
+        return jsonify({"error": "unauthorized"}), 401
+
+    try:
+        from storage.resume_vault import rebuild_index
+    except Exception as e:
+        log.exception("vault-reindex: import failure")
+        return jsonify({"error": f"import failed: {e.__class__.__name__}"}), 500
+
+    started = time.monotonic()
+    try:
+        result = rebuild_index()
+    except Exception as e:
+        log.exception("vault-reindex: rebuild failed")
+        return jsonify({"error": f"reindex failed: {e.__class__.__name__}"}), 500
+    duration_ms = int((time.monotonic() - started) * 1000)
+
+    payload = {
+        "indexed": int(result.get("indexed", 0)),
+        "files_scanned": int(result.get("files_scanned", 0)),
+        "duration_ms": duration_ms,
+    }
+    log.info("vault-reindex: %s", payload)
+    return jsonify(payload), 200
 
 
 @admin_bp.after_request
