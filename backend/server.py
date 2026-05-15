@@ -172,8 +172,20 @@ def run_scrape(mode: str = "fast") -> dict:
       mode="full" → All tiers eligible this cycle (~3 min)
     """
     _load_scrapers()
-    engine = RelevanceEngine()
     init_db(DB_PATH)
+    # Best-effort: load the most recent resume text so the TF-IDF booster
+    # (issue #7) can refine core scores. Fails soft when none is uploaded.
+    resume_text = None
+    try:
+        from storage.db import list_resume_versions
+        _conn = get_conn(DB_PATH)
+        versions = list_resume_versions(_conn)
+        _conn.close()
+        if versions:
+            resume_text = versions[0].get("resume_text") or None
+    except Exception as e:
+        log.debug("Resume load skipped: %s", e)
+    engine = RelevanceEngine(resume_text=resume_text)
     conn = get_conn(DB_PATH)
     run_id = start_run(conn)
     cycle = load_cycle_counter()
