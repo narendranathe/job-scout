@@ -143,6 +143,71 @@ function LogoImg({ name, size = 32, t }) {
   );
 }
 
+/* ═══ Scrape progress bar (Manual Triggers / Monitor tab) ═══
+   Pure-presentational component — hoisted so the admin op cards in #23/#24
+   can reuse it with their own snapshot shape (same {is_running, current_*,
+   *_done, *_total, found, new, eta_seconds} contract). The fill width
+   transitions smoothly between polls so a slow tick doesn't visually
+   stutter. Caller is responsible for hiding/showing it; this component
+   just renders the bar + labels for the given snapshot. */
+function ScrapeProgressBar({ snap, t }) {
+  if (!snap) return null;
+  const total = Math.max(0, snap.companies_total ?? 0);
+  const done  = Math.max(0, Math.min(snap.companies_done ?? 0, total || Infinity));
+  const pct   = total > 0 ? Math.min(100, Math.max(0, (done / total) * 100)) : 0;
+  const eta   = snap.eta_seconds;
+  return (
+    <div style={{marginTop:4}}>
+      <div style={{
+        display:"flex",justifyContent:"space-between",alignItems:"baseline",
+        gap:8,marginBottom:8,fontSize:13,color:t.txS,lineHeight:1.4,
+        flexWrap:"wrap",
+      }}>
+        <div style={{minWidth:0,flex:"1 1 auto",wordBreak:"break-word",overflowWrap:"anywhere"}}>
+          <strong style={{color:t.tx}}>
+            {snap.current_company || "Initializing"}
+          </strong>
+          {" • "}{done}/{total || "?"} companies
+        </div>
+        {eta != null && eta > 0 && total > done && (
+          <div style={{color:t.txM,fontVariantNumeric:"tabular-nums",flexShrink:0}}>
+            ETA {Math.round(eta)}s
+          </div>
+        )}
+      </div>
+      <div
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(pct)}
+        style={{
+          width:"100%",height:10,borderRadius:6,
+          background:t.bd,overflow:"hidden",
+          border:`1px solid ${t.bd}`,
+        }}
+      >
+        <div style={{
+          height:"100%",width:`${pct}%`,
+          background:t.ac,
+          // Transition slightly shorter than the 1.5s poll cadence so the
+          // bar finishes "catching up" right as the next snapshot arrives —
+          // no visible stall, no overshoot.
+          transition:"width 1400ms cubic-bezier(.4,0,.2,1)",
+          borderRadius:6,
+        }}/>
+      </div>
+      <div style={{
+        marginTop:8,fontSize:13,color:t.txS,lineHeight:1.4,
+      }}>
+        {snap.found ?? 0} jobs found
+        {(snap.new ?? 0) > 0 && <> · <span style={{color:t.ok,fontWeight:600}}>{snap.new} new</span></>}
+        {(snap.errors ?? 0) > 0 && <> · <span style={{color:t.er}}>{snap.errors} errors</span></>}
+        {snap.mode && <span style={{color:t.txM}}> · {snap.mode}</span>}
+      </div>
+    </div>
+  );
+}
+
 /* ═══ Role categories ═══ */
 const ROLE_CATS = [
   {id:"de",  label:"Data Engineer",   kw:["data engineer","etl engineer","data pipeline","data infrastructure","big data","analytics platform"]},
@@ -493,13 +558,20 @@ export default function App() {
   const [applications, setApplications] = useState([]);
   const [appLoading, setAppLoading] = useState(false);
 
-  // Manual scrape trigger + live progress polling (#19).
-  // `scraping` reflects "we should keep polling the status endpoint" — set
-  // when the POST returns 202 or 409, and cleared once snapshot.is_running
-  // flips false. `scrapeProgress` is the latest snapshot from /api/scrape/status.
+  // Manual scrape trigger + live progress polling (#19, #20).
+  // `scraping` reflects "we should keep polling the status endpoint at the
+  // fast cadence" — set when the POST returns 202 or 409, or when the slow
+  // passive poller notices a background scrape running. Cleared once
+  // snapshot.is_running flips false. `scrapeProgress` is the latest snapshot
+  // from /api/scrape/status.
   const [scraping,setScraping]         = useState(false);
   const [scrapeMsg,setScrapeMsg]       = useState(null);
   const [scrapeProgress,setScrapeProgress] = useState(null);
+
+  // Show the progress bar when we're actively polling OR the snapshot says
+  // a scrape is in flight (covers the background scrape thread case where
+  // the user never clicked the button).
+  const barVisible = !!(scrapeProgress && scrapeProgress.is_running);
 
   useEffect(() => {
     if (!scraping || !RENDER_API) return;
@@ -514,7 +586,21 @@ export default function App() {
         if (!r.ok) return;
         const snap = await r.json();
         if (cancelled) return;
-        setScrapeProgress(snap);
+        // Guard against stale-response reordering: if a later poll arrives
+        // before an earlier one, drop the older snapshot so the bar can't
+        // jump backwards. Snapshots from the same run carry monotonic
+        // started_at; companies_done is also monotonic within a run.
+        setScrapeProgress(prev => {
+          if (!prev) return snap;
+          if (prev.started_at && snap.started_at && snap.started_at < prev.started_at) {
+            return prev;  // older run, ignore
+          }
+          if (prev.started_at === snap.started_at &&
+              (snap.companies_done ?? 0) < (prev.companies_done ?? 0)) {
+            return prev;  // out-of-order poll within same run
+          }
+          return snap;
+        });
         if (snap && snap.is_running === false) {
           setScraping(false);
           const s = snap.final_stats || {};
@@ -529,6 +615,41 @@ export default function App() {
     const id = setInterval(tick, 1500);
     return () => { cancelled = true; clearInterval(id); };
   }, [scraping]);
+
+  // Passive low-rate poll for background-scrape progress (#20). When the
+  // Monitor tab is mounted but we haven't manually triggered a scrape, ping
+  // the status endpoint every 10s. If it reports is_running=true, flip into
+  // the fast-poll branch above so the bar appears for the background thread
+  // too. Auto-pauses when the tab is hidden.
+  useEffect(() => {
+    if (!RENDER_API || scraping || tab !== "monitor") return;
+    let cancelled = false;
+    const passive = async () => {
+      if (typeof document !== "undefined" && document.hidden) return;
+      try {
+        const r = await fetch(`${RENDER_API}/api/scrape/status`,
+                              { signal: AbortSignal.timeout(5000) });
+        if (!r.ok || cancelled) return;
+        const snap = await r.json();
+        if (cancelled) return;
+        if (snap && snap.is_running) {
+          setScrapeProgress(snap);
+          setScraping(true);  // hand off to the fast poller
+        }
+      } catch (_e) { /* network hiccup, retry next tick */ }
+    };
+    passive();
+    const id = setInterval(passive, 10000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [scraping, tab]);
+
+  // Auto-clear the result toast 3s after a scrape finishes.
+  useEffect(() => {
+    if (!scrapeMsg || scraping) return;
+    if (!scrapeMsg.startsWith("✅")) return;
+    const id = setTimeout(() => setScrapeMsg(null), 3000);
+    return () => clearTimeout(id);
+  }, [scrapeMsg, scraping]);
 
   const triggerScrape = async () => {
     if (!RENDER_API) {
@@ -1875,23 +1996,17 @@ export default function App() {
                     Kick off an immediate full scrape on the Render server. Takes ~2–3 minutes.
                     {!RENDER_API && <span style={{color:t.er}}> (Set VITE_RENDER_URL to enable)</span>}
                   </div>
-                  <button onClick={triggerScrape} disabled={scraping||!RENDER_API}
-                    style={{padding:"11px 22px",borderRadius:9,border:"none",
-                      background:scraping?t.bgS:(RENDER_API?t.gP:`${t.txM}20`),
-                      color:scraping||!RENDER_API?t.txM:"#fff",
-                      fontSize:14,fontWeight:700,cursor:scraping||!RENDER_API?"not-allowed":"pointer",
-                      fontFamily:"inherit",transition:"all .15s"}}>
-                    {scraping?"⏳ Scraping...":"▶ Run Scrape Now"}
-                  </button>
-                  {scraping && scrapeProgress && scrapeProgress.is_running && (
-                    <div style={{marginTop:10,fontSize:13,color:t.txS,fontWeight:500,lineHeight:1.5}}>
-                      Scraping: <strong style={{color:t.tx}}>{scrapeProgress.current_company || "starting…"}</strong>
-                      {" • "}{scrapeProgress.companies_done}/{scrapeProgress.companies_total} companies
-                      {" • "}{scrapeProgress.found} jobs found
-                      {scrapeProgress.new>0 && <> · <span style={{color:t.ok}}>{scrapeProgress.new} new</span></>}
-                      {scrapeProgress.eta_seconds!=null && scrapeProgress.eta_seconds>0 &&
-                        <> · ETA {Math.round(scrapeProgress.eta_seconds)}s</>}
-                    </div>
+                  {barVisible ? (
+                    <ScrapeProgressBar snap={scrapeProgress} t={t} />
+                  ) : (
+                    <button onClick={triggerScrape} disabled={!RENDER_API}
+                      style={{padding:"11px 22px",borderRadius:9,border:"none",
+                        background:RENDER_API?t.gP:`${t.txM}20`,
+                        color:RENDER_API?"#fff":t.txM,
+                        fontSize:14,fontWeight:700,cursor:RENDER_API?"pointer":"not-allowed",
+                        fontFamily:"inherit",transition:"all .15s"}}>
+                      ▶ Run Scrape Now
+                    </button>
                   )}
                   {scrapeMsg && (
                     <div style={{marginTop:10,fontSize:14,color:scrapeMsg.startsWith("✅")?t.ok:scrapeMsg.startsWith("⏳")||scrapeMsg.startsWith("🚀")?t.wm:t.er,fontWeight:600}}>
