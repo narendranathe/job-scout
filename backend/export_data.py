@@ -38,9 +38,25 @@ def export(db_path: str = DB_PATH, output_path: str = None, cycle_counter: int =
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 
-    rows = conn.execute(
-        "SELECT * FROM jobs WHERE is_active = 1 ORDER BY relevance_score DESC LIMIT 500"
-    ).fetchall()
+    # LEFT JOIN applications so the dashboard knows which jobs the user already
+    # applied to. Match by external_id OR content_hash — content_hash catches
+    # the case where Greenhouse/Lever republishes the same req with a new ID.
+    # COALESCE picks the freshest applied_at when both legs of the OR hit.
+    rows = conn.execute("""
+        SELECT j.*,
+               MAX(a.status)     AS application_status,
+               MAX(a.applied_at) AS application_applied_at
+        FROM jobs j
+        LEFT JOIN applications a
+               ON (a.external_id = j.external_id
+                   OR (a.content_hash IS NOT NULL
+                       AND a.content_hash = j.content_hash))
+              AND a.status != 'removed'
+        WHERE j.is_active = 1
+        GROUP BY j.id
+        ORDER BY j.relevance_score DESC
+        LIMIT 500
+    """).fetchall()
 
     jobs = []
     for r in rows:
