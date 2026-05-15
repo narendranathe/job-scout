@@ -706,6 +706,64 @@ export default function App() {
     }
   };
 
+  // Re-extract skills across all resume_versions rows (#24)
+  const [reextractLoading,setReextractLoading] = useState(false);
+  const [reextractMsg,setReextractMsg]         = useState(null);
+
+  const runReextract = async () => {
+    if (!RENDER_API) {
+      setReextractMsg({type:"err", text:"No Render API configured. Set VITE_RENDER_URL in your .env file."});
+      return;
+    }
+    setReextractLoading(true); setReextractMsg(null);
+    try {
+      const resp = await fetch(`${RENDER_API}/api/admin/reextract-skills`, {
+        method: "POST",
+        signal: AbortSignal.timeout(60000),
+      });
+      const d = await resp.json();
+      if (!resp.ok) {
+        setReextractMsg({type:"err", text:d.error || `HTTP ${resp.status}`});
+      } else {
+        setReextractMsg({type:"ok",
+          text:`✅ Updated ${d.updated}/${d.total} resume versions (${d.errors} errors)`});
+      }
+    } catch(e) {
+      setReextractMsg({type:"err", text:`Could not reach Render: ${e.message}`});
+    } finally {
+      setReextractLoading(false);
+    }
+  };
+
+  // Vault re-index from disk (#24)
+  const [reindexLoading,setReindexLoading] = useState(false);
+  const [reindexMsg,setReindexMsg]         = useState(null);
+
+  const runReindex = async () => {
+    if (!RENDER_API) {
+      setReindexMsg({type:"err", text:"No Render API configured. Set VITE_RENDER_URL in your .env file."});
+      return;
+    }
+    setReindexLoading(true); setReindexMsg(null);
+    try {
+      const resp = await fetch(`${RENDER_API}/api/admin/vault-reindex`, {
+        method: "POST",
+        signal: AbortSignal.timeout(60000),
+      });
+      const d = await resp.json();
+      if (!resp.ok) {
+        setReindexMsg({type:"err", text:d.error || `HTTP ${resp.status}`});
+      } else {
+        setReindexMsg({type:"ok",
+          text:`✅ Indexed ${d.indexed} files in ${d.duration_ms}ms`});
+      }
+    } catch(e) {
+      setReindexMsg({type:"err", text:`Could not reach Render: ${e.message}`});
+    } finally {
+      setReindexLoading(false);
+    }
+  };
+
   const fetchApplications = useCallback(async () => {
     setAppLoading(true);
     try {
@@ -2005,6 +2063,54 @@ export default function App() {
                       </div>
                     );
                   })()}
+                </div>
+
+                {/* Re-extract skills (#24) */}
+                <div style={{padding:18,borderRadius:12,background:t.bgS,border:`1px solid ${t.bd}`}}>
+                  <div style={{fontSize:15,fontWeight:700,color:t.tx,marginBottom:6}}>🧠 Re-extract Skills</div>
+                  <div style={{fontSize:13,color:t.txM,marginBottom:14}}>
+                    Re-run skill extraction over every resume version after updating regex patterns.
+                    Non-destructive — only the extracted_skills column is rewritten.
+                    {!RENDER_API && <span style={{color:t.er}}> (Set VITE_RENDER_URL to enable)</span>}
+                  </div>
+                  <button onClick={runReextract} disabled={reextractLoading||!RENDER_API}
+                    style={{padding:"11px 22px",borderRadius:9,border:"none",
+                      background:reextractLoading?t.bgS:(RENDER_API?t.gP:`${t.txM}20`),
+                      color:reextractLoading||!RENDER_API?t.txM:"#fff",
+                      fontSize:14,fontWeight:700,cursor:reextractLoading||!RENDER_API?"not-allowed":"pointer",
+                      fontFamily:"inherit",transition:"all .15s"}}>
+                    {reextractLoading?"⏳ Re-extracting…":"▶ Re-extract Skills"}
+                  </button>
+                  {reextractMsg && (
+                    <div style={{marginTop:10,fontSize:14,fontWeight:600,
+                      color:reextractMsg.type==="ok"?t.ok:t.er}}>
+                      {reextractMsg.text}
+                    </div>
+                  )}
+                </div>
+
+                {/* Vault re-index (#24) */}
+                <div style={{padding:18,borderRadius:12,background:t.bgS,border:`1px solid ${t.bd}`}}>
+                  <div style={{fontSize:15,fontWeight:700,color:t.tx,marginBottom:6}}>📚 Vault Re-index</div>
+                  <div style={{fontSize:13,color:t.txM,marginBottom:14}}>
+                    Rebuild the TF-IDF index from every .txt file in resume_vault/text/.
+                    Use after bulk-importing new PDFs.
+                    {!RENDER_API && <span style={{color:t.er}}> (Set VITE_RENDER_URL to enable)</span>}
+                  </div>
+                  <button onClick={runReindex} disabled={reindexLoading||!RENDER_API}
+                    style={{padding:"11px 22px",borderRadius:9,border:"none",
+                      background:reindexLoading?t.bgS:(RENDER_API?t.gP:`${t.txM}20`),
+                      color:reindexLoading||!RENDER_API?t.txM:"#fff",
+                      fontSize:14,fontWeight:700,cursor:reindexLoading||!RENDER_API?"not-allowed":"pointer",
+                      fontFamily:"inherit",transition:"all .15s"}}>
+                    {reindexLoading?"⏳ Rebuilding index…":"▶ Rebuild Index"}
+                  </button>
+                  {reindexMsg && (
+                    <div style={{marginTop:10,fontSize:14,fontWeight:600,
+                      color:reindexMsg.type==="ok"?t.ok:t.er}}>
+                      {reindexMsg.text}
+                    </div>
+                  )}
                 </div>
 
                 {/* GitHub Actions button */}

@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- POST /api/admin/reextract-skills and POST /api/admin/vault-reindex non-destructive admin endpoints (#24).
 - Concurrency guard on POST /api/scrape (returns 409 when scrape active) + progress-bar UI + background scrape thread reports via shared broker (#20).
 - Admin Blueprint scaffold (routes/admin_routes.py) + GET /api/admin/doctor health-check endpoint with 6 probes (#22).
 - Thread-safe scrape status broker (`core/scrape_status.py`) and `GET /api/scrape/status` endpoint for live progress polling (#19).
