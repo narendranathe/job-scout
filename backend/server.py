@@ -283,9 +283,19 @@ def api_update_profile():
     if request.method == "OPTIONS":
         return "", 204
     try:
-        from storage.profile_manager import init_profile_tables, update_profile
+        from storage.profile_manager import (
+            init_profile_tables,
+            update_profile,
+            ProfileValidationError,
+        )
         init_profile_tables(DB_PATH)
-        update_profile(request.get_json() or {}, DB_PATH)
+        try:
+            update_profile(request.get_json() or {}, DB_PATH)
+        except ProfileValidationError as ve:
+            # Validation failures (e.g. unknown default_resume_version key)
+            # are client errors → 400 lets the dashboard show a useful
+            # message instead of an opaque 500.
+            return jsonify({"error": str(ve)}), 400, {"Access-Control-Allow-Origin": "*"}
         return jsonify({"status": "updated"}), 200, {"Access-Control-Allow-Origin": "*"}
     except Exception as e:
         return jsonify({"error": str(e)}), 500
