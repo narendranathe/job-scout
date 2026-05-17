@@ -584,12 +584,14 @@ function _JobCard({
   bm,
   vdMap,
   expandedRows,
+  pdfState,
   onToggleOpen,
   onSave,
   onRemove,
   onMarkApplied,
   onFetchBestMatch,
   onToggleVersionRow,
+  onDownloadResumePdf,
 }) {
   const sc = j.relevance_score || 0;
   const ats = ATS_META[j.ats] || ATS_META.unknown;
@@ -758,7 +760,33 @@ function _JobCard({
                             style={{padding:"8px 12px",borderRadius:6,border:`1px solid ${t.vi}50`,background:isRowOpen?`${t.vi}20`:"transparent",color:t.vi,fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",minHeight:32}}>
                             {isRowOpen?"Hide ▴":"View ▾"}
                           </button>
+                          {(() => {
+                            const pd = pdfState[rk.version_key];
+                            const dlLoading = !!pd?.loading;
+                            const dlError = pd?.error || null;
+                            const fallbackName = rk.filename || `${rk.version_key}.pdf`;
+                            return (
+                              <button
+                                type="button"
+                                aria-label={`Download PDF for ${rk.display_name || rk.version_key}`}
+                                aria-busy={dlLoading}
+                                title={dlError || `Download ${fallbackName}`}
+                                disabled={dlLoading}
+                                onClick={() => { if (!dlLoading) onDownloadResumePdf(rk.version_key, fallbackName); }}
+                                style={{padding:"8px 12px",borderRadius:6,border:`1px solid ${dlError?t.wm:t.ok}60`,background:dlError?`${t.wm}15`:`${t.ok}15`,color:dlError?t.wm:t.ok,fontSize:12,fontWeight:700,cursor:dlLoading?"wait":"pointer",fontFamily:"inherit",minHeight:32,opacity:dlLoading?0.7:1,whiteSpace:"nowrap"}}>
+                                {dlLoading?"Downloading…":(dlError?"⚠ Retry":"📥 PDF")}
+                              </button>
+                            );
+                          })()}
                         </div>
+                        {pdfState[rk.version_key]?.error && (
+                          <div
+                            role="alert"
+                            aria-live="polite"
+                            style={{marginTop:6,fontSize:11,color:t.wm,fontWeight:600,lineHeight:1.4,wordBreak:"break-word"}}>
+                            ⚠ {pdfState[rk.version_key].error}
+                          </div>
+                        )}
                         {isRowOpen && (
                           <div style={{marginTop:10,padding:"10px 12px",borderRadius:6,background:`${t.bd}30`,fontSize:12,color:t.txS,lineHeight:1.7}}>
                             {vd?.loading && <span style={{color:t.txM}}>Loading version details…</span>}
@@ -923,6 +951,8 @@ export default function App() {
   const [bestMatchByJob, setBestMatchByJob] = useState({});
   const [versionDetails, setVersionDetails] = useState({});
   const [expandedVersionRow, setExpandedVersionRow] = useState({});
+  // Per-version-key PDF download state: { [versionKey]: {loading, error} }
+  const [pdfDownloadState, setPdfDownloadState] = useState({});
 
   const fetchBestMatch = useCallback(async (job) => {
     const key = job.external_id;
@@ -979,6 +1009,55 @@ export default function App() {
       setVersionDetails(prev => ({...prev, [versionKey]: {loading:false, error:null, data:d}}));
     } catch (e) {
       setVersionDetails(prev => ({...prev, [versionKey]: {loading:false, error:e.message||"Failed", data:null}}));
+    }
+  }, []);
+
+  // One-click PDF download for a vault resume version. Uses fetch+blob
+  // instead of `<a href>` because the vault endpoints require a Bearer
+  // header (set when API_SECRET is configured) — anchor downloads can't
+  // send custom headers. A query-token fallback would leak the secret
+  // into server logs / browser history, so we deliberately avoid that.
+  // The blob URL is revoked after the click to release the memory.
+  const downloadResumePdf = useCallback(async (versionKey, fallbackName) => {
+    if (!RENDER_API || !versionKey) return;
+    let inFlight = false;
+    setPdfDownloadState(prev => {
+      if (prev[versionKey]?.loading) { inFlight = true; return prev; }
+      return {...prev, [versionKey]: {loading:true, error:null}};
+    });
+    if (inFlight) return;
+    let blobUrl = null;
+    try {
+      const r = await fetch(
+        `${RENDER_API}/api/vault/version/${encodeURIComponent(versionKey)}/pdf`,
+        { headers: { ...authHeaders() }, signal: AbortSignal.timeout(20000) },
+      );
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const blob = await r.blob();
+      // Prefer the server-supplied filename from Content-Disposition; fall
+      // back to "<version_key>.pdf" so the download still works if the
+      // header is stripped by a proxy.
+      const cd = r.headers.get("Content-Disposition") || "";
+      const m = /filename\*?=(?:UTF-8'')?\"?([^\";]+)\"?/i.exec(cd);
+      const filename = (m && m[1]) || fallbackName || `${versionKey}.pdf`;
+      blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setPdfDownloadState(prev => ({...prev, [versionKey]: {loading:false, error:null}}));
+    } catch (e) {
+      const msg = (e?.name === "TimeoutError" || /timed out/i.test(e?.message||""))
+        ? "Download timed out — try again"
+        : (e?.message === "HTTP 404" ? "Resume PDF not found"
+          : (e?.message === "HTTP 401" ? "Auth required — set vault_token"
+            : (e?.message || "Download failed")));
+      setPdfDownloadState(prev => ({...prev, [versionKey]: {loading:false, error:msg}}));
+    } finally {
+      // Revoke after a tick so the click handler has a chance to fire.
+      if (blobUrl) setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
     }
   }, []);
 
@@ -1735,6 +1814,26 @@ export default function App() {
     return m;
   }, [expandedByJob, versionDetails]);
 
+  // Per-job slice of pdfDownloadState. Same memoization rationale as
+  // vdMapByJob: each JobCard only sees download state for version_keys
+  // in its own rankings, so a download triggered on card A never
+  // invalidates card B's React.memo shallow check. Cards with no
+  // download activity share the EMPTY_OBJ identity.
+  const pdfStateByJob = useMemo(() => {
+    const m = {};
+    for (const extId in bestMatchByJob) {
+      const rankings = bestMatchByJob[extId]?.data?.rankings;
+      if (!Array.isArray(rankings) || rankings.length === 0) continue;
+      const slice = {};
+      for (const rk of rankings) {
+        const vk = rk?.version_key;
+        if (vk && pdfDownloadState[vk] !== undefined) slice[vk] = pdfDownloadState[vk];
+      }
+      if (Object.keys(slice).length > 0) m[extId] = slice;
+    }
+    return m;
+  }, [bestMatchByJob, pdfDownloadState]);
+
   // Build filter option lists
   const opts = useMemo(() => {
     const rc={},sc={},cc={},ac={},ec={};
@@ -2034,12 +2133,14 @@ export default function App() {
                   bm={bestMatchByJob[j.external_id]}
                   vdMap={vdMapByJob[j.external_id] || EMPTY_OBJ}
                   expandedRows={expandedByJob[j.external_id] || EMPTY_OBJ}
+                  pdfState={pdfStateByJob[j.external_id] || EMPTY_OBJ}
                   onToggleOpen={toggleCardOpen}
                   onSave={saveApp}
                   onRemove={removeApp}
                   onMarkApplied={markApplied}
                   onFetchBestMatch={fetchBestMatch}
                   onToggleVersionRow={toggleVersionRow}
+                  onDownloadResumePdf={downloadResumePdf}
                 />
               );
             })}
