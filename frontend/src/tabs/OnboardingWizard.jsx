@@ -62,14 +62,31 @@ export function OnboardingWizard({ mode = "light", onComplete, onSkip }) {
   // state to /api/profile and onComplete the wizard. Slice 3 inserts
   // steps 5/6 between step 4 and this commit; the consolidating step 7
   // re-POSTs with the additional fields then.
+  //
+  // persistProfile() no longer throws — it returns a structured outcome
+  // so we can distinguish "auth required, queued locally" from "real
+  // validation error". The 401 path completes the wizard with a banner
+  // (Slice 4's LoginScreen will replay the queued payload); only
+  // validation / config failures keep the user stuck on the step.
   const advanceFromStep4 = async () => {
     dispatch({ type: "SAVE_START" });
-    try {
-      await persistProfile(state, rosters.roles, { includeOnboardedAt: true });
+    const r = await persistProfile(state, rosters.roles, {
+      includeOnboardedAt: true,
+    });
+    if (r.ok) {
+      // synced=true (2xx) OR pending=true (401 queued for Slice 4) —
+      // both are "wizard done from the user's POV". The local
+      // completion flag is set, so the dashboard renders.
       dispatch({ type: "SAVE_OK" });
-      onComplete?.();
-    } catch (e) {
-      dispatch({ type: "SAVE_FAIL", message: String(e?.message || e) });
+      onComplete?.(r);
+    } else {
+      // Validation / no_backend / 5xx-without-network-fallback — keep
+      // the user on the step so they can retry. The reducer surfaces
+      // the message via the existing saveError banner.
+      dispatch({
+        type: "SAVE_FAIL",
+        message: r.message || "Could not save your preferences.",
+      });
     }
   };
 
@@ -78,15 +95,21 @@ export function OnboardingWizard({ mode = "light", onComplete, onSkip }) {
   // so the wizard doesn't re-fire on next reload.
   const skipWizard = async () => {
     dispatch({ type: "SAVE_START" });
-    try {
-      await persistProfile(state, rosters.roles, { markPreview: true });
+    const r = await persistProfile(state, rosters.roles, {
+      markPreview: true,
+    });
+    // Skip is best-effort and always falls through. The local flag is
+    // set inside persistProfile regardless of server outcome, so the
+    // user lands on the dashboard either way.
+    if (r.ok) {
       dispatch({ type: "SAVE_OK" });
-      onSkip?.();
-    } catch (e) {
-      // Even on failure, fall through — preview mode is best-effort.
-      dispatch({ type: "SAVE_FAIL", message: String(e?.message || e) });
-      onSkip?.();
+    } else {
+      dispatch({
+        type: "SAVE_FAIL",
+        message: r.message || "Could not save preview mode.",
+      });
     }
+    onSkip?.(r);
   };
 
   // ── Roster shaping for the pickers ───────────────────────────────

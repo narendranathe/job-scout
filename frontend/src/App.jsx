@@ -18,7 +18,7 @@ import { SetupPanel } from "./components/SetupPanel.jsx";
 // blocks the dashboard until the user completes it (or skips into
 // read-only preview mode, which Slice 4 will enforce).
 import { OnboardingWizard } from "./tabs/OnboardingWizard.jsx";
-import { detectOnboardingState } from "./lib/wizard.js";
+import { detectOnboardingState, hasPendingProfile } from "./lib/wizard.js";
 // Vault tab row (memoized, PR 6/N).
 import { VaultRow } from "./components/VaultRow.jsx";
 // Shared job constants + helpers (PR 7/N + PR 8/N).
@@ -355,22 +355,26 @@ export default function App() {
   const [setupOpen, setSetupOpen] = useState(() => !RENDER_API);
 
   // ── Onboarding wizard gate (PRD #89 Slice 2) ─────────────────────
-  // First-run detection runs once on mount once Render is configured.
-  // Possible states:
-  //   "loading" — probe in flight
+  // First-run detection runs once on mount. Possible states:
+  //   "loading"   — probe in flight
   //   "first-run" — show wizard (blocking)
-  //   "force"    — ?force=1 / /setup path → show wizard
-  //   "onboarded" / "unknown" — render dashboard normally
+  //   "force"     — ?force=1 / /setup path → show wizard
+  //   "onboarded" — render dashboard normally
+  // detectOnboardingState() never returns "unknown" anymore (fix for
+  // the 401-on-GET regression — see lib/wizard.js header). It runs
+  // even when RENDER_API is empty so the wizard surfaces the setup
+  // panel first instead of dumping the user on an empty dashboard.
   // The wizard's onComplete callback flips this to "onboarded" without
   // re-probing, so a successful completion doesn't bounce the user.
-  const [onboardingState, setOnboardingState] = useState(
-    RENDER_API ? "loading" : "unknown"
+  const [onboardingState, setOnboardingState] = useState("loading");
+  // Pending-sync banner: set when the wizard completed but the POST
+  // 401'd (PIN-gated deployment with no LoginScreen yet — Slice 4
+  // wires the flush). Drives a non-blocking banner so the user knows
+  // their preferences live only on their device until they sign in.
+  const [profilePending, setProfilePending] = useState(() =>
+    hasPendingProfile()
   );
   useEffect(() => {
-    if (!RENDER_API) {
-      setOnboardingState("unknown");
-      return;
-    }
     let cancelled = false;
     detectOnboardingState().then((s) => {
       if (!cancelled) setOnboardingState(s);
@@ -1696,10 +1700,14 @@ export default function App() {
       {wizardActive && (
         <OnboardingWizard
           mode={mode}
-          onComplete={() => {
-            // Wizard's interim commit succeeded — strip ?force=1 from
-            // the URL so a reload doesn't bounce back into the wizard.
+          onComplete={(r) => {
+            // Wizard's commit finished — synced=true (server accepted)
+            // or pending=true (queued in localStorage for Slice 4's
+            // login flush). Either way the user is "done" from the
+            // wizard's POV; strip ?force=1 so a reload doesn't bounce
+            // back in.
             setOnboardingState("onboarded");
+            setProfilePending(!!r?.pending || hasPendingProfile());
             if (typeof window !== "undefined") {
               const u = new URL(window.location.href);
               u.searchParams.delete("force");
@@ -1709,13 +1717,16 @@ export default function App() {
               window.history.replaceState({}, "", u.toString());
             }
             // Refetch profile so the rest of the dashboard sees the new
-            // tracked_companies / dream_role_keywords / etc.
+            // tracked_companies / dream_role_keywords / etc. (no-op on
+            // the 401 path — server still has the old profile — but
+            // safe.)
             refetch?.();
           }}
-          onSkip={() => {
+          onSkip={(r) => {
             // Preview mode — Slice 4 will gate writes behind a modal.
             // For Slice 2, just drop the wizard and let the user browse.
             setOnboardingState("onboarded");
+            setProfilePending(!!r?.pending || hasPendingProfile());
             if (typeof window !== "undefined") {
               const u = new URL(window.location.href);
               u.searchParams.delete("force");
@@ -1726,6 +1737,23 @@ export default function App() {
             }
           }}
         />
+      )}
+      {profilePending && !wizardActive && (
+        <div
+          role="status"
+          style={{
+            background: "#fff7cc",
+            color: "#5a3a00",
+            borderBottom: "1px solid #e0c050",
+            padding: "8px 16px",
+            fontSize: 13,
+            textAlign: "center",
+          }}
+        >
+          Your preferences are saved on this device. Sign in to sync them
+          to the server. (Sign-in flow ships in Slice 4 — until then your
+          settings travel with this browser.)
+        </div>
       )}
 
       <div className="page-pad">
