@@ -65,9 +65,9 @@ A production-grade, zero-cost **end-to-end job hunt automation platform** for Da
 │ AutoApply: Portal form auto-fill        │ ❌ Designed, not built│
 │ AutoApply: Pop-up application tracker   │ ❌ Designed, not built│
 ├─────────────────────────────────────────┼──────────────────────┤
-│ App.jsx split into modules              │ 🔄 Tech debt (3882 LOC)│
-│ server.py split into modules            │ 🔄 Tech debt (847 LOC) │
-│ Standardize on one PDF library          │ 🔄 Tech debt          │
+│ App.jsx split into modules              │ ✅ Done (1805 LOC + 22 files)│
+│ server.py split into modules            │ ✅ Done (184 LOC + 7 files)│
+│ Standardize on one PDF library          │ ✅ Done (pypdf)        │
 └─────────────────────────────────────────┴──────────────────────┘
 ```
 
@@ -78,14 +78,14 @@ see job → vault picks best resume → click downloads PDF → status tracked.
 
 The genuinely-missing layer is the apply step itself — the AutoApply AI
 system (designed, partially built in a separate repo). Within this repo
-the remaining work is mostly tech debt:
+the previously-listed tech debt is now fully cleared (see commit history
+for the May 2026 refactor series):
 
-1. **Split App.jsx (3882 LOC)** into per-tab modules — it's well past
-   sustainable size and slows every future change
-2. **Split server.py (847 LOC)** along the same lines
-3. **Standardize on one PDF library** — pdfplumber (server.py) vs pypdf
-   (vault) — minor footgun
-4. **Commit/clean up the three untracked resume files** at the root
+- App.jsx split into per-tab modules — was 3886 LOC, now 1805 LOC orchestrator
+  + 22 focused files across lib/, components/, tabs/ (PRs #69–85)
+- server.py split into route modules — was 905 LOC, now 184 LOC orchestrator
+  + 7 focused files across core/ and routes/ (PRs #60–67)
+- pdfplumber retired, pypdf is the single PDF library (PR #58)
 
 Feature work on the dashboard side is mostly polish at this point.
 The user-visible features that CLAUDE.md previously labeled "not built"
@@ -102,7 +102,7 @@ and the default-resume selector. Search App.jsx for `jobFitByJob`,
 ```
 ┌──────────────────────────────────────────────────────┐
 │                  RENDER (FREE TIER)                   │
-│  Flask (server.py — 847 lines) + Background Thread    │
+│  Flask (server.py — 184 lines + 7 modules) + BG Thread │
 │  ├── Every 5 min:  Tier 0+1 (58 dream companies)     │
 │  ├── Every 60 min: All tiers (full 153-company sweep) │
 │  ├── Night skip:   12am–5:30am CST (06:00–11:30 UTC) │
@@ -124,7 +124,7 @@ and the default-resume selector. Search App.jsx for `jobFitByJob`,
                        │ live data (~5 min fresh)
 ┌──────────────────────▼───────────────────────────────┐
 │       REACT DASHBOARD (GitHub Pages)                  │
-│       App.jsx — 3882 lines                            │
+│       App.jsx — 1805 lines + 22 modules               │
 │  ├── Dual-source: live Render API → static fallback   │
 │  ├── 9 Tabs: Jobs, Rare, Analytics, Companies, Trends,│
 │  │           Tracker, Vault, Pipeline, Monitor        │
@@ -490,7 +490,7 @@ TELEGRAM_CHAT_ID=987654321
 
 ---
 
-## Dashboard (frontend/src/App.jsx — 3882 lines)
+## Dashboard (frontend/src/App.jsx — 1805 lines + 22 modules)
 
 React 18 + Vite + Recharts. Single-file component.
 
@@ -568,13 +568,15 @@ React 18 + Vite + Recharts. Single-file component.
 
 ## Technical Debt
 
-1. App.jsx is 3882 lines — should split into per-tab modules (**urgent** — well past sustainable size)
-2. server.py is 847 lines — monolithic
-3. AutoApply end-to-end loop never validated on a real ATS page
-4. Work history not in a queryable database yet
-5. No portal form field mapping per ATS (each has different DOM)
+1. AutoApply end-to-end loop never validated on a real ATS page
+2. Work history not in a queryable database yet
+3. No portal form field mapping per ATS (each has different DOM)
 
 Resolved (no longer debt):
+- ~~App.jsx 3886-LOC monolith~~ — split into 1805-LOC orchestrator + 22 focused
+  files across `lib/`, `components/`, `tabs/`. (PRs #69-85, May 2026)
+- ~~server.py 905-LOC monolith~~ — split into 184-LOC orchestrator + 7 focused
+  files across `core/` and `routes/`. (PRs #60-67, May 2026)
 - ~~Vault has no dashboard UI~~ — full tab + best-match + chip + upload + compare all wired
 - ~~No pytest suite~~ — 17 test files, 219 passing tests covering vault hardening,
   relevance, scrape orchestrator, applications API, admin routes, profile manager,
@@ -696,8 +698,10 @@ Done (kept for history):
 - ~~#44 DELETE endpoint inconsistency~~ → closed; legacy endpoint now routes through delete_vault_version
 
 Open (priority order):
-1. **Split App.jsx into per-tab modules** — biggest tech-debt item; 3882 LOC in one file
-2. **Split server.py into route modules** — 847 LOC monolith; routes are easy to extract per Blueprint
-3. Design work history PostgreSQL schema (AutoApply prerequisite)
-4. Wire up `floatingPanel.ts` in the AutoApply Chrome extension
-5. Validate end-to-end AutoApply loop on a real ATS page
+1. Design work history PostgreSQL schema (AutoApply prerequisite)
+2. Wire up `floatingPanel.ts` in the AutoApply Chrome extension
+3. Validate end-to-end AutoApply loop on a real ATS page
+4. Browser smoke-test all 9 tabs after the App.jsx split (PRs #69-85) —
+   the Vite build is clean but visual correctness needs interactive
+   verification. Spot-check Jobs/Vault/Tracker/Pipeline first since they
+   have the highest interactivity.
