@@ -319,6 +319,27 @@ function searchRank(job, ql) {
 const RENDER_API = import.meta.env.VITE_RENDER_URL || "";
 const STATIC_URL = "./api-data.json";
 
+/* ───── Vault auth helpers ───────────────────────────────────────────
+ * When the backend has API_SECRET set, every /api/vault/* call must
+ * carry ``Authorization: Bearer <token>``. We read the token from
+ * localStorage (key "vault_token") so the user can set it once via
+ * DevTools — a proper login UI is tracked as a follow-up.
+ *
+ * apiToken()    — safe read, returns "" outside browser
+ * authHeaders() — spreadable into ``headers: { ... }`` only when a
+ *                 token exists, so calls in dev (no API_SECRET) work
+ *                 unchanged.
+ */
+const apiToken = () => {
+  if (typeof window === "undefined") return "";
+  try { return window.localStorage.getItem("vault_token") || ""; }
+  catch { return ""; }
+};
+const authHeaders = () => {
+  const t = apiToken();
+  return t ? { Authorization: `Bearer ${t}` } : {};
+};
+
 function useJobData() {
   const [data,setData]             = useState(null);
   const [loading,setLoading]       = useState(true);
@@ -924,7 +945,7 @@ export default function App() {
     try {
       const r = await fetch(`${RENDER_API}/api/vault/best-match`, {
         method:"POST",
-        headers:{"Content-Type":"application/json"},
+        headers:{"Content-Type":"application/json", ...authHeaders()},
         body: JSON.stringify({job_description: jd, top_n: 5}),
         signal: AbortSignal.timeout(15000),
       });
@@ -950,6 +971,7 @@ export default function App() {
     if (skip) return;
     try {
       const r = await fetch(`${RENDER_API}/api/vault/version/${encodeURIComponent(versionKey)}`, {
+        headers: { ...authHeaders() },
         signal: AbortSignal.timeout(10000),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -1466,8 +1488,8 @@ export default function App() {
     setVaultError("");
     try {
       const [sr, lr] = await Promise.all([
-        fetch(`${RENDER_API}/api/vault/stats`, {signal: AbortSignal.timeout(8000)}),
-        fetch(`${RENDER_API}/api/vault/list`,  {signal: AbortSignal.timeout(8000)}),
+        fetch(`${RENDER_API}/api/vault/stats`, {headers: {...authHeaders()}, signal: AbortSignal.timeout(8000)}),
+        fetch(`${RENDER_API}/api/vault/list`,  {headers: {...authHeaders()}, signal: AbortSignal.timeout(8000)}),
       ]);
       if (sr.ok) setVaultStats(await sr.json());
       else setVaultStats(null);
@@ -1504,7 +1526,7 @@ export default function App() {
     });
     if (skip) return;
     try {
-      const r = await fetch(`${RENDER_API}/api/vault/version/${encodeURIComponent(vk)}`, {signal: AbortSignal.timeout(8000)});
+      const r = await fetch(`${RENDER_API}/api/vault/version/${encodeURIComponent(vk)}`, {headers: {...authHeaders()}, signal: AbortSignal.timeout(8000)});
       if (r.ok) {
         const d = await r.json();
         setVaultDetails(prev => ({...prev, [vk]: d}));
@@ -1522,7 +1544,7 @@ export default function App() {
     if (!RENDER_API) return;
     if (!window.confirm(`Delete vault version "${vk}"? This removes the DB record AND the PDF file from the server.`)) return;
     try {
-      const r = await fetch(`${RENDER_API}/api/vault/version/${encodeURIComponent(vk)}`, {method:"DELETE", signal: AbortSignal.timeout(8000)});
+      const r = await fetch(`${RENDER_API}/api/vault/version/${encodeURIComponent(vk)}`, {method:"DELETE", headers: {...authHeaders()}, signal: AbortSignal.timeout(8000)});
       if (!r.ok) {
         let msg = `HTTP ${r.status}`;
         try { const j = await r.json(); if (j?.error) msg = j.error; } catch {}
@@ -1555,7 +1577,7 @@ export default function App() {
     setVaultCmpResult(null);
     try {
       const r = await fetch(`${RENDER_API}/api/vault/compare`, {
-        method:"POST", headers:{"Content-Type":"application/json"},
+        method:"POST", headers:{"Content-Type":"application/json", ...authHeaders()},
         body: JSON.stringify({version_a: vaultCmpA, version_b: vaultCmpB}),
       });
       const d = await r.json();
@@ -1590,7 +1612,7 @@ export default function App() {
         fr.readAsDataURL(vaultUpFile);
       });
       const r = await fetch(`${RENDER_API}/api/vault/upload`, {
-        method:"POST", headers:{"Content-Type":"application/json"},
+        method:"POST", headers:{"Content-Type":"application/json", ...authHeaders()},
         body: JSON.stringify({
           pdf_base64: b64,
           company: vaultUpCompany.trim(),

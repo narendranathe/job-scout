@@ -15,11 +15,38 @@ Endpoints:
     GET    /api/vault/stats          — Vault summary stats
     GET    /api/vault/version/<key>  — Get a specific resume version details
     DELETE /api/vault/version/<key>  — Delete a resume version
+
+Security (issues #34, #35, #36 + Round 2 hardening):
+    - All endpoints require ``Authorization: Bearer <API_SECRET>`` when
+      ``API_SECRET`` is set. When ``API_SECRET`` is unset the blueprint
+      logs a startup warning and lets requests through so local dev keeps
+      working unchanged.
+    - Bearer scheme is case-insensitive (RFC 7235) and the token is
+      compared with ``secrets.compare_digest`` to defeat timing attacks.
+    - ``API_SECRET`` is ``.strip()``ed at import so trailing whitespace in
+      ``.env`` files doesn't silently invalidate every request.
+    - Auth failures are logged with the source IP + path (but NOT the
+      offending token) so operators can detect brute-force attempts.
+    - CORS origins are restricted to ``ALLOWED_ORIGINS`` (comma-separated
+      env var) when configured; otherwise it falls back to ``*`` with a
+      startup warning. ``Authorization`` is always advertised in
+      ``Access-Control-Allow-Headers`` so the Bearer header survives
+      preflight. ``Allow-Credentials: true`` is only emitted alongside a
+      specific allowlisted origin — never with ``*`` (browsers reject
+      that combination silently).
+    - Upload payloads are size-capped (10 MB) and magic-byte validated
+      (``%PDF-``) at the route layer before they ever hit the vault writer.
+    - ``company`` / ``role`` strings are length-capped at 80 chars before
+      reaching ``canonical_filename``; the helper itself sanitizes the
+      remaining input down to ``[A-Za-z0-9_-]`` and ``save_pdf_to_vault``
+      asserts ``realpath()`` stays inside the vault dir.
 """
 
 import base64
 import logging
 import os
+import re
+import secrets
 
 from flask import Blueprint, jsonify, request
 
@@ -28,6 +55,87 @@ log = logging.getLogger(__name__)
 vault_bp = Blueprint("vault", __name__)
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "..", "jobscout.db"))
+# .strip() so trailing whitespace from .env files / shell exports doesn't
+# silently invalidate every auth attempt with a mysterious 401.
+API_SECRET = os.environ.get("API_SECRET", "").strip()
+
+# RFC 7235 says the auth scheme is case-insensitive ("Bearer" / "bearer"
+# / "BEARER" are all valid). Pre-compiled so the per-request hot path is
+# a single regex match against the header.
+_BEARER_RE = re.compile(r"^Bearer\s+(\S+)\s*$", re.IGNORECASE)
+
+# 10 MB cap matches save_pdf_to_vault's own limit; we enforce it here too so
+# we never base64-decode + buffer a megabyte payload that we'd just reject.
+MAX_PDF_BYTES = 10_000_000
+# Defense-in-depth length cap; canonical_filename sanitizes the content,
+# but rejecting early gives the caller a clearer error and avoids spending
+# CPU on absurd inputs.
+MAX_FIELD_LEN = 80
+
+# Comma-separated list of allowed origins. Empty/unset = legacy "*" with warning.
+ALLOWED_ORIGINS = [
+    o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()
+]
+
+# Emit startup advisories exactly once so operators notice misconfigured envs.
+if not API_SECRET:
+    log.warning(
+        "vault_routes: API_SECRET is unset — vault endpoints are UNAUTHENTICATED "
+        "(dev mode). Set API_SECRET in production."
+    )
+if not ALLOWED_ORIGINS:
+    log.warning(
+        "vault_routes: ALLOWED_ORIGINS is unset — falling back to Access-Control-"
+        "Allow-Origin: * for vault endpoints. Set ALLOWED_ORIGINS in production."
+    )
+
+
+def _check_auth() -> bool:
+    """Bearer-token gate. Returns True when the request is allowed.
+
+    Mirrors the helper in routes/admin_routes.py and server._check_api_secret:
+    if API_SECRET is unset we accept everything (dev mode); otherwise the
+    request must carry ``Authorization: Bearer <API_SECRET>``.
+
+    Hardening (Round 2):
+    - Token extracted via case-insensitive regex (RFC 7235 says the scheme
+      is case-insensitive). ``Authorization: bearer foo`` is now valid.
+    - Comparison uses ``secrets.compare_digest`` to defeat timing
+      side-channel leaks. A naïve ``==`` returns as soon as the first
+      mismatched byte is found, which over many requests reveals the
+      secret one byte at a time.
+    """
+    if not API_SECRET:
+        return True
+    m = _BEARER_RE.match(request.headers.get("Authorization", ""))
+    if not m:
+        return False
+    token = m.group(1)
+    return secrets.compare_digest(token.encode("utf-8"), API_SECRET.encode("utf-8"))
+
+
+@vault_bp.before_request
+def _vault_require_auth():
+    """Gate every vault endpoint behind the Bearer-token check.
+
+    OPTIONS requests are allowed through unconditionally — browsers send
+    them without the Authorization header during CORS preflight, so a 401
+    here would break the dashboard before the real request ever leaves the
+    browser. The actual POST/GET/DELETE that follows still hits this hook.
+    """
+    if request.method == "OPTIONS":
+        return None
+    if not _check_auth():
+        # Log the failure so operators can detect brute-force attempts.
+        # Deliberately DO NOT log the offending token — that would shovel
+        # near-miss guesses into log aggregators, defeating the secret.
+        log.warning(
+            "vault auth rejected from %s for %s",
+            request.remote_addr,
+            request.path,
+        )
+        return jsonify({"error": "unauthorized"}), 401
+    return None
 
 _TOP_N_CAP = 50
 
@@ -96,13 +204,39 @@ def vault_upload():
     if not company:
         return jsonify({"error": "company is required"}), 400
 
-    result = save_pdf_to_vault(
-        pdf_bytes=pdf_bytes,
-        company=company,
-        role=role,
-        original_filename=filename,
-        db_path=DB_PATH,
-    )
+    # Issue #35: length cap before the path is built. canonical_filename also
+    # sanitizes, but capping at the route layer gives a clearer error and
+    # avoids huge synthetic inputs.
+    if len(company) > MAX_FIELD_LEN:
+        return jsonify({
+            "error": f"company too long (max {MAX_FIELD_LEN} chars, got {len(company)})"
+        }), 400
+    if role is not None and len(role) > MAX_FIELD_LEN:
+        return jsonify({
+            "error": f"role too long (max {MAX_FIELD_LEN} chars, got {len(role)})"
+        }), 400
+
+    # Issue #36: magic-byte + size validation before we hand bytes to
+    # save_pdf_to_vault. Size first (cheapest), then magic bytes.
+    if len(pdf_bytes) > MAX_PDF_BYTES:
+        return jsonify({
+            "error": f"PDF too large: {len(pdf_bytes)} bytes (max {MAX_PDF_BYTES})",
+        }), 413
+    if not pdf_bytes.startswith(b"%PDF-"):
+        return jsonify({"error": "not a PDF (missing %PDF- magic bytes)"}), 400
+
+    try:
+        result = save_pdf_to_vault(
+            pdf_bytes=pdf_bytes,
+            company=company,
+            role=role,
+            original_filename=filename,
+            db_path=DB_PATH,
+        )
+    except ValueError as e:
+        # canonical_filename rejects fully-sanitized-to-empty names, and
+        # save_pdf_to_vault raises ValueError if the realpath assertion fails.
+        return jsonify({"error": str(e)}), 400
     return jsonify(result), 200
 
 
@@ -321,7 +455,29 @@ def vault_version(version_key):
 
 @vault_bp.after_request
 def vault_cors(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
+    # If ALLOWED_ORIGINS is configured, only echo back origins on the
+    # allowlist. We compare against the request Origin header so the
+    # response is dynamic per caller (a fixed list value would break
+    # browsers when more than one origin is whitelisted).
+    #
+    # Browser CORS rule: ``Access-Control-Allow-Credentials: true`` is
+    # ONLY valid alongside a specific origin — combined with ``*`` the
+    # browser silently rejects the entire response. So we only emit the
+    # credentials header inside the allowlist branch.
+    if ALLOWED_ORIGINS:
+        origin = request.headers.get("Origin", "")
+        if origin in ALLOWED_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Vary"] = "Origin"
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+        # If the origin isn't on the allowlist we deliberately do NOT set
+        # Access-Control-Allow-Origin — the browser will then block the
+        # response, which is what we want.
+    else:
+        # Dev-mode fallback: '*' is fine for browsers that do NOT need
+        # credentials. We must NOT add Allow-Credentials here or the
+        # combination becomes browser-rejected.
+        response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
     return response
