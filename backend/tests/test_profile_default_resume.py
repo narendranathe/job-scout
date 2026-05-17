@@ -37,6 +37,11 @@ def client(tmp_path, monkeypatch):
     # also patch its module-level so update_profile() hits the temp DB.
     from storage import profile_manager as pm
     pm.DB_PATH = db_path
+    # After the server.py split (PR 6/8), routes/profile_routes.py reads
+    # _config.DB_PATH live from core.config. Mutate that too so the
+    # blueprint sees the test DB instead of the at-import default.
+    import core.config as _cfg
+    monkeypatch.setattr(_cfg, "DB_PATH", db_path)
     with server.app.test_client() as c:
         yield c
     importlib.reload(server)
@@ -186,6 +191,10 @@ def secured_client(tmp_path, monkeypatch):
 
     from storage import profile_manager as pm
     pm.DB_PATH = db_path
+    # Mirror the `client` fixture: also patch core.config.DB_PATH so the
+    # post-split profile_bp picks up the test DB.
+    import core.config as _cfg
+    monkeypatch.setattr(_cfg, "DB_PATH", db_path)
 
     with server.app.test_client() as c:
         yield c
