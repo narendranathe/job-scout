@@ -8,6 +8,10 @@ import { DEFAULT_RENDER_URL, STATIC_URL, RENDER_API, apiToken, authHeaders } fro
 import { TH } from "./lib/theme.js";
 // Display formatting helpers extracted to lib/format.js (PR 3/N).
 import { fmtSal, timeAgo } from "./lib/format.js";
+// Small presentational components (PR 4/N).
+import { BrandLogo } from "./components/BrandLogo.jsx";
+import { LogoImg, CO_DOMAINS, guessDomain } from "./components/LogoImg.jsx";
+import { ScrapeProgressBar } from "./components/ScrapeProgressBar.jsx";
 
 const ATS_META = {
   greenhouse:      {l:"Greenhouse",    c:"#3D8B6E",i:"🌿"},
@@ -48,147 +52,8 @@ const TARGET_ROLE_KW = [
 // Resume version presets for the tracker
 const RESUME_VERSIONS = ["_DE","_data","_SWE","_SE","_AE","_AI","_ML","standard","custom"];
 
-/* ═══ Brand Logo — clean magnifying glass (Simplify-style minimal) ═══ */
-function BrandLogo({ size = 32, t }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-label="JobScout">
-      {/* Magnifying glass circle */}
-      <circle cx="13" cy="13" r="9.5" stroke={t.ac} strokeWidth="2.5" fill="none"/>
-      {/* Handle */}
-      <line x1="20" y1="20" x2="28" y2="28" stroke={t.ac} strokeWidth="3" strokeLinecap="round"/>
-      {/* Subtle crosshair inside */}
-      <line x1="13" y1="7"  x2="13" y2="19" stroke={t.ac} strokeWidth="1" strokeLinecap="round" opacity="0.28"/>
-      <line x1="7"  y1="13" x2="19" y2="13" stroke={t.ac} strokeWidth="1" strokeLinecap="round" opacity="0.28"/>
-      {/* Center target dot */}
-      <circle cx="13" cy="13" r="3" fill={t.ac}/>
-    </svg>
-  );
-}
+// BrandLogo, LogoImg/CO_DOMAINS/guessDomain, ScrapeProgressBar imported from ./components/* (PR 4/N).
 
-/* ═══ Company logo chain ═══ */
-const CO_DOMAINS = {
-  "Anthropic":"anthropic.com","OpenAI":"openai.com","Stripe":"stripe.com","Datadog":"datadoghq.com",
-  "Databricks":"databricks.com","Snowflake":"snowflake.com","Coinbase":"coinbase.com","Palantir":"palantir.com",
-  "Scale AI":"scale.com","Discord":"discord.com","Ramp":"ramp.com","Plaid":"plaid.com","Reddit":"reddit.com",
-  "Anduril":"anduril.com","Wiz":"wiz.io","Rippling":"rippling.com","dbt Labs":"getdbt.com",
-  "Fivetran":"fivetran.com","Confluent":"confluent.io","Netflix":"netflix.com","Spotify":"spotify.com",
-  "Vercel":"vercel.com","Linear":"linear.app","Supabase":"supabase.com","Figma":"figma.com",
-  "Notion":"notion.so","Brex":"brex.com","Airtable":"airtable.com","MongoDB":"mongodb.com",
-  "Elastic":"elastic.co","Cloudflare":"cloudflare.com","GitLab":"gitlab.com","HashiCorp":"hashicorp.com",
-  "CrowdStrike":"crowdstrike.com","Block (Square)":"block.xyz","Twilio":"twilio.com","Affirm":"affirm.com",
-  "Gusto":"gusto.com","Toast":"toasttab.com","Samsara":"samsara.com","Miro":"miro.com",
-  "Navan":"navan.com","Grammarly":"grammarly.com","Canva":"canva.com","Zapier":"zapier.com",
-  "Webflow":"webflow.com","Grafana Labs":"grafana.com","Temporal":"temporal.io",
-  "Cockroach Labs":"cockroachlabs.com","PlanetScale":"planetscale.com","Vanta":"vanta.com",
-  "Weights & Biases":"wandb.ai","Cohere":"cohere.com","Mistral AI":"mistral.ai",
-  "Hugging Face":"huggingface.co","Perplexity":"perplexity.ai","Instacart":"instacart.com",
-  "DoorDash":"doordash.com","Lyft":"lyft.com","Airbnb":"airbnb.com","Pinterest":"pinterest.com",
-  "Snap":"snap.com","Robinhood":"robinhood.com","Chime":"chime.com","Faire":"faire.com",
-  "Flexport":"flexport.com","Pagerduty":"pagerduty.com","Okta":"okta.com","SentinelOne":"sentinelone.com",
-  "Retool":"retool.com","Neon":"neon.tech","PostHog":"posthog.com","Railway":"railway.app",
-  "Tinybird":"tinybird.co","MotherDuck":"motherduck.com","Hex":"hex.tech","Visa":"visa.com",
-  "KPMG":"kpmg.com","Bosch":"bosch.com","Prefect":"prefect.io","Dagster":"dagster.io",
-  "Goldman Sachs":"goldmansachs.com","Capital One":"capitalone.com","Walmart":"walmart.com",
-  "Disney":"disney.com","Target":"target.com","Amex":"americanexpress.com","Deloitte":"deloitte.com",
-  "Uber":"uber.com","Atlassian":"atlassian.com","Dropbox":"dropbox.com","Asana":"asana.com",
-  "HubSpot":"hubspot.com","Zoom":"zoom.us","Amplitude":"amplitude.com","ClickHouse":"clickhouse.com",
-};
-
-function guessDomain(name) {
-  if (!name) return null;
-  const k = CO_DOMAINS[name];
-  if (k) return k;
-  return name.toLowerCase().replace(/[^a-z0-9]/g, "") + ".com";
-}
-
-function LogoImg({ name, size = 32, t }) {
-  const [stage, setStage] = useState(0);
-  const domain = guessDomain(name);
-  if (!domain || stage >= 2) {
-    const letter = (name || "?")[0].toUpperCase();
-    const hue = [...(name||"")].reduce((h,c)=>h+c.charCodeAt(0),0) % 360;
-    return (
-      <div style={{width:size,height:size,borderRadius:8,background:`hsl(${hue},25%,92%)`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:size*0.44,fontWeight:800,color:`hsl(${hue},35%,40%)`,flexShrink:0,fontFamily:"system-ui,sans-serif"}}>
-        {letter}
-      </div>
-    );
-  }
-  const srcs = [
-    `https://www.google.com/s2/favicons?domain=${domain}&sz=${size*2}`,
-    `https://logo.clearbit.com/${domain}?size=${size*2}`,
-  ];
-  return (
-    <img src={srcs[stage]} alt="" width={size} height={size}
-      style={{borderRadius:8,flexShrink:0,objectFit:"contain",background:"#fff",border:`1px solid ${t.bd}`}}
-      onError={() => setStage(s => s + 1)}
-    />
-  );
-}
-
-/* ═══ Scrape progress bar (Manual Triggers / Monitor tab) ═══
-   Pure-presentational component — hoisted so the admin op cards in #23/#24
-   can reuse it with their own snapshot shape (same {is_running, current_*,
-   *_done, *_total, found, new, eta_seconds} contract). The fill width
-   transitions smoothly between polls so a slow tick doesn't visually
-   stutter. Caller is responsible for hiding/showing it; this component
-   just renders the bar + labels for the given snapshot. */
-function ScrapeProgressBar({ snap, t }) {
-  if (!snap) return null;
-  const total = Math.max(0, snap.companies_total ?? 0);
-  const done  = Math.max(0, Math.min(snap.companies_done ?? 0, total || Infinity));
-  const pct   = total > 0 ? Math.min(100, Math.max(0, (done / total) * 100)) : 0;
-  const eta   = snap.eta_seconds;
-  return (
-    <div style={{marginTop:4}}>
-      <div style={{
-        display:"flex",justifyContent:"space-between",alignItems:"baseline",
-        gap:8,marginBottom:8,fontSize:13,color:t.txS,lineHeight:1.4,
-        flexWrap:"wrap",
-      }}>
-        <div style={{minWidth:0,flex:"1 1 auto",wordBreak:"break-word",overflowWrap:"anywhere"}}>
-          <strong style={{color:t.tx}}>
-            {snap.current_company || "Initializing"}
-          </strong>
-          {" • "}{done}/{total || "?"} companies
-        </div>
-        {eta != null && eta > 0 && total > done && (
-          <div style={{color:t.txM,fontVariantNumeric:"tabular-nums",flexShrink:0}}>
-            ETA {Math.round(eta)}s
-          </div>
-        )}
-      </div>
-      <div
-        role="progressbar"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={Math.round(pct)}
-        style={{
-          width:"100%",height:10,borderRadius:6,
-          background:t.bd,overflow:"hidden",
-          border:`1px solid ${t.bd}`,
-        }}
-      >
-        <div style={{
-          height:"100%",width:`${pct}%`,
-          background:t.ac,
-          // Transition slightly shorter than the 1.5s poll cadence so the
-          // bar finishes "catching up" right as the next snapshot arrives —
-          // no visible stall, no overshoot.
-          transition:"width 1400ms cubic-bezier(.4,0,.2,1)",
-          borderRadius:6,
-        }}/>
-      </div>
-      <div style={{
-        marginTop:8,fontSize:13,color:t.txS,lineHeight:1.4,
-      }}>
-        {snap.found ?? 0} jobs found
-        {(snap.new ?? 0) > 0 && <> · <span style={{color:t.ok,fontWeight:600}}>{snap.new} new</span></>}
-        {(snap.errors ?? 0) > 0 && <> · <span style={{color:t.er}}>{snap.errors} errors</span></>}
-        {snap.mode && <span style={{color:t.txM}}> · {snap.mode}</span>}
-      </div>
-    </div>
-  );
-}
 
 /* ═══ Role categories ═══ */
 const ROLE_CATS = [
