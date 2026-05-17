@@ -11,10 +11,10 @@
 - **Name:** JobScout — Personal Job Discovery Platform
 - **Repo:** https://github.com/narendranathe/job-scout
 - **Owner:** Narendranath Edara (narendranathe)
-- **Current version:** 3.1 (vault integrated, UI pending)
+- **Current version:** 3.2 (vault backend live + in-app setup panel; vault UI in progress)
 - **Languages:** Python ~49% / JavaScript ~50% / YAML ~1%
 - **Total cost:** $0/month (Render free + GitHub Actions free + GitHub Pages free)
-- **Live jobs tracked:** 173+
+- **Live jobs tracked:** 500+ (grows continuously as Render scrapes)
 
 ---
 
@@ -22,7 +22,7 @@
 
 A production-grade, zero-cost **end-to-end job hunt automation platform** for Data Engineers and ML Engineers. The system covers the full lifecycle:
 
-1. **Discover** — Scrape 109 company career pages across 6 ATS platforms every 5 minutes
+1. **Discover** — Scrape 147 company career pages across 6 ATS platforms every 5 minutes
 2. **Score** — Rate every job against your resume using multi-signal relevance + TF-IDF scoring
 3. **Match** — Find the best resume (from 95+ tailored PDFs) for each specific job description
 4. **Alert** — Instant Discord/Telegram notifications when dream roles appear
@@ -41,10 +41,10 @@ A production-grade, zero-cost **end-to-end job hunt automation platform** for Da
 ┌─────────────────────────────────────────┬──────────────────────┐
 │               Layer                     │        Status        │
 ├─────────────────────────────────────────┼──────────────────────┤
-│ Scraping 109 companies (6 ATS)          │ ✅ Live              │
+│ Scraping 147 companies (6 ATS)          │ ✅ Live              │
 │ Hourly GitHub Actions cron              │ ✅ Running           │
 │ Flask API + all base endpoints          │ ✅ Live on Render    │
-│ Resume vault backend (8 endpoints)      │ ✅ Built, registered │
+│ Resume vault backend (9 endpoints)      │ ✅ Built, registered │
 │ 95 PDFs + 73 texts in local vault       │ ✅ Imported          │
 │ Application tracker (6 tabs)            │ ✅ Built             │
 │ Discord + Telegram alerts               │ ✅ Live              │
@@ -69,7 +69,7 @@ A production-grade, zero-cost **end-to-end job hunt automation platform** for Da
 
 ### The Integration Gap (PRIMARY NEXT STEP)
 
-The vault backend is fully functional — 8 endpoints running on Render, 95 PDFs indexed — but the React dashboard has **zero UI** for it. The missing pieces:
+The vault backend is fully functional — 9 endpoints running on Render, 95 PDFs indexed — but the React dashboard has **zero UI** for it. The missing pieces:
 
 1. **Best-match on job cards** — clicking a job should call `POST /api/vault/best-match` with that job's description and surface which of the 95 resumes fits best
 2. **Job-fit score display** — show a "Resume Match: 87%" chip on each job card using the vault TF-IDF scorer
@@ -83,9 +83,9 @@ The vault backend is fully functional — 8 endpoints running on Render, 95 PDFs
 ```
 ┌──────────────────────────────────────────────────────┐
 │                  RENDER (FREE TIER)                   │
-│  Flask (server.py — 775 lines) + Background Thread    │
-│  ├── Every 5 min:  Tier 1 (24 dream companies)       │
-│  ├── Every 60 min: All tiers (full 109-company sweep) │
+│  Flask (server.py — 847 lines) + Background Thread    │
+│  ├── Every 5 min:  Tier 0+1 (58 dream companies)     │
+│  ├── Every 60 min: All tiers (full 147-company sweep) │
 │  ├── Night skip:   12am–5:30am CST (06:00–11:30 UTC) │
 │  ├── Dream alerts: Discord + Telegram on new match    │
 │  └── SQLite DB (WAL mode):                            │
@@ -96,8 +96,8 @@ The vault backend is fully functional — 8 endpoints running on Render, 95 PDFs
 │       └── scrape_runs (audit log)                     │
 │                                                       │
 │  Resume Vault:                                        │
-│       ├── resume_vault/pdf/   (95 PDFs)               │
-│       └── resume_vault/text/  (73 extracted texts)    │
+│       ├── resume_vault/pdf/   (PDF storage, gitignored)│
+│       └── resume_vault/text/  (extracted text cache)   │
 │                                                       │
 │  Flask API on port 10000 via gunicorn                 │
 │  vault_routes.py Blueprint registered in server.py    │
@@ -105,10 +105,10 @@ The vault backend is fully functional — 8 endpoints running on Render, 95 PDFs
                        │ live data (~5 min fresh)
 ┌──────────────────────▼───────────────────────────────┐
 │       REACT DASHBOARD (GitHub Pages)                  │
-│       App.jsx — 1551 lines                            │
+│       App.jsx — 3882 lines                            │
 │  ├── Dual-source: live Render API → static fallback   │
-│  ├── 6 Tabs: Jobs, Analytics, Companies, Trends,      │
-│  │           Tracker, Monitor                         │
+│  ├── 9 Tabs: Jobs, Rare, Analytics, Companies, Trends,│
+│  │           Tracker, Vault, Pipeline, Monitor        │
 │  ├── Ranked search (10-tier scoring algorithm)        │
 │  ├── Dream company badges, ATS platform icons         │
 │  ├── Application tracker (localStorage + API sync)    │
@@ -152,9 +152,9 @@ job-scout/
 │   ├── alerts/
 │   │   └── notifier.py            # Discord + Telegram dream-job alerts
 │   ├── routes/
-│   │   ├── vault_routes.py        # Flask Blueprint — 8 vault endpoints
+│   │   ├── vault_routes.py        # Flask Blueprint — 9 vault endpoints
 │   │   └── __init__.py
-│   ├── server.py                  # 775 lines — Flask API + background scraper + night skip
+│   ├── server.py                  # 847 lines — Flask API + background scraper + night skip
 │   ├── main.py                    # CLI for GitHub Actions + local testing
 │   ├── export_data.py             # DB → api-data.json bridge
 │   ├── vault_cli.py               # CLI for resume vault operations
@@ -164,7 +164,7 @@ job-scout/
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/
-│   │   ├── App.jsx                # 1551 lines — full React dashboard, 6 tabs
+│   │   ├── App.jsx                # 3882 lines — full React dashboard, 9 tabs
 │   │   └── main.jsx
 │   ├── public/
 │   │   └── api-data.json          # Static fallback (Actions updates hourly)
@@ -278,7 +278,7 @@ scrape_runs (
 | GET | `/api/applications/company/<name>` | Full history for a company |
 | GET | `/api/applications/export` | Export all as JSON backup |
 
-### Resume Vault (8 endpoints — ✅ live, ❌ no frontend UI)
+### Resume Vault (9 endpoints — ✅ live, frontend UI in progress)
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/api/vault/upload` | Upload PDF to vault, extract text, register |
@@ -289,6 +289,7 @@ scrape_runs (
 | POST | `/api/vault/best-match` | Rank ALL resumes against a JD → best fit |
 | GET | `/api/vault/stats` | Vault summary (counts, size, companies) |
 | GET/DELETE | `/api/vault/version/<key>` | Get/delete specific version |
+| GET | `/api/vault/version/<key>/pdf` | Stream the actual PDF bytes for inline view/download |
 
 ---
 
@@ -306,10 +307,11 @@ Every yielded dict must contain: `external_id`, `title`, `company`, `location`, 
 | `bamboohr.py` | BambooHR | `GET {slug}.bamboohr.com/careers/list` | ~3 |
 | `workday.py` | Workday | `POST {host}/wday/cxs/{slug}/{board}/jobs` | ~7 |
 
-### Tier system (companies.py)
-- **Tier 1 (24 companies):** Anthropic, OpenAI, Stripe, Databricks, Snowflake, Netflix, Spotify, Discord, Goldman Sachs, JP Morgan, etc. — every cycle (~5 min)
-- **Tier 2 (~50 companies):** Figma, Notion, Airbnb, Pinterest, DoorDash, etc. — every 2nd cycle
-- **Tier 3 (~20 companies):** Visa, KPMG, Bosch, etc. — every 4th cycle
+### Tier system (companies.py — 147 total companies across 4 tiers)
+- **Tier 0 (28 companies):** Top-of-mind dream companies — scraped every cycle alongside Tier 1
+- **Tier 1 (30 companies):** Anthropic, OpenAI, Stripe, Databricks, Snowflake, Netflix, Spotify, Discord, Goldman Sachs, JP Morgan, etc. — every cycle (~5 min)
+- **Tier 2 (59 companies):** Figma, Notion, Airbnb, Pinterest, DoorDash, etc. — every 2nd cycle
+- **Tier 3 (30 companies):** Visa, KPMG, Bosch, etc. — every 4th cycle
 - `get_batch(cycle_number)` returns the correct companies for each cycle
 
 ---
@@ -468,17 +470,20 @@ TELEGRAM_CHAT_ID=987654321
 
 ---
 
-## Dashboard (frontend/src/App.jsx — 1551 lines)
+## Dashboard (frontend/src/App.jsx — 3882 lines)
 
 React 18 + Vite + Recharts. Single-file component.
 
-### 6 Tabs
+### 9 Tabs
 1. **Jobs** — Ranked search, multi-filter, job cards with logos, relevance bars, skills pills, H1B badge, expandable descriptions, "Applied here" badge
-2. **Analytics** — ATS distribution pie, salary range bar, 30-day posting trend
-3. **Companies** — Logo grid with job counts and sample roles
-4. **Trends** — Posting timeline, top companies by volume
-5. **Tracker** — Application status board, resume version manager, localStorage + API sync
-6. **Monitor** — Server health, pipeline status, manual scrape trigger
+2. **Rare** — Subset of Jobs filtered to roles requiring rare/in-demand skills (counts surface in the tab label)
+3. **Analytics** — ATS distribution pie, salary range bar, 30-day posting trend
+4. **Companies** — Logo grid with job counts and sample roles
+5. **Trends** — Posting timeline, top companies by volume
+6. **Tracker** — Application status board, resume version manager, localStorage + API sync
+7. **Vault** — Resume library browser, stats, compare two versions, upload new PDFs *(UI in progress — backend live)*
+8. **Pipeline** — Kanban of applications by stage (Saved → Applied → Phone → Offer → Rejected)
+9. **Monitor** — Server health, pipeline status, manual scrape trigger
 
 ### Ranked Search Algorithm (10 tiers)
 1. Exact title match → 100
@@ -502,7 +507,8 @@ React 18 + Vite + Recharts. Single-file component.
 | v2.0 | 100+ companies, 5 ATS, tiered scheduling, GitHub Actions, relevance engine |
 | v2.5 | Workday (7 finance cos), alerts (Slack/Twilio→Discord/Telegram), mobile, 10-tier search, night skip, ProfileManager |
 | v3.0 | Discord+Telegram free forever, application tracker, PIN security, 6-tab dashboard, 13 new API endpoints |
-| v3.1 | Resume vault (resume_vault.py 844 lines), vault Blueprint (8 endpoints live), bulk import 95 PDFs, vault CLI |
+| v3.1 | Resume vault (resume_vault.py 844 lines), vault Blueprint (9 endpoints live), bulk import 95 PDFs, vault CLI |
+| v3.2 | In-app server-setup panel (SetupPanel) + self-describing root endpoint — no more `.env` / DevTools setup, root `/` now auto-discovers routes |
 
 ---
 
@@ -543,8 +549,8 @@ React 18 + Vite + Recharts. Single-file component.
 ## Technical Debt
 
 1. Vault has no dashboard UI — 8 backend endpoints live, zero frontend
-2. App.jsx is 1551 lines — should split into per-tab modules
-3. server.py is 775 lines — monolithic
+2. App.jsx is 3882 lines — should split into per-tab modules (urgent — well past sustainable size)
+3. server.py is 847 lines — monolithic
 4. No pytest suite
 5. pdfplumber (server.py) vs pypdf (vault) — two PDF libraries, should standardize
 6. Untracked files: resume.md, resume-projects.md, resume_narendranath.tex
