@@ -373,9 +373,17 @@ def upsert_resume_version(
     target_roles: list = None,
     target_companies: list = None,
     notes: str = "",
+    submitted_at: str | None = None,
 ) -> str:
-    """Insert or update a resume version. Returns 'new' or 'updated'."""
+    """Insert or update a resume version. Returns 'new' or 'updated'.
+
+    When ``submitted_at`` (ISO 8601 string) is provided it is used as the
+    row's ``updated_at`` value — and on INSERT also as ``created_at``.
+    This lets bulk-imports preserve the original application date
+    instead of stamping every row with the import moment.
+    """
     now = datetime.now(timezone.utc).isoformat()
+    ts = submitted_at or now
     skills = skills or []
     target_roles = target_roles or []
     target_companies = target_companies or []
@@ -393,7 +401,7 @@ def upsert_resume_version(
         """, (
             version_key, display_name, resume_text,
             json.dumps(skills), json.dumps(target_roles), json.dumps(target_companies),
-            notes, now, now,
+            notes, ts, ts,
         ))
         return "new"
     else:
@@ -405,7 +413,7 @@ def upsert_resume_version(
         """, (
             display_name, resume_text,
             json.dumps(skills), json.dumps(target_roles), json.dumps(target_companies),
-            notes, now, version_key,
+            notes, ts, version_key,
         ))
         return "updated"
 

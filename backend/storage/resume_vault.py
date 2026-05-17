@@ -412,6 +412,7 @@ def save_pdf_to_vault(
     role: str = None,
     original_filename: str = None,
     db_path: str = None,
+    submitted_at: str = None,
 ) -> dict:
     """
     Save a PDF to the local vault + extract text + register in DB.
@@ -482,6 +483,19 @@ def save_pdf_to_vault(
     with open(text_path, "w", encoding="utf-8") as f:
         f.write(text)
 
+    # Stamp the filesystem mtime to the original submission date when
+    # the caller supplied one. ``list_vault`` returns ``modified_at``
+    # straight from ``stat().st_mtime``, so this is what the dashboard
+    # surfaces as the resume's date. Done after both writes (PDF + text)
+    # so the order of writes can't perturb the timestamp.
+    if submitted_at:
+        try:
+            ts = datetime.fromisoformat(submitted_at.replace("Z", "+00:00")).timestamp()
+            os.utime(vault_path, (ts, ts))
+            os.utime(text_path, (ts, ts))
+        except (ValueError, OSError) as e:
+            log.warning("Failed to apply submitted_at=%r: %s", submitted_at, e)
+
     # Extract skills
     from storage.profile_manager import extract_skills_from_resume
     skills = extract_skills_from_resume(text)
@@ -499,6 +513,7 @@ def save_pdf_to_vault(
             target_roles=[role] if role else [],
             target_companies=[company],
             notes=f"Uploaded from: {original_filename or fname}",
+            submitted_at=submitted_at,
         )
         conn.commit()
         conn.close()

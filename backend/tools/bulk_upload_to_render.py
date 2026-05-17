@@ -29,6 +29,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -80,6 +81,7 @@ def _upload_one(
     company: str,
     role: str | None,
     timeout: float,
+    submitted_at: str | None = None,
 ) -> tuple[bool, str]:
     """POST one PDF. Returns (ok, message). Retries on transient errors."""
     headers = {"Authorization": f"Bearer {secret}"} if secret else {}
@@ -93,6 +95,8 @@ def _upload_one(
                 data = {"company": company}
                 if role:
                     data["role"] = role
+                if submitted_at:
+                    data["submitted_at"] = submitted_at
                 resp = requests.post(
                     f"{api_url}/api/vault/upload",
                     headers=headers,
@@ -219,7 +223,9 @@ def main(argv: list[str] | None = None) -> int:
             continue
 
         try:
-            size = pdf_path.stat().st_size
+            st = pdf_path.stat()
+            size = st.st_size
+            submitted_at = datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat()
         except OSError as e:
             print(f"  - {pdf_path.name}: stat failed ({e})")
             failed.append((pdf_path.name, f"stat: {e}"))
@@ -233,7 +239,8 @@ def main(argv: list[str] | None = None) -> int:
             skipped_existing += 1
             continue
 
-        plan = f"{company}" + (f" / {role}" if role else "") + f"  [{vk}]"
+        date_str = submitted_at[:10]
+        plan = f"{company}" + (f" / {role}" if role else "") + f"  [{vk}]  ({date_str})"
         if args.dry_run:
             print(f"  · {pdf_path.name} -> {plan}  (dry-run)")
             uploaded += 1
@@ -241,7 +248,10 @@ def main(argv: list[str] | None = None) -> int:
                 break
             continue
 
-        ok, msg = _upload_one(api_url, args.api_secret or None, pdf_path, company, role, args.timeout)
+        ok, msg = _upload_one(
+            api_url, args.api_secret or None, pdf_path, company, role, args.timeout,
+            submitted_at=submitted_at,
+        )
         marker = "+" if ok else "x"
         print(f"  {marker} {pdf_path.name} -> {plan}  {msg}")
         if ok:
