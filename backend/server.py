@@ -51,6 +51,17 @@ from core.config import (
     check_api_secret,
 )
 from core.state import State, state
+# Background scraper + cache rebuild extracted to core/scrape_loop.py (PR 3/8).
+# Kept as re-exports here so existing route bodies still work; will be
+# inlined-via-import in the per-route-blueprint extractions.
+from core.scrape_loop import (
+    is_quiet_hours,
+    build_cache,
+    count_fast_companies as _count_fast_companies,
+    run_scrape_async as _run_scrape_async,
+    bg_scrape_loop as _bg_scrape_loop,
+    should_run_bg_scraper as _should_run_bg_scraper,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,29 +84,7 @@ app.register_blueprint(admin_bp)
 # Kept the import block compact so future readers see all shared deps in
 # one place at the top of the file rather than scattered through.
 
-# ─── Night quiet hours ────────────────────────────────────────────
-def is_quiet_hours() -> bool:
-    """
-    Returns True during 12:00am–5:30am CST (06:00–11:30 UTC).
-    No new roles are typically posted overnight, so we skip scraping.
-    """
-    now = datetime.now(timezone.utc)
-    utc_mins = now.hour * 60 + now.minute
-    # 12:00am CST = 06:00 UTC = 360 min
-    # 05:30am CST = 11:30 UTC = 690 min
-    return 360 <= utc_mins < 690
-
-
-def build_cache():
-    """Rebuild JSON cache from DB after each scrape."""
-    try:
-        from export_data import export
-        data = export(DB_PATH)
-        state.update_cache(data)
-        log.info("Cache rebuilt — %d jobs", data.get("stats", {}).get("total_jobs", 0))
-    except Exception as e:
-        log.error("Cache rebuild failed: %s", e)
-
+# is_quiet_hours + build_cache imported above from core.scrape_loop (PR 3/8).
 
 # ─── Flask routes ─────────────────────────────────────────────────
 
@@ -133,41 +122,7 @@ def api_stats():
         return jsonify({"error": str(e)}), 500
 
 
-def _count_fast_companies() -> int:
-    """Number of companies in 'fast' mode — Tier 0/1. Computed here so we can
-    pre-arm the broker with the real total inside the request handler, before
-    the worker thread starts. Keeps the snapshot returned by POST /api/scrape
-    immediately useful for the dashboard."""
-    return sum(1 for c in COMPANIES if c.get("tier", 3) in (0, 1))
-
-
-def _run_scrape_async(mode: str = "fast") -> None:
-    """Background runner: executes a scrape, records cycle stats, rebuilds cache.
-
-    SQLite connections are not thread-safe, so we open `conn` here inside the
-    worker thread rather than reusing one from the request thread. The
-    orchestrator's own try/finally guarantees broker.finish(); the inner
-    try/finally closes the conn even if the orchestrator raises. The outer
-    try/except mirrors that for state.is_scraping so it's always cleared.
-    """
-    state.is_scraping = True
-    t0 = time.time()
-    try:
-        conn = get_conn(DB_PATH)
-        try:
-            stats = run_scrape(conn, mode=mode, status_broker=broker)
-        finally:
-            conn.close()
-        state.record_cycle(time.time() - t0, stats)
-        build_cache()
-    except Exception as e:
-        log.exception("Async scrape failed")
-        state.record_cycle(0, {}, str(e))
-    finally:
-        # record_cycle() already clears is_scraping; keep this for the
-        # exception-before-record_cycle window.
-        state.is_scraping = False
-
+# _count_fast_companies + _run_scrape_async imported above from core.scrape_loop.
 
 def _check_api_secret() -> bool:
     """Backward-compat shim over core.config.check_api_secret.
@@ -788,48 +743,7 @@ def add_cors(response):
 # tick in real time even when the cycle wasn't user-triggered. Skips when
 # the broker is already running (a manual POST /api/scrape can race the
 # cron tick — manual wins; this thread quietly waits for the next slot).
-def _bg_scrape_loop() -> None:
-    log.info("Background scraper enabled — interval=%ds", FAST_INTERVAL)
-    # First tick gets a short delay so the Flask boot path isn't competing
-    # with the scraper for SQLite init/imports on cold starts.
-    time.sleep(15)
-    while True:
-        try:
-            if is_quiet_hours():
-                log.debug("BG scrape: quiet hours, skipping")
-            elif not broker.try_start("fast", _count_fast_companies()):
-                # Atomic check-and-arm: must mirror POST /api/scrape's gate
-                # exactly. A plain `if broker.is_running()` check would leave
-                # a race window where a manual POST wins the broker while
-                # we're about to call run_scrape() — both threads would then
-                # tick the same broker and double-scrape the same companies.
-                log.debug("BG scrape: broker busy, skipping cycle")
-            else:
-                log.info("BG scrape: starting fast cycle")
-                threading.Thread(
-                    target=_run_scrape_async,
-                    args=("fast",),
-                    daemon=True,
-                    name="bg-scrape-worker",
-                ).start()
-        except Exception:
-            # Never let the loop die — log and continue. The 10-min watchdog
-            # in StatusBroker.is_running() rescues us if a scrape crashed
-            # before its finally-finish() ran.
-            log.exception("BG scrape loop tick failed")
-        time.sleep(FAST_INTERVAL)
-
-
-def _should_run_bg_scraper() -> bool:
-    """Background loop is opt-out via DISABLE_BG_SCRAPE=1, and auto-disabled
-    under pytest so test_client() reloads don't spawn rogue threads that
-    write to the test DB."""
-    if "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules:
-        return False
-    if os.environ.get("DISABLE_BG_SCRAPE", "").lower() in ("1", "true", "yes"):
-        return False
-    return os.environ.get("ENABLE_BG_SCRAPE", "1") == "1"
-
+# _bg_scrape_loop + _should_run_bg_scraper imported above from core.scrape_loop.
 
 # ─── Startup ──────────────────────────────────────────────────────
 init_db(DB_PATH)
