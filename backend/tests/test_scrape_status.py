@@ -226,6 +226,15 @@ def test_concurrent_scrape_requests(tmp_path, monkeypatch):
         release.wait(timeout=3)
         b.finish({"new": 0})
 
+    # Patch where the function lives now (core.scrape_loop) — after the
+    # server.py split (PR #62, #64), the /api/scrape Blueprint imports
+    # run_scrape_async directly from core.scrape_loop instead of going
+    # through server. Patching `server._run_scrape_async` would only
+    # affect the legacy re-export, not the live call site.
+    import core.scrape_loop as _scrape_loop
+    monkeypatch.setattr(_scrape_loop, "run_scrape_async", _slow_worker)
+    # Keep the legacy alias mutation too in case any other call path
+    # still goes through server (defense in depth — cheap).
     monkeypatch.setattr(server, "_run_scrape_async", _slow_worker)
 
     c = server.app.test_client()
