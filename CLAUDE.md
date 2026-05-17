@@ -727,10 +727,18 @@ Done (kept for history):
 - ~~#44 DELETE endpoint inconsistency~~ → closed; legacy endpoint now routes through delete_vault_version
 
 Open (priority order):
-1. Design work history PostgreSQL schema (AutoApply prerequisite)
-2. Wire up `floatingPanel.ts` in the AutoApply Chrome extension
-3. Validate end-to-end AutoApply loop on a real ATS page
-4. Browser smoke-test all 9 tabs after the App.jsx split (PRs #69-85) —
+1. **First-run onboarding wizard** (PRD #89, 4 queued draft PRs)
+   * PR #94 — Slice 1/4 backend foundations (schema, role taxonomy, public roster endpoints, cookie auth) — *unblocks the other three*
+   * PR #95 — Slice 2/4 wizard component (steps 1–4: welcome, roles, companies, locations)
+   * PR #96 — Slice 3/4 vault drag-drop + PIN setup (steps 5–6)
+   * PR #97 — Slice 4/4 login screen + read-only preview + reset-onboarding admin
+   * Spec: `docs/superpowers/specs/2026-05-17-first-run-onboarding-wizard.md`
+   * Merge order: 94 → (95 ‖ 96) → 97. Slices 2 and 3 are parallel-safe.
+2. Cloudflare R2 vault rollout (this branch / PR #68 follow-up). Code shipped; ops left: provision R2 bucket, set `VAULT_BACKEND=r2` + 4 R2_* env vars on Render, re-run bulk uploader so PDFs land in R2 instead of ephemeral disk.
+3. Design work history PostgreSQL schema (AutoApply prerequisite)
+4. Wire up `floatingPanel.ts` in the AutoApply Chrome extension
+5. Validate end-to-end AutoApply loop on a real ATS page
+6. Browser smoke-test all 9 tabs after the App.jsx split (PRs #69-85) —
    the Vite build is clean but visual correctness needs interactive
    verification. Spot-check Jobs/Vault/Tracker/Pipeline first since they
    have the highest interactivity.
