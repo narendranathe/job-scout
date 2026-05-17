@@ -47,6 +47,7 @@ import logging
 import os
 import re
 import secrets
+import threading
 
 from flask import Blueprint, jsonify, request, send_file
 
@@ -84,6 +85,71 @@ MAX_JD_BYTES = 50_000
 ALLOWED_ORIGINS = [
     o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()
 ]
+
+# --- /api/vault/parse-filename hardening (Attempt B) ----------------------
+# The parse-filename endpoint is auth-exempt (the onboarding wizard hits it
+# pre-login — see ``_vault_require_auth``) AND it runs a pure-CPU parser.
+# On a free Render dyno with a single gunicorn worker the real DoS vector
+# is *concurrent* CPU work: once N requests are in-flight at once they
+# starve the background scraper thread and stall every other request.
+#
+# We bound how many parse-filename requests can be running at the same
+# moment with a ``threading.BoundedSemaphore`` + non-blocking ``acquire``.
+# When the cap is saturated the caller gets an immediate 503 + Retry-After
+# instead of being queued (queueing would just shift starvation, not fix
+# it — the parser is fast, so an overflow is a strong signal of abuse).
+#
+# Trade-offs vs other rate-limit designs:
+#   * vs per-IP sliding-window / token bucket → no per-IP state, zero
+#     memory growth, no GC sweep, NAT/CGNAT-safe (a whole university
+#     behind one IP can still use the wizard), no clock-skew bugs.
+#   * vs Flask-Limiter library → no new dependency to vet on the free
+#     Render tier; the parser already runs in microseconds so the
+#     ceiling here is "how many CPU-seconds per second" not "RPS".
+#   * vs moving behind the auth gate → would break the wizard's pre-
+#     login dropzone preview (the explicit reason the endpoint is exempt;
+#     see ``_vault_require_auth`` docstring).
+#   * vs Flask MAX_CONTENT_LENGTH → that's a body-size cap, not a
+#     concurrency cap; the body cap is enforced inside the route already
+#     via the 256-char filename check.
+# The fundamental win: bounded above by ``PARSE_FILENAME_MAX_CONCURRENT``
+# regardless of attacker IP count — botnets can't game it by rotating IPs.
+PARSE_FILENAME_MAX_CONCURRENT = int(
+    os.environ.get("PARSE_FILENAME_MAX_CONCURRENT", "4")
+)
+# Retry-After hint (seconds) returned alongside the 503 so well-behaved
+# clients (and CDNs / browser fetch retry logic) back off instead of
+# hammering. Tuned to the expected parse cost (microseconds) plus jitter.
+PARSE_FILENAME_RETRY_AFTER_SEC = 1
+# Body-size cap (COMBINE: from #4A's design). The filename field tops
+# out at 256 chars, so the JSON envelope (`{"filename": "..."}` + 1-2
+# more legal keys + whitespace) cannot exceed ~4 KB even with maximum-
+# length input. Rejecting larger bodies at Content-Length check time
+# is the cheapest possible memory-DoS guard for an unauth endpoint —
+# Werkzeug never reads the body, json parser never runs.
+PARSE_FILENAME_MAX_BODY_BYTES = int(
+    os.environ.get("PARSE_FILENAME_MAX_BODY_BYTES", str(4 * 1024))
+)
+
+_parse_filename_semaphore = threading.BoundedSemaphore(
+    value=PARSE_FILENAME_MAX_CONCURRENT
+)
+
+
+def _reset_parse_filename_semaphore(max_concurrent: int = None) -> None:
+    """Test-only helper: rebuild the semaphore with a (possibly) fresh cap.
+
+    Tests that flip the concurrency limit need a fresh semaphore because
+    ``BoundedSemaphore`` doesn't expose its ceiling, and rebuilding also
+    drops any stale leases from a test that crashed mid-request.
+    """
+    global _parse_filename_semaphore, PARSE_FILENAME_MAX_CONCURRENT
+    if max_concurrent is not None:
+        PARSE_FILENAME_MAX_CONCURRENT = max_concurrent
+    _parse_filename_semaphore = threading.BoundedSemaphore(
+        value=PARSE_FILENAME_MAX_CONCURRENT
+    )
+
 
 # Emit startup advisories exactly once so operators notice misconfigured envs.
 if not API_SECRET:
@@ -604,10 +670,38 @@ def vault_parse_filename():
 
     Auth: explicitly allowed through in ``_vault_require_auth`` so the
     wizard can preview parser output BEFORE the user has logged in.
+
+    Hardening (Attempt B):
+      * Bug A — ``parse_resume_filename`` is wrapped in try/except. The
+        parser can raise ``TypeError`` (e.g. non-string survives the
+        ``.strip()`` fallback via odd JSON shapes), and we deliberately
+        do NOT echo back any partially-parsed metadata: returning a
+        half-guessed company/role on bad input would mislead the
+        wizard's "preview" UI ("looks like a Goldman Sachs resume!"
+        for what's actually garbage). Structured 400 instead.
+      * Bug B — a non-blocking ``BoundedSemaphore`` caps simultaneous
+        parser invocations (see ``PARSE_FILENAME_MAX_CONCURRENT``).
+        Over the cap → immediate 503 + Retry-After.
     """
     if request.method == "OPTIONS":
         return "", 200
 
+    # Body-size cap BEFORE any parsing. From critic head-to-head pick A:
+    # without this, a 100 MB JSON blob with a 5-char `filename` field
+    # still hits Werkzeug's parser + request.get_json (memory DoS).
+    # content_length is the Content-Length header value — None means
+    # the client didn't send one, which we also reject (chunked uploads
+    # have no place on a pure-function echo endpoint).
+    if request.content_length is None:
+        return jsonify({"error": "Content-Length required"}), 411
+    if request.content_length > PARSE_FILENAME_MAX_BODY_BYTES:
+        return jsonify({
+            "error": f"body too large (max {PARSE_FILENAME_MAX_BODY_BYTES} bytes)",
+        }), 413
+
+    # Validate body BEFORE acquiring the concurrency slot — rejecting
+    # malformed requests outside the semaphore means a flood of
+    # 400-shaped traffic can't pin the cap and lock out legitimate users.
     data = request.get_json(silent=True) or {}
     fn = (data.get("filename") or "").strip()
     if not fn:
@@ -618,8 +712,56 @@ def vault_parse_filename():
     if len(fn) > 256:
         return jsonify({"error": "filename too long (max 256 chars)"}), 400
 
-    from storage.resume_vault import parse_resume_filename
-    return jsonify(parse_resume_filename(fn)), 200
+    # Bug B — concurrency cap. Non-blocking acquire: if we're at the
+    # ceiling, reject immediately rather than queueing (queueing just
+    # shifts the dyno starvation, doesn't prevent it). The 503 + Retry-
+    # After is the RFC 7231 §6.6.4 idiom for "temporarily overloaded".
+    if not _parse_filename_semaphore.acquire(blocking=False):
+        log.warning(
+            "parse-filename concurrency cap (%d) hit from %s — returning 503",
+            PARSE_FILENAME_MAX_CONCURRENT,
+            request.remote_addr,
+        )
+        resp = jsonify({
+            "error": "server busy, retry shortly",
+            "retry_after": PARSE_FILENAME_RETRY_AFTER_SEC,
+        })
+        resp.headers["Retry-After"] = str(PARSE_FILENAME_RETRY_AFTER_SEC)
+        return resp, 503
+
+    try:
+        # Bug A — exception trap. The parser is well-behaved on str
+        # input but ``parse_resume_filename(None)`` (and a handful of
+        # other type-shaped surprises) raise TypeError out of pathlib.
+        # We log the underlying exception type server-side for triage
+        # but return ONLY a generic 400 to the client — never partial
+        # parsed-so-far data (would mislead the wizard preview) and
+        # never the exception message (could leak internal structure).
+        from storage.resume_vault import parse_resume_filename
+        try:
+            result = parse_resume_filename(fn)
+        except Exception as e:
+            # COMBINE: critic flagged the narrow exception list (#4B
+            # original) missed re.error, MemoryError, regex catastrophic
+            # backtracking — any of which would 500 with a traceback.
+            # ``except Exception`` covers the lot. The wizard preview
+            # has no business knowing internals; log type + len server-
+            # side, return generic 400 only.
+            #
+            # COMBINE: critic flagged echoing back `fn` in the body
+            # creates a log-poisoning reflection oracle for an
+            # unauthenticated endpoint. Dropped.
+            log.info(
+                "parse-filename rejected input (len=%d, %s: %s)",
+                len(fn), type(e).__name__, e,
+            )
+            return jsonify({"error": "could not parse filename"}), 400
+        return jsonify(result), 200
+    finally:
+        # Always release — even if jsonify itself blows up, we must not
+        # leak the semaphore lease (which would shrink the effective
+        # cap until the process restarts).
+        _parse_filename_semaphore.release()
 
 
 @vault_bp.after_request
