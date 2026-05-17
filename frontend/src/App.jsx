@@ -2076,8 +2076,12 @@ export default function App() {
       setVaultUpStatus({ok:false, msg:"PDF file and company name required"});
       return;
     }
-    if (vaultUpFile.size > 5 * 1024 * 1024) {
-      setVaultUpStatus({ok:false, msg:`❌ File too large (${(vaultUpFile.size/1024/1024).toFixed(1)} MB) — max 5 MB`});
+    // Mirrors MAX_PDF_BYTES in backend/storage/resume_vault.py:337 and
+    // backend/routes/vault_routes.py:69. Frontend was artificially rejecting
+    // 5–10 MB PDFs that the server would have accepted.
+    const MAX_UPLOAD_BYTES = 10_000_000;
+    if (vaultUpFile.size > MAX_UPLOAD_BYTES) {
+      setVaultUpStatus({ok:false, msg:`❌ File too large (${(vaultUpFile.size/1024/1024).toFixed(1)} MB) — max 10 MB`});
       return;
     }
     setVaultUpLoading(true);
@@ -3263,7 +3267,7 @@ export default function App() {
                 <h3 style={{margin:"0 0 16px",fontSize:13,color:t.txM,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em"}}>Upload New Resume</h3>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:12}}>
                   <div>
-                    <label htmlFor="vault-up-file" style={labelStyle}>PDF File <span style={{color:t.txS,fontWeight:400}}>(max 5 MB)</span></label>
+                    <label htmlFor="vault-up-file" style={labelStyle}>PDF File <span style={{color:t.txS,fontWeight:400}}>(max 10 MB)</span></label>
                     <input id="vault-up-file" ref={vaultFileInputRef} type="file" accept="application/pdf,.pdf"
                       onChange={e => setVaultUpFile(e.target.files?.[0] || null)}
                       style={{...iS,padding:"9px 12px"}}/>
