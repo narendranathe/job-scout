@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 from datetime import datetime, timezone
 
 log = logging.getLogger(__name__)
@@ -132,13 +133,19 @@ def init_profile_tables(db_path: str = DB_PATH):
     # In-place migration for existing DBs that pre-date this column. Rows get
     # NULL, which the GET endpoint surfaces as ``null`` so the dashboard
     # knows "no default → no chip".
+    #
+    # Narrow except: SQLite only signals "column already exists" via
+    # OperationalError with a specific message. Anything else (locked DB,
+    # permission denied, disk full) should bubble — silently swallowing
+    # those would mask real failures behind a "tables ready" log line.
     try:
         conn.execute(
             "ALTER TABLE user_profile ADD COLUMN default_resume_version TEXT"
         )
         conn.commit()
-    except Exception:
-        pass  # column already exists — safe to ignore
+    except sqlite3.OperationalError as e:
+        if "duplicate column" not in str(e).lower():
+            raise
     conn.commit()
     conn.close()
     log.info("Profile tables ready")

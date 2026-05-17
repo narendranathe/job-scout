@@ -20,6 +20,8 @@ Night quiet hours:
 """
 
 import os
+import re
+import secrets
 import sys
 import json
 import time
@@ -50,7 +52,13 @@ FAST_INTERVAL = int(os.environ.get("FAST_INTERVAL", "300"))    # seconds between
 # Note: per-company delay is SCRAPE_DELAY in the env; the orchestrator
 # reads it directly. Kept out of this module to avoid two copies.
 PORT          = int(os.environ.get("PORT", "10000"))
-API_SECRET    = os.environ.get("API_SECRET", "")               # optional auth for POST /api/scrape
+# .strip() so trailing whitespace from .env files / shell exports doesn't
+# silently invalidate every auth attempt with a mysterious 401.
+API_SECRET    = os.environ.get("API_SECRET", "").strip()       # optional Bearer auth gate
+
+# RFC 7235: auth scheme is case-insensitive. Pre-compiled so the
+# per-request hot path is a single regex match.
+_BEARER_RE = re.compile(r"^Bearer\s+(\S+)\s*$", re.IGNORECASE)
 
 app = Flask(__name__)
 
@@ -207,11 +215,20 @@ def _run_scrape_async(mode: str = "fast") -> None:
 
 
 def _check_api_secret() -> bool:
-    """Returns True if the request is authorized (or no secret is configured)."""
+    """Returns True if the request is authorized (or no secret is configured).
+
+    Hardened against:
+    - Bearer scheme case (RFC 7235): "bearer", "Bearer", "BEARER" all match.
+    - Timing side-channels: ``secrets.compare_digest`` runs in constant time
+      so an attacker can't probe the secret byte-by-byte over many requests.
+    """
     if not API_SECRET:
-        return True
-    token = request.headers.get("Authorization", "").replace("Bearer ", "")
-    return token == API_SECRET
+        return True  # dev mode passthrough
+    m = _BEARER_RE.match(request.headers.get("Authorization", ""))
+    if not m:
+        return False
+    token = m.group(1)
+    return secrets.compare_digest(token.encode("utf-8"), API_SECRET.encode("utf-8"))
 
 
 @app.route("/api/scrape", methods=["POST", "OPTIONS"])
@@ -270,6 +287,14 @@ def api_scrape_status():
 
 @app.route("/api/profile", methods=["GET"])
 def api_get_profile():
+    """Get user profile (preferences + default_resume_version).
+
+    Auth: deliberately left open. The payload is the user's own
+    preferences (custom skills, dream-company list, default resume key) —
+    not credentials. The pin_hash is stripped in ``get_profile`` so
+    readers can't even mount an offline brute-force. If a deployment
+    decides this should be gated, flip the same Bearer check used on POST.
+    """
     try:
         from storage.profile_manager import init_profile_tables, get_profile
         init_profile_tables(DB_PATH)
@@ -280,8 +305,18 @@ def api_get_profile():
 
 @app.route("/api/profile", methods=["POST", "OPTIONS"])
 def api_update_profile():
+    """Update preferences (custom_skills, dream_*, default_resume_version).
+
+    Auth: Bearer-gated when API_SECRET is configured. Without this, an
+    anonymous attacker could flip ``default_resume_version`` and silently
+    change which resume the dashboard auto-scores every job against
+    (Issue #39 part A R2 #1). OPTIONS preflights pass through so browser
+    CORS preflight isn't blocked by the missing Authorization header.
+    """
     if request.method == "OPTIONS":
         return "", 204
+    if not _check_api_secret():
+        return jsonify({"error": "unauthorized"}), 401, {"Access-Control-Allow-Origin": "*"}
     try:
         from storage.profile_manager import (
             init_profile_tables,
@@ -692,10 +727,8 @@ def api_delete_resume_version(version_key):
 def api_set_pin():
     if request.method == "OPTIONS":
         return "", 204
-    if API_SECRET:
-        token = request.headers.get("Authorization", "").replace("Bearer ", "")
-        if token != API_SECRET:
-            return jsonify({"error": "unauthorized"}), 401
+    if not _check_api_secret():
+        return jsonify({"error": "unauthorized"}), 401
     try:
         from storage.profile_manager import init_profile_tables, set_pin
         init_profile_tables(DB_PATH)

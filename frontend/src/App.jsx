@@ -579,10 +579,15 @@ const EMPTY_ARR = Object.freeze([]);
 // 50–75% yellow, <50% red. Returns plain hex strings derived from `pct` +
 // the active theme so React.memo doesn't have to track new object
 // identities each render.
+//
+// R2: also returns a `label` ("Strong"/"Moderate"/"Weak") and `icon`
+// (colored circle emoji) so the chip carries non-color signals — WCAG
+// 1.4.1 (use of color) requires that meaning isn't conveyed by color
+// alone. Screen readers and color-blind users see the same information.
 function _jobFitTone(pct, t) {
-  if (pct >= 75) return { fg: t.ok, bg: `${t.ok}18`, bd: `${t.ok}40` };
-  if (pct >= 50) return { fg: t.wm, bg: `${t.wm}18`, bd: `${t.wm}40` };
-  return { fg: t.er, bg: `${t.er}18`, bd: `${t.er}40` };
+  if (pct >= 75) return { fg: t.ok, bg: `${t.ok}18`, bd: `${t.ok}40`, label: "Strong",   icon: "🟢" };
+  if (pct >= 50) return { fg: t.wm, bg: `${t.wm}18`, bd: `${t.wm}40`, label: "Moderate", icon: "🟡" };
+  return            { fg: t.er, bg: `${t.er}18`, bd: `${t.er}40`, label: "Weak",     icon: "🔴" };
 }
 
 function _JobCard({
@@ -618,12 +623,23 @@ function _JobCard({
 
   // Job-fit chip: only rendered when a default resume is configured AND a
   // score has been (or is being) fetched for THIS card. Three visual
-  // states: loading dots, error '—', and the colored % chip.
+  // states, each visually distinct:
+  //  - loading:  "📄 …" on muted background
+  //  - error:    "⚠️ —" on warning-tinted background (separate from loading
+  //              so a stuck request doesn't look like an in-flight one)
+  //  - scored:   color + emoji + percent + (tone) label
+  //
+  // WCAG 1.4.1: the chip is NEVER color-only. The score variant carries a
+  // green/yellow/red emoji icon (visible to users who can't perceive the
+  // background color) AND an aria-label spelling out the tone ("Strong",
+  // "Moderate", "Weak") for screen readers.
   const fitChip = (() => {
     if (!jobFit) return null;
     if (jobFit.loading) {
       return (
         <span title="Loading resume match…"
+          aria-label="Resume match: loading"
+          role="status"
           style={{padding:"3px 7px",borderRadius:6,background:`${t.txM}15`,border:`1px solid ${t.txM}30`,
             fontSize:11,fontWeight:700,color:t.txM,whiteSpace:"nowrap"}}>
           📄 …
@@ -633,9 +649,10 @@ function _JobCard({
     if (jobFit.error || jobFit.pct == null) {
       return (
         <span title={jobFit.error || "No match score"}
-          style={{padding:"3px 7px",borderRadius:6,background:`${t.txM}10`,border:`1px solid ${t.txM}25`,
-            fontSize:11,fontWeight:700,color:t.txM,whiteSpace:"nowrap"}}>
-          📄 —
+          aria-label={`Resume match: error${jobFit.error ? ` — ${jobFit.error}` : ""}`}
+          style={{padding:"3px 7px",borderRadius:6,background:`${t.wm}15`,border:`1px solid ${t.wm}40`,
+            fontSize:11,fontWeight:700,color:t.wm,whiteSpace:"nowrap"}}>
+          ⚠️ —
         </span>
       );
     }
@@ -643,10 +660,11 @@ function _JobCard({
     const tone = _jobFitTone(pct, t);
     return (
       <span
-        title={`Resume match against default version${jobFit.versionKey ? ` (${jobFit.versionKey})` : ""}: ${pct}%`}
+        title={`Resume match against default version${jobFit.versionKey ? ` (${jobFit.versionKey})` : ""}: ${pct}% (${tone.label})`}
+        aria-label={`Resume match: ${pct} percent — ${tone.label}`}
         style={{padding:"3px 8px",borderRadius:6,background:tone.bg,border:`1px solid ${tone.bd}`,
           fontSize:11,fontWeight:800,color:tone.fg,whiteSpace:"nowrap",letterSpacing:".02em"}}>
-        📄 {pct}%
+        {tone.icon} {pct}%
       </span>
     );
   })();
@@ -1038,9 +1056,25 @@ export default function App() {
   const [defaultResumeVersion, setDefaultResumeVersion] = useState(null);
   const [defaultUpdating, setDefaultUpdating] = useState(false);
   const [defaultMsg, setDefaultMsg] = useState(null);
+  // R2 #2: empty-state hint banner above the Jobs list when no default
+  // resume is configured. Persisted dismissal in localStorage so users
+  // who've already seen the hint don't get pestered every reload.
+  const [defaultHintDismissed, setDefaultHintDismissed] = useState(() => {
+    try { return localStorage.getItem("jobscout_default_hint_dismissed") === "1"; }
+    catch { return false; }
+  });
+  const dismissDefaultHint = useCallback(() => {
+    setDefaultHintDismissed(true);
+    try { localStorage.setItem("jobscout_default_hint_dismissed", "1"); } catch {}
+  }, []);
   const [jobFitByJob, setJobFitByJob] = useState({});
   const jobFitInflightRef = useRef(0);
   const jobFitPendingRef = useRef(new Set());
+  // R2 #6: event-driven re-pump replaces the old setInterval(250ms). The
+  // batch effect below installs its `pump` function into this ref so
+  // fetchJobFit()'s finally block can immediately try to fill the
+  // freshly-vacated slot. Mutating a ref doesn't trigger a re-render.
+  const jobFitPumpRef = useRef(() => {});
 
   // Fetch the profile once on mount so we know whether to render chips.
   // No retry/backoff — if /api/profile is offline, we just don't show
@@ -1107,12 +1141,16 @@ export default function App() {
     }
   }, []);
 
-  // Concurrency limit for the per-card job-fit fetcher. Five is the
-  // sweet spot: enough that the top of a freshly-mounted Jobs tab fills
-  // in within ~2-3 seconds, low enough that we don't trip Render's
-  // free-tier worker pool. Adjust here, not inline, so the constant is
-  // greppable.
+  // Tunables for the per-card job-fit fetcher. Grouped + named so reviewers
+  // don't have to grep two unrelated literals (5 and 60) across this file.
+  //  - MAX_JOB_FIT_CONCURRENCY: enough that the top of a freshly-mounted
+  //    Jobs tab fills in within ~2-3 seconds, low enough that we don't
+  //    trip Render's free-tier worker pool.
+  //  - JOB_FIT_VISIBLE_SLICE: matches the same `.slice(0, N)` used to render
+  //    JobCards below, so we only fetch fits for cards the user can see.
+  //    Must stay in sync with the render slice.
   const MAX_JOB_FIT_CONCURRENCY = 5;
+  const JOB_FIT_VISIBLE_SLICE = 60;
 
   // Fetches a single job-fit result. Designed to be invoked from the
   // batch effect — pre-checks cache + inflight set so the effect can
@@ -1153,6 +1191,11 @@ export default function App() {
     } finally {
       jobFitInflightRef.current = Math.max(0, jobFitInflightRef.current - 1);
       jobFitPendingRef.current.delete(extId);
+      // R2 #6: immediately try to refill the slot we just freed. The
+      // batch effect installs the live pump function into this ref; if
+      // we're not on the Jobs tab anymore (or the effect cleaned up),
+      // the ref still points to a no-op so this is safe.
+      jobFitPumpRef.current();
     }
   }, []);
 
@@ -2151,15 +2194,24 @@ export default function App() {
   // already have a fresh cached score for the current
   // `defaultResumeVersion`. Concurrency-capped by
   // `MAX_JOB_FIT_CONCURRENCY` via a useRef counter — the queue drains
-  // itself as in-flight requests finish, then this effect's polling
-  // interval (250ms) refills the slots.
+  // itself as in-flight requests finish.
+  //
+  // R2 #6: event-driven refill replaces the old 250ms setInterval. We
+  // install `pump` into `jobFitPumpRef`, and fetchJobFit()'s finally
+  // block invokes the ref to retry immediately when a slot frees up.
+  // No more wasted timer ticks while the queue is idle and steady.
   //
   // Critical: this effect intentionally OMITS `jobFitByJob` from its
   // deps and reads through `jobFitCacheRef` instead. Including it
-  // would rebuild the interval on every result write-back.
+  // would rebuild the effect on every result write-back.
   useEffect(() => {
-    if (!RENDER_API || !defaultResumeVersion || tab !== "jobs") return;
-    const visible = fj.slice(0, 60);
+    if (!RENDER_API || !defaultResumeVersion || tab !== "jobs") {
+      // Make absolutely sure stale pump from a previous effect run
+      // doesn't keep dequeuing after we navigated away.
+      jobFitPumpRef.current = () => {};
+      return;
+    }
+    const visible = fj.slice(0, JOB_FIT_VISIBLE_SLICE);
     let cancelled = false;
     const pump = () => {
       if (cancelled) return;
@@ -2179,9 +2231,14 @@ export default function App() {
         fetchJobFit(extId, j.description || j.title || "", defaultResumeVersion);
       }
     };
+    jobFitPumpRef.current = pump;
     pump();
-    const id = setInterval(pump, 250);
-    return () => { cancelled = true; clearInterval(id); };
+    return () => {
+      cancelled = true;
+      // Restore no-op so a late finally() from a request we're
+      // abandoning doesn't trigger queueing into the wrong context.
+      jobFitPumpRef.current = () => {};
+    };
   }, [fj, defaultResumeVersion, tab, fetchJobFit]);
 
   const activeN = [selRoles,selStates,selCities,selATS,selExp].reduce((n,a)=>n+a.length,0)
@@ -2368,9 +2425,37 @@ export default function App() {
             </div>
           )}
 
+          {/* R2 #2: empty-state hint when no default resume is configured.
+              Tells users why the "Resume Match" chip is missing and gives
+              them a one-click path to the Vault tab to fix it. Dismissible
+              so it doesn't nag forever once the user knows. */}
+          {!defaultResumeVersion && !defaultHintDismissed && (
+            <div role="note"
+              style={{display:"flex",alignItems:"center",gap:12,padding:"12px 16px",marginBottom:14,
+                background:`${t.ac}10`,border:`1px solid ${t.ac}30`,borderRadius:10,color:t.tx,fontSize:14}}>
+              <span style={{fontSize:18,lineHeight:1}}>💡</span>
+              <span style={{flex:1,lineHeight:1.5}}>
+                Set a default resume in the{" "}
+                <button onClick={() => setTab("vault")}
+                  style={{background:"none",border:"none",padding:0,color:t.ac,fontWeight:700,
+                    fontSize:14,fontFamily:"inherit",cursor:"pointer",textDecoration:"underline"}}>
+                  Vault
+                </button>{" "}
+                tab to see auto-match scores on every job card.
+              </span>
+              <button onClick={dismissDefaultHint}
+                aria-label="Dismiss default-resume hint"
+                title="Dismiss"
+                style={{background:"none",border:`1px solid ${t.bd}`,color:t.txM,
+                  fontSize:14,padding:"3px 10px",borderRadius:6,cursor:"pointer",fontFamily:"inherit"}}>
+                ✕
+              </button>
+            </div>
+          )}
+
           {/* Job cards */}
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
-            {fj.slice(0,60).map(j => {
+            {fj.slice(0, JOB_FIT_VISIBLE_SLICE).map(j => {
               const coKey = (j.company || "").toLowerCase();
               return (
                 <JobCard
@@ -2395,9 +2480,9 @@ export default function App() {
                 />
               );
             })}
-            {fj.length>60 && (
+            {fj.length > JOB_FIT_VISIBLE_SLICE && (
               <div style={{textAlign:"center",padding:18,color:t.txM,fontSize:15}}>
-                Showing 60 of {fj.length} — use filters to narrow results
+                Showing {JOB_FIT_VISIBLE_SLICE} of {fj.length} — use filters to narrow results
               </div>
             )}
             {fj.length===0 && (

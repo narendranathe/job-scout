@@ -17,10 +17,19 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
 @pytest.fixture
-def client(tmp_path):
+def client(tmp_path, monkeypatch):
     db_path = str(tmp_path / "test.db")
     from storage.db import init_db
     init_db(db_path)
+    # Force dev-mode passthrough (no Bearer required) on POST /api/profile.
+    # We delenv + reload to make sure server.API_SECRET picks up the
+    # cleared env even if a prior test (e.g. secured_client) left a
+    # value in the module-level constant.
+    monkeypatch.delenv("API_SECRET", raising=False)
+    monkeypatch.setenv("DB_PATH", db_path)
+    for mod in ("server",):
+        if mod in sys.modules:
+            del sys.modules[mod]
     import server
     server.DB_PATH = db_path
     server.app.config["TESTING"] = True
@@ -138,3 +147,94 @@ def test_post_profile_other_fields_still_work(client):
     g = client.get("/api/profile").get_json()
     assert g.get("custom_skills") == ["rust", "wasm"]
     assert g.get("preferred_locations") == ["remote"]
+
+
+# ───────────────────────────────────────────────────────────────────
+# R2 Fix #1: Bearer-auth gate on POST /api/profile
+#
+# Round 1 left this endpoint unauthenticated, which let anyone flip
+# default_resume_version and silently rewire which resume the dashboard
+# auto-fits against. These tests verify the new gate:
+#   - API_SECRET unset → dev passthrough (no header needed → 200)
+#   - API_SECRET set, no header → 401
+#   - API_SECRET set, correct Bearer → 200
+# ───────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def secured_client(tmp_path, monkeypatch):
+    """Same as `client` but with API_SECRET configured to 'sekret'.
+
+    Re-imports server so the module-level API_SECRET constant reflects
+    the patched env. Without the re-import, `server.API_SECRET` would
+    still be the empty string captured at first import time.
+    """
+    db_path = str(tmp_path / "test.db")
+    from storage.db import init_db
+    init_db(db_path)
+
+    monkeypatch.setenv("API_SECRET", "sekret")
+    monkeypatch.setenv("DB_PATH", db_path)
+
+    # Force a clean re-import so server.API_SECRET picks up the patched env.
+    for mod in ("server",):
+        if mod in sys.modules:
+            del sys.modules[mod]
+    import server
+    server.DB_PATH = db_path
+    server.app.config["TESTING"] = True
+
+    from storage import profile_manager as pm
+    pm.DB_PATH = db_path
+
+    with server.app.test_client() as c:
+        yield c
+
+    # Tear down so the next test doesn't inherit API_SECRET in cache.
+    importlib.reload(server)
+
+
+def test_post_profile_unauthenticated_blocked_when_secret_set(secured_client):
+    """API_SECRET set + no Authorization header → 401 (R2 #1)."""
+    resp = secured_client.post(
+        "/api/profile",
+        json={"default_resume_version": ""},
+    )
+    assert resp.status_code == 401
+    assert resp.get_json() == {"error": "unauthorized"}
+
+
+def test_post_profile_wrong_bearer_blocked(secured_client):
+    """Wrong Bearer token → 401."""
+    resp = secured_client.post(
+        "/api/profile",
+        json={"default_resume_version": ""},
+        headers={"Authorization": "Bearer not-the-secret"},
+    )
+    assert resp.status_code == 401
+
+
+def test_post_profile_correct_bearer_passes(secured_client):
+    """Correct Bearer → 200 (and the update lands)."""
+    resp = secured_client.post(
+        "/api/profile",
+        json={"custom_skills": ["python"]},
+        headers={"Authorization": "Bearer sekret"},
+    )
+    assert resp.status_code == 200
+    # GET is intentionally not gated; verify the write succeeded.
+    g = secured_client.get("/api/profile").get_json()
+    assert g.get("custom_skills") == ["python"]
+
+
+def test_post_profile_dev_mode_passthrough(client):
+    """API_SECRET unset (default `client` fixture) → no header needed → 200.
+
+    Mirrors the existing dev-mode passthrough on vault routes so local
+    development without an API_SECRET continues to work.
+    """
+    resp = client.post(
+        "/api/profile",
+        json={"custom_skills": ["spark"]},
+    )
+    assert resp.status_code == 200
