@@ -55,34 +55,15 @@ def _ensure_vault():
 #  NAMING CONVENTION PARSER
 # ═══════════════════════════════════════════════════════════════════
 
-# Company alias map (your filenames → canonical names)
-COMPANY_ALIASES = {
-    "gs": "Goldman Sachs", "gsjc": "Goldman Sachs",
-    "jpmc": "JPMorgan Chase", "jpmorgan": "JPMorgan Chase",
-    "bofa": "Bank of America", "bankofamerica": "Bank of America",
-    "ms": "Morgan Stanley", "morganstanley": "Morgan Stanley",
-    "aexp": "American Express", "americanexpress": "American Express",
-    "capitalone": "Capital One", "capital_one": "Capital One",
-    "wellsfargo": "Wells Fargo",
-    "meta": "Meta", "facebook": "Meta",
-    "disney": "Disney", "walt_disney": "Disney",
-    "sf": "Salesforce", "salesforce": "Salesforce",
-    "qt": "Quantitative Trading",
-    "sams": "Sam's Club",
-    "at&t": "AT&T", "att": "AT&T",
-    "ibm": "IBM", "ea": "Electronic Arts",
-    "cvs": "CVS Health",
-}
-
-# Role alias map (filename suffixes → canonical role names)
-ROLE_ALIASES = {
-    "de": "Data Engineer", "data": "Data Engineer",
-    "ml": "ML Engineer", "ai": "AI Engineer",
-    "sde": "Software Engineer", "se": "Software Engineer", "be": "Backend Engineer",
-    "ds": "Data Scientist", "dq": "Data Quality",
-    "ae": "Analytics Engineer",
-    "quant": "Quant Strategist", "aiq": "AI Quant",
-}
+# Canonical alias source. The dicts live in company_rules.py so they can
+# be edited without touching parser logic, and so the AutoApply repo's
+# canonical maps and JobScout's legacy maps stay merged in one place.
+from storage.company_rules import (
+    COMPANY_ALIASES,
+    ROLE_ALIASES,
+    MULTI_WORD_COMPANIES,
+    is_job_id,
+)
 
 
 def parse_resume_filename(filename: str) -> dict:
@@ -133,30 +114,40 @@ def parse_resume_filename(filename: str) -> dict:
         parts = ["unknown"]
 
     # ─── Multi-word company detection ────────────────────
-    # Known multi-word companies that appear as consecutive parts
-    MULTI_WORD = {
-        ("goldman", "sachs"): "Goldman Sachs",
-        ("capital", "one"): "Capital One",
-        ("bank", "of", "america"): "Bank of America",
-        ("morgan", "stanley"): "Morgan Stanley",
-        ("american", "express"): "American Express",
-        ("wells", "fargo"): "Wells Fargo",
-        ("walt", "disney"): "Disney",
-        ("goldman", "sachs", "ai"): None,  # don't merge 3-word, let role pick up "ai"
-    }
-
+    # Canonical table lives in company_rules.MULTI_WORD_COMPANIES.
     company_parts = []
     role_parts = []
     company_done = False
+    # ``multi_word_hit`` is True when the company name came from the
+    # canonical multi-word table — in that case the value is already
+    # the final display name and the alias / title-case pass below must
+    # not re-touch it (else "JPMorgan Chase" becomes "Jpmorgan Chase").
+    multi_word_hit = False
     i = 0
 
-    # Check for 2-word company match at start
-    if len(parts) >= 2:
+    # Check for 3-word and 2-word company match at start; longest first
+    # so ("jp","morgan","chase") wins over ("jp","morgan").
+    if not company_done and len(parts) >= 3:
+        three = (parts[0].lower(), parts[1].lower(), parts[2].lower())
+        if three in MULTI_WORD_COMPANIES:
+            merged = MULTI_WORD_COMPANIES[three]
+            if merged is not None:
+                company_parts = [merged]
+                i = 3
+                company_done = True
+                multi_word_hit = True
+            # When merged is None (e.g. ("goldman","sachs","ai")) we
+            # deliberately fall through so the 2-word match below picks
+            # up the company and the trailing word becomes the role.
+    if not company_done and len(parts) >= 2:
         two = (parts[0].lower(), parts[1].lower())
-        if two in MULTI_WORD:
-            company_parts = [MULTI_WORD[two]]
-            i = 2
-            company_done = True
+        if two in MULTI_WORD_COMPANIES:
+            merged = MULTI_WORD_COMPANIES[two]
+            if merged is not None:
+                company_parts = [merged]
+                i = 2
+                company_done = True
+                multi_word_hit = True
 
     if not company_done:
         # Naren_ prefix: first part is role if it's a known role abbreviation
@@ -177,13 +168,29 @@ def parse_resume_filename(filename: str) -> dict:
     if i < len(parts):
         role_parts.extend(parts[i:])
 
+    # ─── Peel off trailing JobID (AutoApply grammar) ─────
+    # AutoApply tags can end in ``_{JobID}`` (e.g. ``..._DE_JOB123``).
+    # Only treat the LAST role token as a JobID when there are at least
+    # two role tokens — otherwise a single-token alphanumeric role
+    # (e.g. ``..._R2D2``) would lose its only segment. Conservative
+    # ``is_job_id`` requires uppercase + at least one digit.
+    job_id = None
+    if len(role_parts) >= 2 and is_job_id(role_parts[-1]):
+        job_id = role_parts[-1]
+        role_parts = role_parts[:-1]
+
     # ─── Resolve aliases ─────────────────────────────────
     company_raw = "_".join(company_parts)
     role_raw = "_".join(role_parts) if role_parts else None
 
-    # Company alias (check both original and lowered)
+    # Company alias (check both original and lowered). When the
+    # multi-word table already produced a canonical name, use it
+    # verbatim — title-casing would mangle mixed-case names like
+    # "JPMorgan Chase".
     company = company_raw
-    if company_raw.lower() in COMPANY_ALIASES:
+    if multi_word_hit:
+        company = company_parts[0]
+    elif company_raw.lower() in COMPANY_ALIASES:
         company = COMPANY_ALIASES[company_raw.lower()]
     elif len(company_parts) == 1:
         company = COMPANY_ALIASES.get(company_parts[0].lower(), company_raw.replace("_", " ").title())
@@ -212,6 +219,7 @@ def parse_resume_filename(filename: str) -> dict:
         "version_key": version_key,
         "display_name": display_name,
         "extension": ext,
+        "job_id": job_id,
     }
 
 
