@@ -73,11 +73,19 @@ _PRODUCTION_ENV_FLAGS = (
     ("DYNO", None),                        # Heroku sets DYNO=web.1 etc.
 )
 
-# Default location for the shared fallback key. ``/tmp`` is world-writable
-# and survives across forked workers but NOT across machine reboots — fine
-# because cookies invalidating after a reboot is acceptable dev behaviour.
-# Operators can override via SESSION_KEY_FILE to pin a more durable path.
-_DEFAULT_KEY_FILE = os.path.join(tempfile.gettempdir(), "jobscout-session-key")
+# Default location for the shared fallback key. ``~/.jobscout/session-key``
+# beats the previous ``/tmp/jobscout-session-key`` on two counts:
+#   1. ``/tmp`` is world-writable — a local unprivileged user could
+#      pre-create the path as a symlink to a file they own; the chmod
+#      0600 then applies to *their* file and the rename follows the
+#      symlink (the parent dir is what matters).
+#   2. ``/tmp`` is typically tmpfs and gets cleaned at boot. Stored
+#      under the home dir, the key survives reboots so local-dev
+#      sessions don't invalidate every morning.
+# Operators can override via SESSION_KEY_FILE to pin a different path
+# (e.g. ``/var/lib/jobscout/session.key`` for system-wide installs).
+_DEFAULT_KEY_DIR = os.path.expanduser("~/.jobscout")
+_DEFAULT_KEY_FILE = os.path.join(_DEFAULT_KEY_DIR, "session-key")
 
 # Process-local memoisation so we don't re-read the key file on every
 # request. Guarded by a lock so concurrent first-touch from multiple
@@ -144,7 +152,15 @@ def _load_or_create_fallback_key() -> str:
         new_key = secrets.token_hex(32)
         try:
             dir_ = os.path.dirname(path) or "."
-            os.makedirs(dir_, exist_ok=True)
+            # mode=0o700 on the dir prevents the symlink-pre-creation
+            # attack: even if the path inside is world-writable on the
+            # filesystem, the parent dir restricts who can stat/list/
+            # cd into it. Existing dirs keep their permissions.
+            os.makedirs(dir_, mode=0o700, exist_ok=True)
+            try:
+                os.chmod(dir_, 0o700)
+            except OSError:
+                pass  # best-effort on non-POSIX
             fd, tmp_path = tempfile.mkstemp(
                 prefix=".jobscout-session-key.", dir=dir_
             )
@@ -181,17 +197,26 @@ def _load_or_create_fallback_key() -> str:
             except OSError:
                 pass
         except OSError as e:
-            log.error(
-                "could not persist session key to %s: %s — falling back to "
-                "process-local key (sessions will not survive worker fork)",
-                path, e,
-            )
+            # No silent process-local fallback here — that would re-
+            # introduce the multi-worker bug this whole function exists
+            # to fix. If we can't persist the key, the operator MUST
+            # know via a hard failure rather than via random 401s in
+            # production logs days later. Raise with a remediation
+            # pointer so the cause is obvious from the traceback.
+            raise RuntimeError(
+                f"auth: could not persist session key to {path}: {e}. "
+                "Set SESSION_KEY_FILE to a writable path or export "
+                "SESSION_SECRET_KEY directly to skip the file-backed "
+                "fallback entirely."
+            ) from e
 
-        # Last-ditch fallback: process-local key. This restores the OLD
-        # broken behaviour, but only if the filesystem is unwritable
-        # (e.g. a read-only container). Logged loudly so operators see it.
-        _FALLBACK_KEY_CACHE = new_key
-        return new_key
+        # Defensive: if we reach here without returning a key, raise
+        # rather than caching None. Shouldn't be possible given the
+        # branching above, but make the failure mode explicit.
+        raise RuntimeError(
+            f"auth: session key file at {path} ended up empty after "
+            "atomic write — refusing to mint per-worker keys"
+        )
 
 
 def _fallback_key() -> str:

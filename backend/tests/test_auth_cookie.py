@@ -435,3 +435,69 @@ def test_pre_existing_key_file_is_reused(tmp_path, monkeypatch):
     assert read_session(cookie) is not None
     # File content unchanged.
     assert key_file.read_text() == preseeded
+
+
+# ─── Critic-flagged hardening ──────────────────────────────────────────────
+
+
+def test_fallback_key_raises_on_unwritable_filesystem(tmp_path, monkeypatch):
+    """If the key file can't be persisted, we MUST raise, not silently
+    fall back to a process-local key. Silent fallback re-introduces the
+    multi-worker bug this function was written to fix.
+
+    Forces the failure by monkeypatching ``os.makedirs`` to raise —
+    direct filesystem-perm tests don't work as root (Docker/CI). The
+    interesting behaviour is the exception-handling branch, not how
+    we got there.
+    """
+    from routes import _auth as auth
+
+    monkeypatch.setenv("SESSION_KEY_FILE", str(tmp_path / "wont-be-created" / "key"))
+    monkeypatch.delenv("SESSION_SECRET_KEY", raising=False)
+    monkeypatch.delenv("API_SECRET", raising=False)
+    _reset_fallback_cache()
+
+    real_makedirs = os.makedirs
+
+    def boom_on_jobscout_dir(path, *a, **kw):
+        if "wont-be-created" in str(path):
+            raise OSError(13, "Permission denied")
+        return real_makedirs(path, *a, **kw)
+
+    monkeypatch.setattr(os, "makedirs", boom_on_jobscout_dir)
+
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError, match=r"could not persist session key"):
+        auth._load_or_create_fallback_key()
+
+    # Cache must NOT have been populated with a process-local key —
+    # this is the regression guard against the previous silent fallback.
+    assert auth._FALLBACK_KEY_CACHE is None
+
+
+def test_default_key_dir_is_under_home_not_tmp():
+    """Predictable /tmp paths invite symlink-pre-creation attacks.
+
+    The default key file must live under ~/.jobscout/, not anywhere a
+    local unprivileged user could plant a symlink before first start.
+    """
+    from routes import _auth as auth
+    assert auth._DEFAULT_KEY_FILE.startswith(os.path.expanduser("~/.jobscout"))
+    assert "tmp" not in auth._DEFAULT_KEY_FILE.lower()
+
+
+def test_default_key_dir_created_with_restrictive_perms(tmp_path, monkeypatch):
+    """First-use of the default dir creates it 0o700, not 0o755."""
+    from routes import _auth as auth
+
+    custom = tmp_path / "subdir" / "session-key"
+    monkeypatch.setenv("SESSION_KEY_FILE", str(custom))
+    monkeypatch.delenv("SESSION_SECRET_KEY", raising=False)
+    monkeypatch.delenv("API_SECRET", raising=False)
+    _reset_fallback_cache()
+
+    auth._load_or_create_fallback_key()
+    # The parent dir we just created should be 0o700.
+    parent = custom.parent
+    mode = parent.stat().st_mode & 0o777
+    assert mode == 0o700, f"key dir perms = {oct(mode)} (expected 0o700)"
