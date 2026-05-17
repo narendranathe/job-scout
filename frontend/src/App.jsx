@@ -41,6 +41,8 @@ import { MRow, Chk } from "./components/MRow.jsx";
 import { MonitorTab } from "./tabs/MonitorTab.jsx";
 import { PipelineTab } from "./tabs/PipelineTab.jsx";
 import { TrendsTab } from "./tabs/TrendsTab.jsx";
+import { AnalyticsTab } from "./tabs/AnalyticsTab.jsx";
+import { CompaniesTab } from "./tabs/CompaniesTab.jsx";
 
 // ATS_META imported from ./lib/jobConstants.js (top of file).
 
@@ -1886,91 +1888,13 @@ export default function App() {
 
         {/* ════════════ ANALYTICS ════════════ */}
         {tab==="analytics" && (
-          <div className="two-col">
-            <div style={{background:t.cd,borderRadius:14,padding:24,border:`1px solid ${t.bd}`,boxShadow:t.shS}}>
-              <h3 style={{margin:"0 0 18px",fontSize:13,color:t.txM,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em"}}>ATS Distribution</h3>
-              <ResponsiveContainer width="100%" height={240}>
-                <PieChart>
-                  <Pie data={dist.ats||[]} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={55} outerRadius={95} paddingAngle={3} stroke="none">
-                    {(dist.ats||[]).map((d,i)=><Cell key={i} fill={(ATS_META[d.name]||ATS_META.unknown).c} opacity={0.75}/>)}
-                  </Pie>
-                  <Tooltip contentStyle={ttS}/>
-                </PieChart>
-              </ResponsiveContainer>
-              <div style={{display:"flex",gap:10,flexWrap:"wrap",justifyContent:"center",marginTop:10}}>
-                {(dist.ats||[]).map(d=>{const m=ATS_META[d.name]||ATS_META.unknown;return<span key={d.name} style={{fontSize:13,color:m.c,fontWeight:600}}>{m.i} {m.l}: {d.value}</span>;})}
-              </div>
-            </div>
-            <div style={{background:t.cd,borderRadius:14,padding:24,border:`1px solid ${t.bd}`,boxShadow:t.shS}}>
-              <h3 style={{margin:"0 0 18px",fontSize:13,color:t.txM,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em"}}>Salary Distribution</h3>
-              <ResponsiveContainer width="100%" height={240}>
-                <BarChart data={dist.salary_buckets||[]}>
-                  <XAxis dataKey="range" tick={{fill:t.txM,fontSize:11}} axisLine={{stroke:t.bd}} tickLine={false}/>
-                  <YAxis tick={{fill:t.txM,fontSize:11}} axisLine={false} tickLine={false}/>
-                  <Tooltip contentStyle={ttS}/>
-                  <Bar dataKey="count" radius={[6,6,0,0]}>
-                    {(dist.salary_buckets||[]).map((d,i)=><Cell key={i} fill={[t.wm,t.wm,t.acS,t.ok,t.ac,t.vi][i]||t.ac} opacity={0.6}/>)}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-            <div style={{background:t.cd,borderRadius:14,padding:24,border:`1px solid ${t.bd}`,boxShadow:t.shS}}>
-              <h3 style={{margin:"0 0 18px",fontSize:13,color:t.txM,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em"}}>30-Day Posting Trend</h3>
-              <ResponsiveContainer width="100%" height={240}>
-                <AreaChart data={data?.trend||[]}>
-                  <XAxis dataKey="date" tick={{fill:t.txM,fontSize:11}} axisLine={{stroke:t.bd}} tickLine={false} tickFormatter={v=>v.slice(5)}/>
-                  <YAxis tick={{fill:t.txM,fontSize:11}} axisLine={false} tickLine={false}/>
-                  <Tooltip contentStyle={ttS}/>
-                  <Area type="monotone" dataKey="count" stroke={t.acS} fill={`${t.acS}15`} strokeWidth={2}/>
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-            <div style={{background:t.cd,borderRadius:14,padding:24,border:`1px solid ${t.bd}`,boxShadow:t.shS}}>
-              <h3 style={{margin:"0 0 18px",fontSize:13,color:t.txM,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em"}}>Key Metrics</h3>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-                {[
-                  [`${stats.h1b_pct||0}%`,"H1B Sponsors",t.vi],
-                  [`${stats.remote_pct||0}%`,"Remote Jobs",t.ok],
-                  [`${stats.companies_tracked||0}`,"Companies",t.ac],
-                  [`${stats.high_match||0}`,`High Match (top 10% • ≥${stats.high_match_threshold?.toFixed(2)||"0.70"})`,t.wm],
-                ].map(([v,l,c])=>(
-                  <div key={l} style={{padding:18,borderRadius:12,background:`${c}08`,border:`1px solid ${c}20`,textAlign:"center"}}>
-                    <div style={{fontSize:34,fontWeight:700,color:c,fontFamily:"'Playfair Display',serif"}}>{v}</div>
-                    <div style={{fontSize:13,color:t.txM,marginTop:4}}>{l}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
+          <AnalyticsTab state={{ t, data, dist, stats, ttS }} />
         )}
 
         {/* ════════════ COMPANIES ════════════ */}
-        {tab==="companies" && <div>
-          <div style={{marginBottom:18}}>
-            <input placeholder="Search companies..." value={cq} onChange={e=>sCq(e.target.value)} style={{...iS,maxWidth:360}}/>
-          </div>
-          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:14}}>
-            {(data?.top_companies||[]).filter(c=>!cq||c.name.toLowerCase().includes(cq.toLowerCase())).map(co=>(
-              <div key={co.name} style={{background:t.cd,borderRadius:14,padding:20,border:`1px solid ${t.bd}`,boxShadow:t.shS}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-                  <div style={{display:"flex",alignItems:"center",gap:12}}>
-                    <LogoImg name={co.name} size={36} t={t}/>
-                    <h4 style={{margin:0,fontSize:16,fontWeight:700,color:t.tx,fontFamily:"'Playfair Display',serif"}}>{co.name}</h4>
-                  </div>
-                  <div style={{background:t.acL,padding:"5px 12px",borderRadius:8}}>
-                    <span style={{fontSize:16,fontWeight:700,color:t.ac}}>{co.count}</span>
-                    <span style={{fontSize:11,color:t.txM,marginLeft:4}}>jobs</span>
-                  </div>
-                </div>
-                <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-                  {enriched.filter(j=>j.company===co.name).slice(0,4).map((j,i)=>(
-                    <span key={i} style={{fontSize:12,padding:"3px 10px",borderRadius:6,background:t.bgS,color:t.txS,border:`1px solid ${t.bd}`}}>{j.title}</span>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>}
+        {tab==="companies" && (
+          <CompaniesTab state={{ t, data, enriched, cq, sCq, iS }} />
+        )}
 
         {/* ════════════ TRENDS ════════════ */}
         {tab==="trends" && (
