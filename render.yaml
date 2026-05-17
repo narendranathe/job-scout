@@ -12,3 +12,20 @@ services:
         value: "300"
       - key: SCRAPE_DELAY
         value: "0.3"
+      # Vault storage backend. Set to "r2" in the Render dashboard once
+      # the R2 bucket + credentials are provisioned; the value below is
+      # the safe default for local dev / fresh deploys.
+      - key: VAULT_BACKEND
+        value: local
+      # R2 credentials — populate via the Render dashboard, not here.
+      # Marked sync:false so Render won't overwrite dashboard values on
+      # blueprint sync. The four together are what activates the R2
+      # backend (VAULT_BACKEND=r2 + all four).
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false

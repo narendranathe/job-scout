@@ -3,3 +3,6 @@ flask>=3.0.0
 gunicorn>=21.2.0
 pypdf>=4.0.0
 playwright>=1.40.0
+# R2 vault backend. Required when VAULT_BACKEND=r2; harmless when unused
+# (LocalVaultBackend imports nothing from boto3).
+boto3>=1.34.0

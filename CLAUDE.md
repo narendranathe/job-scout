@@ -606,6 +606,17 @@ FAST_INTERVAL=300
 SCRAPE_DELAY=0.3
 API_SECRET=your_secret
 
+# Vault storage backend (see storage/vault_backend.py)
+# Defaults to "local" — writes to backend/resume_vault/.
+# On Render free tier (ephemeral disk), set to "r2" and provide R2 creds.
+VAULT_BACKEND=local                                    # or "r2"
+RESUME_VAULT_PATH=./backend/resume_vault                # only when VAULT_BACKEND=local
+R2_ACCOUNT_ID=<cloudflare account>                     # required when r2
+R2_BUCKET=<bucket name>                                # required when r2
+R2_ACCESS_KEY_ID=<key id>                              # required when r2
+R2_SECRET_ACCESS_KEY=<secret>                          # required when r2
+R2_REGION=auto                                         # optional, default "auto"
+
 # Alerts
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/XXX/YYY
 TELEGRAM_BOT_TOKEN=1234567890:AAF...
@@ -614,6 +625,24 @@ TELEGRAM_CHAT_ID=987654321
 # Frontend (.env in frontend/)
 VITE_RENDER_URL=https://your-app.onrender.com
 ```
+
+### Vault storage backends
+
+Pluggable storage for PDFs + extracted text (`storage/vault_backend.py`):
+
+- **LocalVaultBackend** (default) — writes to `backend/resume_vault/pdf/`
+  and `text/`. Same layout as before the backend refactor.
+- **R2VaultBackend** — Cloudflare R2 (S3-compatible). Keys mirror the
+  local layout: `pdf/<filename>` and `text/<version_key>.txt`. Custom
+  metadata field `submitted-at` preserves the application date so the
+  dashboard's `modified_at` survives the round-trip through object
+  storage.
+
+On `VAULT_BACKEND=r2`, server startup runs a lazy rehydrate:
+`rehydrate_metadata_from_vault()` walks the bucket and rebuilds
+`resume_versions` rows when the SQLite DB is empty. This is the recovery
+path for Render's free-tier ephemeral disk — PDFs survive cold starts
+in R2, and the DB self-heals from them on boot.
 
 ---
 

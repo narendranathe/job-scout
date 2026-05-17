@@ -529,45 +529,43 @@ def vault_version_pdf(version_key):
     ):
         return jsonify({"error": f"Invalid version_key: {version_key!r}"}), 400
 
-    from storage.resume_vault import VAULT_DIR, list_vault
+    from storage.resume_vault import list_vault
+    from storage.vault_backend import get_vault_backend
 
     # Step 2: locate the PDF whose parsed filename → this version_key. We
     # use list_vault() rather than reconstructing the filename from the
     # key, because the canonical-name → version_key mapping isn't always
     # invertible (filename parser handles many real-world variants).
-    # list_vault() returns parse_resume_filename(...) extended with disk
-    # metadata. The original filename lives under "original_filename"; the
-    # full on-disk path lives under "vault_path".
+    # list_vault() returns parse_resume_filename(...) extended with
+    # backend metadata; ``vault_path`` is the backend key (a filename,
+    # not a filesystem path, in R2 mode).
     pdf_filename = None
-    pdf_path = None
+    backend_key = None
     for entry in list_vault():
         if entry.get("version_key") == version_key:
             pdf_filename = entry.get("original_filename")
-            pdf_path = entry.get("vault_path")
+            backend_key = entry.get("vault_path")
             break
 
-    if not pdf_path or not pdf_filename:
+    if not backend_key or not pdf_filename:
         return jsonify({"error": "Version not found"}), 404
 
-    # Step 3: realpath assertion. Defense-in-depth — even if list_vault()
-    # returned a path outside the vault (it shouldn't, but symlinks/future
-    # bugs could change that), we refuse to serve it.
-    vault_root = os.path.realpath(VAULT_DIR)
-    target = os.path.realpath(pdf_path)
-    if not (target == vault_root or target.startswith(vault_root + os.sep)):
-        log.warning(
-            "Vault PDF download '%s' rejected: resolved path %r escapes vault %r",
-            version_key,
-            target,
-            vault_root,
-        )
+    # Step 3: read via the backend. The backend's ``_validate_key``
+    # rejects anything containing ``..``, slash, or null bytes (mirrors
+    # what the old ``os.path.realpath`` check protected against), so a
+    # malformed entry in list_vault() can't escape the vault.
+    backend = get_vault_backend()
+    try:
+        pdf_bytes = backend.read_pdf(backend_key)
+    except FileNotFoundError:
+        return jsonify({"error": "Version not found"}), 404
+    except ValueError as e:
+        log.warning("Vault PDF download '%s' rejected: %s", version_key, e)
         return jsonify({"error": "Invalid version_key"}), 400
 
-    if not os.path.exists(target):
-        return jsonify({"error": "Version not found"}), 404
-
+    from io import BytesIO
     return send_file(
-        target,
+        BytesIO(pdf_bytes),
         mimetype="application/pdf",
         as_attachment=True,
         download_name=pdf_filename,

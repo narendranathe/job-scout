@@ -45,10 +45,14 @@ VAULT_DIR = os.environ.get(
 
 
 def _ensure_vault():
-    """Create vault directory if it doesn't exist."""
-    os.makedirs(VAULT_DIR, exist_ok=True)
-    os.makedirs(os.path.join(VAULT_DIR, "pdf"), exist_ok=True)
-    os.makedirs(os.path.join(VAULT_DIR, "text"), exist_ok=True)
+    """Initialize the configured vault backend.
+
+    Kept as a function-level call so existing callers don't break, but
+    the actual work moved into ``vault_backend.get_vault_backend()`` —
+    which is idempotent and handles both filesystem (``makedirs``) and
+    R2 (no-op) initialization.
+    """
+    get_vault_backend()
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -64,6 +68,12 @@ from storage.company_rules import (
     MULTI_WORD_COMPANIES,
     is_job_id,
 )
+
+# Pluggable storage. ``get_vault_backend()`` returns LocalVaultBackend
+# by default (current behavior) and R2VaultBackend when VAULT_BACKEND=r2
+# — see storage/vault_backend.py for env-var configuration. This is the
+# single seam through which every PDF/text read or write must pass.
+from storage.vault_backend import get_vault_backend
 
 
 def parse_resume_filename(filename: str) -> dict:
@@ -460,53 +470,45 @@ def save_pdf_to_vault(
     if not pdf_bytes.startswith(b"%PDF-"):
         raise ValueError("not a PDF (missing %PDF- magic bytes)")
 
-    _ensure_vault()
+    backend = get_vault_backend()
 
     # Generate canonical filename (sanitizes company/role internally —
     # raises ValueError if either resolves to an empty string).
+    # Backend.write_pdf adds its own path-traversal guard on the filename,
+    # so the explicit realpath check the local-only code used to do is
+    # now redundant — moved inside LocalVaultBackend.
     fname = canonical_filename(company, role, ".pdf")
-    vault_path = os.path.join(VAULT_DIR, "pdf", fname)
 
-    # Issue #35: realpath assertion. Even if canonical_filename were buggy
-    # and let a "../" slip through, os.path.realpath of the destination
-    # must stay strictly under the realpath of the vault directory. We
-    # compare with a trailing separator so /tmp/vault_evil isn't accepted
-    # as a sub-path of /tmp/vault.
-    vault_pdf_dir = os.path.realpath(os.path.join(VAULT_DIR, "pdf"))
-    resolved = os.path.realpath(vault_path)
-    if not (resolved == vault_pdf_dir or
-            resolved.startswith(vault_pdf_dir + os.sep)):
-        raise ValueError(
-            f"refusing to write outside vault: {resolved!r} not under {vault_pdf_dir!r}"
-        )
-
-    # Write PDF
-    with open(vault_path, "wb") as f:
-        f.write(pdf_bytes)
-    log.info("Saved PDF: %s (%d bytes)", vault_path, len(pdf_bytes))
-
-    # Extract text
-    text = extract_text_from_pdf(vault_path)
-    meta = parse_resume_filename(fname)
-    version_key = meta["version_key"]
-
-    # Save extracted text
-    text_path = os.path.join(VAULT_DIR, "text", f"{version_key}.txt")
-    with open(text_path, "w", encoding="utf-8") as f:
-        f.write(text)
-
-    # Stamp the filesystem mtime to the original submission date when
-    # the caller supplied one. ``list_vault`` returns ``modified_at``
-    # straight from ``stat().st_mtime``, so this is what the dashboard
-    # surfaces as the resume's date. Done after both writes (PDF + text)
-    # so the order of writes can't perturb the timestamp.
+    # Resolve submitted_at to a Unix timestamp once; both write_pdf and
+    # write_text accept it as the mtime stamp. Local backend uses os.utime,
+    # R2 backend stores it as ``submitted-at`` custom metadata so the
+    # dashboard's ``modified_at`` field still reflects the original date
+    # after the vault round-trips through object storage.
+    ts: float | None = None
     if submitted_at:
         try:
             ts = datetime.fromisoformat(submitted_at.replace("Z", "+00:00")).timestamp()
-            os.utime(vault_path, (ts, ts))
-            os.utime(text_path, (ts, ts))
-        except (ValueError, OSError) as e:
-            log.warning("Failed to apply submitted_at=%r: %s", submitted_at, e)
+        except ValueError as e:
+            log.warning("Ignoring malformed submitted_at=%r: %s", submitted_at, e)
+
+    backend.write_pdf(fname, pdf_bytes, mtime=ts)
+    log.info("Saved PDF: %s (%d bytes)", fname, len(pdf_bytes))
+
+    # Extract text from the bytes we already have in memory — avoids a
+    # second round-trip (download from R2 just to re-read what we just
+    # uploaded). Single source of truth for PDF→text in the project.
+    text = extract_text_from_pdf_bytes(pdf_bytes, source=fname)
+    meta = parse_resume_filename(fname)
+    version_key = meta["version_key"]
+
+    backend.write_text(version_key, text, mtime=ts)
+
+    # ``vault_path`` is the absolute filesystem path when the local
+    # backend is in use (so existing tests + tooling can ``os.path.exists``
+    # it), and the backend key when the R2 backend is active. Same for
+    # ``text_path``.
+    vault_path = backend.pdf_local_path(fname) or fname
+    text_path = backend.text_local_path(version_key) or f"{version_key}.txt"
 
     # Extract skills
     from storage.profile_manager import extract_skills_from_resume
@@ -545,36 +547,43 @@ def save_pdf_to_vault(
 
 
 def list_vault() -> list[dict]:
-    """List all files in the vault with metadata."""
-    _ensure_vault()
-    pdf_dir = os.path.join(VAULT_DIR, "pdf")
+    """List all files in the vault with metadata.
+
+    Goes through the configured backend, so this works against either
+    the local filesystem or R2 with identical output shape. ``vault_path``
+    is the backend key (filename for local, object key for R2) — the
+    PDF stream route uses it via ``backend.read_pdf(key)``, not as a
+    filesystem path.
+    """
+    backend = get_vault_backend()
     results = []
-
-    for fname in sorted(os.listdir(pdf_dir)):
-        if not fname.lower().endswith(".pdf"):
-            continue
-        fpath = os.path.join(pdf_dir, fname)
+    for entry in backend.list_pdfs():
+        fname = entry["key"]
         meta = parse_resume_filename(fname)
-        stat = os.stat(fpath)
-        meta["size_bytes"] = stat.st_size
-        meta["size_kb"] = round(stat.st_size / 1024, 1)
-        meta["modified_at"] = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
-        meta["vault_path"] = fpath
+        meta["size_bytes"] = entry["size"]
+        meta["size_kb"] = round(entry["size"] / 1024, 1)
+        meta["modified_at"] = entry["mtime"]
+        meta["vault_path"] = fname
         results.append(meta)
-
     return results
 
 
 def _safe_unlink_in_vault(path: str) -> bool:
-    """
-    Delete a file only if its resolved (realpath) location is inside VAULT_DIR.
+    """Delete a file only if its resolved location is inside ``VAULT_DIR``.
 
-    Defense against path-traversal: even if `path` was built from user input
-    that included `..` or symlinks, realpath() collapses those — if the result
-    escapes the vault directory, we refuse to unlink.
+    Defense against path-traversal: even if ``path`` was built from user
+    input that included ``..`` or symlinks, ``realpath()`` collapses
+    those — if the result escapes the vault directory, we refuse to
+    unlink.
 
-    Returns True if a file was deleted, False if it did not exist.
-    Raises ValueError if the resolved path is outside the vault.
+    Returns ``True`` if a file was deleted, ``False`` if it did not
+    exist. Raises ``ValueError`` if the resolved path is outside the
+    vault.
+
+    Production code paths route through ``VaultBackend.delete_pdf`` /
+    ``delete_text``; this helper is retained as a standalone primitive
+    for tests + ad-hoc cleanup scripts that work directly against the
+    on-disk vault layout.
     """
     vault_root = os.path.realpath(VAULT_DIR)
     target = os.path.realpath(path)
@@ -618,47 +627,35 @@ def delete_vault_version(version_key: str, db_path: str = None) -> dict:
     if not version_key or not isinstance(version_key, str):
         raise ValueError("version_key is required")
 
-    # Block obvious traversal attempts at the key level before touching disk.
-    # Flask's default <string:> converter already strips '/', but URL-encoded
-    # variants or future routing changes could let them through.
+    # Block obvious traversal attempts at the key level before touching
+    # the backend. Flask's default <string:> converter already strips '/',
+    # but URL-encoded variants or future routing changes could let them
+    # through. The backend re-validates on its own (defense-in-depth)
+    # via vault_backend._validate_key.
     if "/" in version_key or "\\" in version_key or ".." in version_key:
         raise ValueError(f"Invalid version_key: {version_key!r}")
 
-    _ensure_vault()
+    backend = get_vault_backend()
 
     if not db_path:
         db_path = os.environ.get(
             "DB_PATH", os.path.join(os.path.dirname(__file__), "..", "jobscout.db")
         )
 
-    pdf_dir = os.path.join(VAULT_DIR, "pdf")
-    text_dir = os.path.join(VAULT_DIR, "text")
-
     # Locate the PDF whose parsed filename → this version_key.
-    pdf_path = None
-    try:
-        for fname in os.listdir(pdf_dir):
-            if not fname.lower().endswith(".pdf"):
-                continue
-            meta = parse_resume_filename(fname)
-            if meta.get("version_key") == version_key:
-                pdf_path = os.path.join(pdf_dir, fname)
-                break
-    except FileNotFoundError:
-        pdf_path = None
+    pdf_filename = None
+    for entry in backend.list_pdfs():
+        if parse_resume_filename(entry["key"]).get("version_key") == version_key:
+            pdf_filename = entry["key"]
+            break
 
-    text_path = os.path.join(text_dir, f"{version_key}.txt")
-
-    # Round 2 Fix #3: propagate OSError so the DB row stays put when an
-    # unlink fails. The previous behaviour (swallow + log warning + still
-    # delete the row) directly contradicted the docstring's "filesystem
-    # failure does not orphan the row" promise — the row was orphaned the
-    # OTHER way: file on disk, row gone, vault permanently un-listable.
-    pdf_deleted = False
-    if pdf_path:
-        pdf_deleted = _safe_unlink_in_vault(pdf_path)
-
-    text_deleted = _safe_unlink_in_vault(text_path)
+    # Round 2 Fix #3: propagate failures (raise, don't swallow) so the
+    # DB row stays put when a delete fails — keeps the vault listable
+    # rather than leaving a row pointing at a gone file (or vice versa).
+    pdf_deleted = backend.delete_pdf(pdf_filename) if pdf_filename else False
+    text_deleted = backend.delete_text(version_key)
+    pdf_path = pdf_filename
+    text_path = f"{version_key}.txt"
 
     # Delete DB row last (so a filesystem failure doesn't orphan the row).
     from storage.db import get_conn
@@ -704,13 +701,13 @@ def bulk_import(
     Returns:
         {"imported": 42, "skipped": 3, "errors": 1, "files": [...]}
     """
-    _ensure_vault()
     source = Path(source_dir)
     if not source.exists():
         return {"error": f"Directory not found: {source_dir}", "imported": 0}
 
     from storage.profile_manager import extract_skills_from_resume
 
+    backend = get_vault_backend()
     conn = None
     if db_path:
         from storage.db import get_conn, upsert_resume_version
@@ -728,17 +725,18 @@ def bulk_import(
             meta = parse_resume_filename(fpath.name)
             version_key = meta["version_key"]
 
-            # Copy PDF to vault
+            # Read the source file once, then route via the backend.
             if fpath.suffix.lower() == ".pdf":
-                dest = os.path.join(VAULT_DIR, "pdf", fpath.name)
-                if not os.path.exists(dest):
-                    shutil.copy2(str(fpath), dest)
-
-                # Extract text
-                text = extract_text_from_pdf(dest)
+                with open(fpath, "rb") as fh:
+                    pdf_bytes = fh.read()
+                src_mtime = fpath.stat().st_mtime
+                if not backend.exists_pdf(fpath.name):
+                    backend.write_pdf(fpath.name, pdf_bytes, mtime=src_mtime)
+                text = extract_text_from_pdf_bytes(pdf_bytes, source=fpath.name)
             elif fpath.suffix.lower() == ".docx":
-                # Extract text from docx (don't copy to pdf vault)
+                # docx files don't go to the PDF vault — only their text.
                 text = extract_text_from_docx(str(fpath))
+                src_mtime = fpath.stat().st_mtime
             else:
                 stats["skipped"] += 1
                 continue
@@ -748,10 +746,7 @@ def bulk_import(
                 stats["skipped"] += 1
                 continue
 
-            # Save extracted text
-            text_path = os.path.join(VAULT_DIR, "text", f"{version_key}.txt")
-            with open(text_path, "w", encoding="utf-8") as f:
-                f.write(text)
+            backend.write_text(version_key, text, mtime=src_mtime)
 
             # Extract skills
             skills = extract_skills_from_resume(text)
@@ -1107,28 +1102,26 @@ def rebuild_index() -> dict:
 
     Returns {"indexed": N, "files_scanned": M}.
     """
-    _ensure_vault()
-    text_dir = os.path.join(VAULT_DIR, "text")
-    files = sorted(f for f in os.listdir(text_dir) if f.lower().endswith(".txt"))
+    backend = get_vault_backend()
+    text_entries = backend.list_texts()
 
     docs: list[list[str]] = []
     indexed = 0
-    for name in files:
+    for entry in text_entries:
+        version_key = entry["key"][:-len(".txt")] if entry["key"].endswith(".txt") else entry["key"]
         try:
-            with open(os.path.join(text_dir, name), "r",
-                      encoding="utf-8", errors="ignore") as fh:
-                text = fh.read()
+            text = backend.read_text(version_key) or ""
             tokens = _tokenize(text)
             if tokens:
                 docs.append(tokens)
                 indexed += 1
         except Exception as e:
-            log.warning("rebuild_index: skipping %s (%s)", name, e.__class__.__name__)
+            log.warning("rebuild_index: skipping %s (%s)", entry["key"], e.__class__.__name__)
 
     if docs:
         _build_tfidf(docs)  # exercise the matrix build; result discarded
-    log.info("Vault reindex: %d/%d files indexed", indexed, len(files))
-    return {"indexed": indexed, "files_scanned": len(files)}
+    log.info("Vault reindex: %d/%d files indexed", indexed, len(text_entries))
+    return {"indexed": indexed, "files_scanned": len(text_entries)}
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1137,22 +1130,21 @@ def rebuild_index() -> dict:
 
 def vault_stats(db_path: str = None) -> dict:
     """Summary stats about the resume vault."""
-    _ensure_vault()
-    pdf_dir = os.path.join(VAULT_DIR, "pdf")
-    text_dir = os.path.join(VAULT_DIR, "text")
-
-    pdfs = [f for f in os.listdir(pdf_dir) if f.lower().endswith(".pdf")]
-    texts = [f for f in os.listdir(text_dir) if f.lower().endswith(".txt")]
-
-    total_size = sum(os.path.getsize(os.path.join(pdf_dir, f)) for f in pdfs)
+    backend = get_vault_backend()
+    pdfs = backend.list_pdfs()
+    texts = backend.list_texts()
+    total_size = sum(p["size"] for p in pdfs)
 
     # Parse companies from filenames
     companies = set()
-    for f in pdfs:
-        meta = parse_resume_filename(f)
+    for entry in pdfs:
+        meta = parse_resume_filename(entry["key"])
         companies.add(meta["company"])
 
-    # DB stats
+    # DB stats — only meaningful when the metadata DB is up. On
+    # ephemeral hosts (Render free tier) this can be 0 while the
+    # backend still has files, which is the signal for a lazy
+    # rehydrate (see ``rehydrate_metadata_from_vault``).
     db_versions = 0
     if db_path:
         try:
@@ -1164,11 +1156,93 @@ def vault_stats(db_path: str = None) -> dict:
             pass
 
     return {
-        "vault_path": VAULT_DIR,
+        **backend.describe(),
         "pdf_count": len(pdfs),
         "text_count": len(texts),
         "total_size_mb": round(total_size / (1024 * 1024), 2),
         "unique_companies": len(companies),
         "companies": sorted(companies),
         "db_versions": db_versions,
+        # Back-compat alias — callers used to read ``vault_path``.
+        "vault_path": backend.describe().get("vault_dir") or backend.describe().get("bucket", ""),
     }
+
+
+# ═══════════════════════════════════════════════════════════════════
+#   METADATA REHYDRATION (ephemeral-DB recovery)
+# ═══════════════════════════════════════════════════════════════════
+
+def rehydrate_metadata_from_vault(db_path: str = None) -> dict:
+    """Rebuild ``resume_versions`` rows from the vault backend.
+
+    On Render's free tier the SQLite database is wiped on every cold
+    start, but the R2 vault survives. This function walks the backend's
+    PDF + text listings and re-creates one ``resume_versions`` row per
+    file, sourcing text from the matching ``text/<key>.txt`` blob (or
+    re-extracting from the PDF if the text blob is missing).
+
+    Idempotent: existing rows are upserted with the same content, so
+    re-running on a warm DB is a no-op aside from updating
+    ``updated_at`` to the file's mtime.
+
+    Intended call sites:
+      * Server startup hook (when ``VAULT_BACKEND=r2``)
+      * ``/api/vault/rehydrate`` admin endpoint (TODO if needed)
+
+    Returns ``{"rehydrated": N, "skipped": M, "errors": K}``.
+    """
+    if not db_path:
+        db_path = os.environ.get(
+            "DB_PATH", os.path.join(os.path.dirname(__file__), "..", "jobscout.db")
+        )
+
+    from storage.db import get_conn, upsert_resume_version
+    from storage.profile_manager import extract_skills_from_resume
+
+    backend = get_vault_backend()
+    conn = get_conn(db_path)
+    rehydrated, skipped, errors = 0, 0, 0
+
+    for entry in backend.list_pdfs():
+        fname = entry["key"]
+        try:
+            meta = parse_resume_filename(fname)
+            version_key = meta["version_key"]
+
+            text = backend.read_text(version_key)
+            if text is None:
+                # Text blob missing — fall back to re-extracting from
+                # the PDF. Costlier (one extra GET + pypdf parse per
+                # entry) but resilient against partial writes.
+                pdf_bytes = backend.read_pdf(fname)
+                text = extract_text_from_pdf_bytes(pdf_bytes, source=fname)
+                if text.strip():
+                    backend.write_text(version_key, text, mtime=None)
+
+            if not text.strip():
+                log.warning("rehydrate: empty text for %s, skipping", fname)
+                skipped += 1
+                continue
+
+            skills = extract_skills_from_resume(text)
+            upsert_resume_version(
+                conn,
+                version_key=version_key,
+                display_name=meta["display_name"],
+                resume_text=text,
+                skills=skills,
+                target_roles=[meta["role"]] if meta.get("role") else [],
+                target_companies=[meta["company"]] if meta.get("company") else [],
+                notes=f"Rehydrated from vault: {fname}",
+                submitted_at=entry["mtime"],
+            )
+            rehydrated += 1
+        except Exception as e:
+            log.error("rehydrate: failed on %s: %s", fname, e)
+            errors += 1
+
+    conn.commit()
+    conn.close()
+    log.info("Vault rehydrate: %d rehydrated, %d skipped, %d errors",
+             rehydrated, skipped, errors)
+    return {"rehydrated": rehydrated, "skipped": skipped, "errors": errors}

@@ -165,6 +165,36 @@ def add_cors(response):
 # ─── Startup ──────────────────────────────────────────────────────
 init_db(DB_PATH)
 
+# Lazy vault rehydrate: on ephemeral hosts (Render free tier) the SQLite
+# DB is wiped on every cold start, but the configured vault backend
+# (Cloudflare R2 in prod) survives. If we boot up with an empty
+# ``resume_versions`` table while the vault has PDFs, rebuild the rows
+# from the vault so /api/vault/list and /api/vault/best-match work
+# immediately. Skipped when the vault is empty or the DB already has
+# rows (which is the local-dev case).
+def _rehydrate_vault_if_needed() -> None:
+    try:
+        from storage.db import list_resume_versions
+        from storage.resume_vault import rehydrate_metadata_from_vault
+        from storage.vault_backend import get_vault_backend
+        conn = get_conn(DB_PATH)
+        db_count = len(list_resume_versions(conn))
+        conn.close()
+        if db_count > 0:
+            return
+        vault_count = len(get_vault_backend().list_pdfs())
+        if vault_count == 0:
+            return
+        log.info("Vault has %d PDFs but DB is empty — rehydrating metadata", vault_count)
+        rehydrate_metadata_from_vault(DB_PATH)
+    except Exception as e:
+        # Don't block boot on rehydrate failures — log and let normal
+        # operation continue; uploads will re-populate the DB.
+        log.warning("vault rehydrate skipped: %s", e)
+
+
+_rehydrate_vault_if_needed()
+
 if _should_run_bg_scraper():
     threading.Thread(
         target=_bg_scrape_loop,
