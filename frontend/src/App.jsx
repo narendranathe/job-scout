@@ -606,6 +606,25 @@ export default function App() {
   const [applications, setApplications] = useState([]);
   const [appLoading, setAppLoading] = useState(false);
 
+  // Resume Vault tab
+  const [vaultStats, setVaultStats]         = useState(null);
+  const [vaultFiles, setVaultFiles]         = useState([]);
+  const [vaultLoading, setVaultLoading]     = useState(false);
+  const [vaultError, setVaultError]         = useState("");
+  const [vaultSearch, setVaultSearch]       = useState("");
+  const [vaultSort, setVaultSort]           = useState("company");
+  const [vaultExpanded, setVaultExpanded]   = useState(null);
+  const [vaultDetails, setVaultDetails]     = useState({});
+  const [vaultCmpA, setVaultCmpA]           = useState("");
+  const [vaultCmpB, setVaultCmpB]           = useState("");
+  const [vaultCmpResult, setVaultCmpResult] = useState(null);
+  const [vaultCmpLoading, setVaultCmpLoading] = useState(false);
+  const [vaultUpFile, setVaultUpFile]       = useState(null);
+  const [vaultUpCompany, setVaultUpCompany] = useState("");
+  const [vaultUpRole, setVaultUpRole]       = useState("");
+  const [vaultUpStatus, setVaultUpStatus]   = useState(null);
+  const [vaultUpLoading, setVaultUpLoading] = useState(false);
+
   // Manual scrape trigger + live progress polling (#19, #20).
   // `scraping` reflects "we should keep polling the status endpoint at the
   // fast cadence" — set when the POST returns 202 or 409, or when the slow
@@ -980,6 +999,111 @@ export default function App() {
     } catch {}
   };
 
+  const fetchVault = useCallback(async () => {
+    if (!RENDER_API) return;
+    setVaultLoading(true);
+    setVaultError("");
+    try {
+      const [sr, lr] = await Promise.all([
+        fetch(`${RENDER_API}/api/vault/stats`, {signal: AbortSignal.timeout(8000)}),
+        fetch(`${RENDER_API}/api/vault/list`,  {signal: AbortSignal.timeout(8000)}),
+      ]);
+      if (sr.ok) setVaultStats(await sr.json());
+      if (lr.ok) {
+        const j = await lr.json();
+        setVaultFiles(j.files || []);
+      }
+    } catch (e) {
+      setVaultError(e.message || "Failed to load vault");
+    } finally {
+      setVaultLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { if (RENDER_API) fetchVault(); }, [fetchVault]);
+
+  const fetchVaultVersionDetails = async (vk) => {
+    if (!RENDER_API || vaultDetails[vk]) return;
+    try {
+      const r = await fetch(`${RENDER_API}/api/vault/version/${encodeURIComponent(vk)}`);
+      if (r.ok) {
+        const d = await r.json();
+        setVaultDetails(prev => ({...prev, [vk]: d}));
+      }
+    } catch {}
+  };
+
+  const deleteVaultVersion = async (vk) => {
+    if (!RENDER_API) return;
+    if (!window.confirm(`Delete vault version "${vk}"? This removes the DB record.`)) return;
+    try {
+      await fetch(`${RENDER_API}/api/vault/version/${encodeURIComponent(vk)}`, {method:"DELETE"});
+      fetchVault();
+    } catch {}
+  };
+
+  const compareVaultVersions = async () => {
+    if (!RENDER_API || !vaultCmpA || !vaultCmpB || vaultCmpA === vaultCmpB) return;
+    setVaultCmpLoading(true);
+    setVaultCmpResult(null);
+    try {
+      const r = await fetch(`${RENDER_API}/api/vault/compare`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({version_a: vaultCmpA, version_b: vaultCmpB}),
+      });
+      const d = await r.json();
+      setVaultCmpResult(d);
+    } catch (e) {
+      setVaultCmpResult({error: e.message || "Compare failed"});
+    } finally {
+      setVaultCmpLoading(false);
+    }
+  };
+
+  const uploadVaultPdf = async () => {
+    if (!RENDER_API || !vaultUpFile || !vaultUpCompany.trim()) {
+      setVaultUpStatus({ok:false, msg:"PDF file and company name required"});
+      return;
+    }
+    setVaultUpLoading(true);
+    setVaultUpStatus(null);
+    try {
+      const b64 = await new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => {
+          const res = fr.result || "";
+          const idx = String(res).indexOf("base64,");
+          resolve(idx >= 0 ? String(res).slice(idx + 7) : "");
+        };
+        fr.onerror = () => reject(new Error("Failed to read file"));
+        fr.readAsDataURL(vaultUpFile);
+      });
+      const r = await fetch(`${RENDER_API}/api/vault/upload`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          pdf_base64: b64,
+          company: vaultUpCompany.trim(),
+          role: vaultUpRole.trim() || undefined,
+          filename: vaultUpFile.name,
+        }),
+      });
+      const d = await r.json();
+      if (r.ok) {
+        setVaultUpStatus({ok:true, msg:`✅ Uploaded as ${d.version_key} (${d.skill_count||0} skills)`});
+        setVaultUpFile(null);
+        setVaultUpCompany("");
+        setVaultUpRole("");
+        fetchVault();
+      } else {
+        setVaultUpStatus({ok:false, msg:`❌ ${d.error || "Upload failed"}`});
+      }
+    } catch (e) {
+      setVaultUpStatus({ok:false, msg:`❌ ${e.message}`});
+    } finally {
+      setVaultUpLoading(false);
+    }
+  };
+
   const allJobs = data?.jobs   || [];
   const stats   = data?.stats  || {};
   const dist    = data?.distributions || {};
@@ -1182,7 +1306,7 @@ export default function App() {
   );
 
   const trackerCount = Object.keys(apps).length;
-  const TABS = ["jobs","rare","analytics","companies","trends","tracker","pipeline","monitor"];
+  const TABS = ["jobs","rare","analytics","companies","trends","tracker","vault","pipeline","monitor"];
 
   const PIPELINE_STAGES = [
     { key: 'saved',      label: 'Saved',        color: '#6b7280' },
@@ -1213,7 +1337,7 @@ export default function App() {
                   color:tab===tb?"#fff":t.txM,
                   fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit",
                   textTransform:"capitalize",transition:"all .15s",flexShrink:0}}>
-                {tb==="monitor"?"🖥 Monitor":tb==="tracker"?`📋 Tracker${trackerCount?" ("+trackerCount+")":""}`:tb==="pipeline"?`🗂 Pipeline${applications.length?" ("+applications.length+")":""}`:tb==="rare"?`🎯 Rare${stats.rare_skills?" ("+stats.rare_skills+")":""}`:tb}
+                {tb==="monitor"?"🖥 Monitor":tb==="tracker"?`📋 Tracker${trackerCount?" ("+trackerCount+")":""}`:tb==="pipeline"?`🗂 Pipeline${applications.length?" ("+applications.length+")":""}`:tb==="rare"?`🎯 Rare${stats.rare_skills?" ("+stats.rare_skills+")":""}`:tb==="vault"?`📁 Vault${vaultFiles.length?" ("+vaultFiles.length+")":""}`:tb}
               </button>
             ))}
           </div>
@@ -2092,6 +2216,306 @@ export default function App() {
                   })}
                 </div>
               )}
+            </div>
+          );
+        })()}
+
+        {/* ════════════ VAULT ════════════ */}
+        {tab==="vault" && (() => {
+          const filteredFiles = vaultFiles
+            .filter(f => {
+              if (!vaultSearch) return true;
+              const q = vaultSearch.toLowerCase();
+              return [f.version_key, f.company, f.role, f.filename, f.display_name]
+                .filter(Boolean).some(v => String(v).toLowerCase().includes(q));
+            })
+            .sort((a, b) => {
+              const k = vaultSort;
+              const av = String(a[k] || "").toLowerCase();
+              const bv = String(b[k] || "").toLowerCase();
+              if (k === "size_bytes") return (b.size_bytes || 0) - (a.size_bytes || 0);
+              return av.localeCompare(bv);
+            });
+
+          const labelStyle = {fontSize:12,color:t.txM,fontWeight:600,textTransform:"uppercase",letterSpacing:".06em",marginBottom:6,display:"block"};
+          const cardStyle = {background:t.cd,borderRadius:14,padding:24,border:`1px solid ${t.bd}`,boxShadow:t.shS,marginBottom:18};
+          const btnPrimary = {padding:"9px 18px",borderRadius:9,border:"none",background:t.gP,color:"#fff",fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit"};
+          const btnSecondary = {padding:"7px 14px",borderRadius:8,border:`1px solid ${t.bd}`,background:"transparent",color:t.txS,fontSize:13,fontWeight:500,cursor:"pointer",fontFamily:"inherit"};
+          const btnDanger = {padding:"7px 14px",borderRadius:8,border:`1px solid ${t.er}40`,background:`${t.er}10`,color:t.er,fontSize:13,fontWeight:500,cursor:"pointer",fontFamily:"inherit"};
+
+          return (
+            <div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18,flexWrap:"wrap",gap:12}}>
+                <h2 style={{margin:0,fontSize:24,fontWeight:700,color:t.tx,fontFamily:"'Playfair Display',serif"}}>Resume Vault</h2>
+                <div style={{display:"flex",gap:10,alignItems:"center"}}>
+                  {vaultLoading && <span style={{fontSize:13,color:t.txM,fontStyle:"italic"}}>Loading...</span>}
+                  <button onClick={fetchVault} disabled={vaultLoading} style={btnSecondary}>↻ Refresh</button>
+                </div>
+              </div>
+
+              {!RENDER_API && (
+                <div style={{...cardStyle,borderColor:`${t.er}40`,background:`${t.er}08`,color:t.er}}>
+                  ⚠️ No Render API configured. Set VITE_RENDER_URL in your .env file.
+                </div>
+              )}
+
+              {vaultError && (
+                <div style={{...cardStyle,borderColor:`${t.er}40`,background:`${t.er}08`,color:t.er}}>
+                  ❌ {vaultError}
+                </div>
+              )}
+
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:12,marginBottom:18}}>
+                {[
+                  [vaultStats?.pdf_count ?? "—","PDFs in Vault",t.ac],
+                  [vaultStats?.text_count ?? "—","Extracted Texts",t.bl],
+                  [(vaultStats?.total_size_mb ?? 0) + " MB","Total Size",t.wm],
+                  [vaultStats?.unique_companies ?? "—","Companies",t.vi],
+                  [vaultStats?.db_versions ?? "—","DB Versions",t.ok],
+                ].map(([v,l,c]) => (
+                  <div key={l} style={{padding:18,borderRadius:12,background:`${c}10`,border:`1px solid ${c}30`,textAlign:"center"}}>
+                    <div style={{fontSize:28,fontWeight:700,color:c,fontFamily:"'Playfair Display',serif"}}>{v}</div>
+                    <div style={{fontSize:12,color:t.txM,marginTop:4,textTransform:"uppercase",letterSpacing:".05em",fontWeight:600}}>{l}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={cardStyle}>
+                <h3 style={{margin:"0 0 16px",fontSize:13,color:t.txM,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em"}}>Upload New Resume</h3>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:12}}>
+                  <div>
+                    <label style={labelStyle}>PDF File</label>
+                    <input type="file" accept="application/pdf,.pdf"
+                      onChange={e => setVaultUpFile(e.target.files?.[0] || null)}
+                      style={{...iS,padding:"9px 12px"}}/>
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Company <span style={{color:t.er}}>*</span></label>
+                    <input type="text" placeholder="e.g. Goldman Sachs"
+                      value={vaultUpCompany}
+                      onChange={e => setVaultUpCompany(e.target.value)}
+                      style={iS}/>
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Role (optional)</label>
+                    <input type="text" placeholder="e.g. Data Engineer"
+                      value={vaultUpRole}
+                      onChange={e => setVaultUpRole(e.target.value)}
+                      style={iS}/>
+                  </div>
+                </div>
+                <div style={{display:"flex",gap:12,alignItems:"center",marginTop:14,flexWrap:"wrap"}}>
+                  <button onClick={uploadVaultPdf}
+                    disabled={vaultUpLoading || !vaultUpFile || !vaultUpCompany.trim()}
+                    style={{...btnPrimary,opacity:(vaultUpLoading || !vaultUpFile || !vaultUpCompany.trim())?0.5:1}}>
+                    {vaultUpLoading ? "Uploading..." : "Upload to Vault"}
+                  </button>
+                  {vaultUpStatus && (
+                    <span style={{fontSize:13,color:vaultUpStatus.ok?t.ok:t.er,fontWeight:600}}>
+                      {vaultUpStatus.msg}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div style={cardStyle}>
+                <h3 style={{margin:"0 0 16px",fontSize:13,color:t.txM,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em"}}>Compare Two Versions (TF-IDF)</h3>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr auto",gap:12,alignItems:"end"}} className="vault-cmp-grid">
+                  <div>
+                    <label style={labelStyle}>Version A</label>
+                    <select value={vaultCmpA} onChange={e => setVaultCmpA(e.target.value)} style={iS}>
+                      <option value="">— select —</option>
+                      {vaultFiles.map(f => (
+                        <option key={f.version_key} value={f.version_key}>
+                          {f.version_key}{f.display_name ? ` (${f.display_name})` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={labelStyle}>Version B</label>
+                    <select value={vaultCmpB} onChange={e => setVaultCmpB(e.target.value)} style={iS}>
+                      <option value="">— select —</option>
+                      {vaultFiles.map(f => (
+                        <option key={f.version_key} value={f.version_key}>
+                          {f.version_key}{f.display_name ? ` (${f.display_name})` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <button onClick={compareVaultVersions}
+                    disabled={vaultCmpLoading || !vaultCmpA || !vaultCmpB || vaultCmpA === vaultCmpB}
+                    style={{...btnPrimary,opacity:(vaultCmpLoading || !vaultCmpA || !vaultCmpB || vaultCmpA === vaultCmpB)?0.5:1}}>
+                    {vaultCmpLoading ? "Comparing..." : "Compare"}
+                  </button>
+                </div>
+                {vaultCmpResult && (
+                  <div style={{marginTop:18,padding:16,background:t.bgS,borderRadius:10,border:`1px solid ${t.bd}`}}>
+                    {vaultCmpResult.error ? (
+                      <div style={{color:t.er,fontWeight:600}}>❌ {vaultCmpResult.error}</div>
+                    ) : (
+                      <>
+                        <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:14,flexWrap:"wrap"}}>
+                          <div style={{fontSize:36,fontWeight:700,color:t.ac,fontFamily:"'Playfair Display',serif"}}>
+                            {vaultCmpResult.similarity_pct ?? Math.round((vaultCmpResult.similarity||0)*100)}%
+                          </div>
+                          <div style={{fontSize:14,color:t.txS,flex:1,minWidth:200}}>
+                            {vaultCmpResult.interpretation || "Similarity score"}
+                          </div>
+                        </div>
+                        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:12}}>
+                          {vaultCmpResult.shared_skills?.length > 0 && (
+                            <div>
+                              <div style={labelStyle}>Shared Skills ({vaultCmpResult.shared_skills.length})</div>
+                              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                                {vaultCmpResult.shared_skills.slice(0,30).map(s => (
+                                  <span key={s} style={{fontSize:12,padding:"3px 9px",borderRadius:6,background:`${t.ok}15`,color:t.ok,border:`1px solid ${t.ok}30`}}>{s}</span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {vaultCmpResult.only_a?.length > 0 && (
+                            <div>
+                              <div style={labelStyle}>Only in A ({vaultCmpResult.only_a.length})</div>
+                              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                                {vaultCmpResult.only_a.slice(0,30).map(s => (
+                                  <span key={s} style={{fontSize:12,padding:"3px 9px",borderRadius:6,background:`${t.bl}15`,color:t.bl,border:`1px solid ${t.bl}30`}}>{s}</span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {vaultCmpResult.only_b?.length > 0 && (
+                            <div>
+                              <div style={labelStyle}>Only in B ({vaultCmpResult.only_b.length})</div>
+                              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                                {vaultCmpResult.only_b.slice(0,30).map(s => (
+                                  <span key={s} style={{fontSize:12,padding:"3px 9px",borderRadius:6,background:`${t.vi}15`,color:t.vi,border:`1px solid ${t.vi}30`}}>{s}</span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div style={cardStyle}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:12}}>
+                  <h3 style={{margin:0,fontSize:13,color:t.txM,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em"}}>
+                    Browse Vault ({filteredFiles.length}{vaultFiles.length !== filteredFiles.length ? ` of ${vaultFiles.length}` : ""})
+                  </h3>
+                  <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                    <input type="text" placeholder="Search vault..."
+                      value={vaultSearch}
+                      onChange={e => setVaultSearch(e.target.value)}
+                      style={{...iS,maxWidth:240,padding:"8px 12px",fontSize:14}}/>
+                    <select value={vaultSort} onChange={e => setVaultSort(e.target.value)}
+                      style={{...iS,width:"auto",padding:"8px 12px",fontSize:14,cursor:"pointer"}}>
+                      <option value="company">Sort: Company</option>
+                      <option value="role">Sort: Role</option>
+                      <option value="version_key">Sort: Key</option>
+                      <option value="filename">Sort: Filename</option>
+                      <option value="size_bytes">Sort: Size</option>
+                    </select>
+                  </div>
+                </div>
+
+                {filteredFiles.length === 0 ? (
+                  <div style={{padding:32,textAlign:"center",color:t.txM,fontStyle:"italic"}}>
+                    {vaultLoading ? "Loading vault files..." : "No vault files found."}
+                  </div>
+                ) : (
+                  <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                    {filteredFiles.map(f => {
+                      const isOpen = vaultExpanded === f.version_key;
+                      const det = vaultDetails[f.version_key];
+                      return (
+                        <div key={f.version_key} style={{background:t.bgS,borderRadius:10,border:`1px solid ${t.bd}`,overflow:"hidden"}}>
+                          <div style={{padding:"12px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}} className="vault-row">
+                            <div style={{flex:1,minWidth:200}}>
+                              <div style={{fontSize:14,fontWeight:700,color:t.tx}}>
+                                {f.company || "—"}{f.role ? ` · ${f.role}` : ""}
+                              </div>
+                              <div style={{fontSize:12,color:t.txM,marginTop:3,wordBreak:"break-word"}}>
+                                <span style={{fontFamily:"monospace",color:t.ac}}>{f.version_key}</span>
+                                {f.filename && <span> · {f.filename}</span>}
+                                {f.size_kb && <span> · {f.size_kb} KB</span>}
+                              </div>
+                            </div>
+                            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                              <button style={btnSecondary}
+                                onClick={() => {
+                                  if (isOpen) { setVaultExpanded(null); }
+                                  else { setVaultExpanded(f.version_key); fetchVaultVersionDetails(f.version_key); }
+                                }}>
+                                {isOpen ? "Hide" : "View Details"}
+                              </button>
+                              <button style={btnDanger} onClick={() => deleteVaultVersion(f.version_key)}>
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                          {isOpen && (
+                            <div style={{padding:"14px 16px",borderTop:`1px solid ${t.bd}`,background:t.cd}}>
+                              {!det ? (
+                                <div style={{color:t.txM,fontStyle:"italic",fontSize:13}}>Loading details...</div>
+                              ) : det.error ? (
+                                <div style={{color:t.er,fontSize:13}}>❌ {det.error}</div>
+                              ) : (
+                                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:12}}>
+                                  <div>
+                                    <div style={labelStyle}>Display Name</div>
+                                    <div style={{fontSize:14,color:t.tx}}>{det.display_name || "—"}</div>
+                                  </div>
+                                  <div>
+                                    <div style={labelStyle}>Target Companies</div>
+                                    <div style={{fontSize:14,color:t.tx}}>
+                                      {(det.target_companies || []).join(", ") || "—"}
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <div style={labelStyle}>Target Roles</div>
+                                    <div style={{fontSize:14,color:t.tx}}>
+                                      {(det.target_roles || []).join(", ") || "—"}
+                                    </div>
+                                  </div>
+                                  <div style={{gridColumn:"1 / -1"}}>
+                                    <div style={labelStyle}>Extracted Skills ({(det.extracted_skills || []).length})</div>
+                                    <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                                      {(det.extracted_skills || []).slice(0,40).map(s => (
+                                        <span key={s} style={{fontSize:12,padding:"3px 9px",borderRadius:6,background:t.acL,color:t.ac,border:`1px solid ${t.ac}30`}}>{s}</span>
+                                      ))}
+                                      {(det.extracted_skills || []).length === 0 && <span style={{color:t.txM,fontSize:13,fontStyle:"italic"}}>none</span>}
+                                    </div>
+                                  </div>
+                                  {det.notes && (
+                                    <div style={{gridColumn:"1 / -1"}}>
+                                      <div style={labelStyle}>Notes</div>
+                                      <div style={{fontSize:13,color:t.txS}}>{det.notes}</div>
+                                    </div>
+                                  )}
+                                  <div>
+                                    <div style={labelStyle}>Resume Length</div>
+                                    <div style={{fontSize:14,color:t.tx}}>{(det.resume_text || "").length.toLocaleString()} chars</div>
+                                  </div>
+                                  {det.updated_at && (
+                                    <div>
+                                      <div style={labelStyle}>Updated</div>
+                                      <div style={{fontSize:14,color:t.tx}}>{timeAgo(det.updated_at)}</div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
           );
         })()}
