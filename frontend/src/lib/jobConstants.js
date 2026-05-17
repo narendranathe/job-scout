@@ -66,3 +66,64 @@ export function jobFitTone(pct, t) {
   if (pct >= 50) return { fg: t.wm, bg: `${t.wm}18`, bd: `${t.wm}40`, label: "Moderate", icon: "🟡" };
   return            { fg: t.er, bg: `${t.er}18`, bd: `${t.er}40`, label: "Weak",     icon: "🔴" };
 }
+
+/**
+ * Application status colors + labels. Shared between JobCard's status
+ * pills, the Tracker tab's status column, and the Pipeline tab kanban.
+ * Status keys map to DB column values; do not change keys without a
+ * matching backend migration.
+ */
+export const ST_COLOR = {saved:"#4A7C9F",applied:"#3D8B6E",interview:"#C4A77D",offer:"#2D5A4A",rejected:"#B85450"};
+export const ST_LABEL = {saved:"🔖 Save",applied:"✅ Applied",interview:"📞 Interview",offer:"🎉 Offer",rejected:"✗ Pass"};
+
+/**
+ * "Platinum" tier check — jobs scraped from Tier 0 dream companies are
+ * pre-tagged on the backend. Highlighted in the JobCard meta row.
+ */
+export const isPlatinum = (job) => job?.tier === 'platinum';
+
+/**
+ * High-comp filter — used by the rare-roles tab to surface FAANG-level
+ * compensation. Either platinum tier OR explicit salary band over 220K.
+ */
+export const isHighComp = (job) => (job?.salary_max >= 220000) || isPlatinum(job);
+
+/**
+ * Heuristic visa-sponsorship signal for a job that has no explicit
+ * sponsorship flag. Looks for the obvious "we sponsor" phrases in the
+ * description. Cheap; runs on every JobCard render — keep it short.
+ */
+export function likelySponsor(job){
+  const text=((job.description||"")+" "+(job.company||"")).toLowerCase();
+  if(/no sponsorship|not sponsor|unable to sponsor|citizen only/.test(text))return false;
+  if(/visa sponsor|h1b|h-1b|sponsorship available/.test(text))return true;
+  return["uber","meta","google","amazon","apple","microsoft","netflix","stripe","anthropic","openai","datadog","snowflake","databricks","two sigma","citadel","bloomberg","capital one","palantir","coinbase"].includes((job.company||"").toLowerCase());
+}
+
+/**
+ * JobCard's inline style record. Frozen so React.memo never gets a new
+ * identity from a recompute — every card shares the same prototype.
+ */
+export const JC_STYLES = Object.freeze({
+  topRow: {padding:"16px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:12},
+  titleRow: {display:"flex",alignItems:"center",gap:14,flex:1,minWidth:0},
+  titleInner: {flex:1,minWidth:0},
+  titleLine: {display:"flex",alignItems:"center",gap:8,marginBottom:5,flexWrap:"wrap"},
+  metaRow: {display:"flex",gap:12,fontSize:14,flexWrap:"wrap",alignItems:"center"},
+  scoreCluster: {display:"flex",alignItems:"center",gap:10,flexShrink:0},
+  platinum: {
+    background:'linear-gradient(135deg, #b8860b, #ffd700)',
+    color:'#1a1a1a',fontSize:'10px',fontWeight:'700',padding:'2px 6px',
+    borderRadius:'4px',marginLeft:'6px',letterSpacing:'0.5px',textTransform:'uppercase',
+  },
+  appliedBtn: {
+    background:'rgba(59,130,246,0.15)', color:'#3b82f6',
+    border:'1px solid rgba(59,130,246,0.3)', borderRadius:'4px',
+    padding:'3px 8px', fontSize:'11px', cursor:'pointer', marginLeft:'6px',
+  },
+  skillsRow: {display:"flex",gap:6,flexWrap:"wrap",margin:"14px 0 10px"},
+  actionsRow: {display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginTop:10},
+  statusBtnsRow: {display:"flex",gap:6,flexWrap:"wrap"},
+  rkBar: {flex:1,height:8,borderRadius:5,overflow:"hidden"},
+  vdGrid: {display:"flex",flexDirection:"column",gap:4},
+});
