@@ -41,6 +41,13 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(vr_mod, "DB_PATH", db_path)
     monkeypatch.setattr(vr_mod, "API_SECRET", "", raising=False)
 
+    # After PR 8/8 of the server split, the legacy /api/resume/versions/<key>
+    # DELETE route lives in routes.resume_version_routes and reads
+    # _config.DB_PATH. Patch the live attribute so the blueprint sees the
+    # test DB.
+    import core.config as _cfg
+    monkeypatch.setattr(_cfg, "DB_PATH", db_path)
+
     import server
     server.DB_PATH = db_path
     server.app.config["TESTING"] = True
