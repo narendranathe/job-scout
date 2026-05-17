@@ -522,7 +522,7 @@ function Chk({done,label,detail,t}) {
    parent passes through memoized objects (bm, app, vdMap) and stable
    callback refs (useCallback).
    ═══════════════════════════════════════════════════════════════════ */
-const JC_STYLES = {
+const JC_STYLES = Object.freeze({
   topRow: {padding:"16px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:12},
   titleRow: {display:"flex",alignItems:"center",gap:14,flex:1,minWidth:0},
   titleInner: {flex:1,minWidth:0},
@@ -544,7 +544,7 @@ const JC_STYLES = {
   statusBtnsRow: {display:"flex",gap:6,flexWrap:"wrap"},
   rkBar: {flex:1,height:8,borderRadius:5,overflow:"hidden"},
   vdGrid: {display:"flex",flexDirection:"column",gap:4},
-};
+});
 
 function stopProp(e) { e.stopPropagation(); }
 
@@ -787,7 +787,17 @@ const JobCard = memo(_JobCard);
    Same idea as JobCard: extracted from filteredFiles.map so toggling
    one row's open state doesn't re-render every other row.
    ═══════════════════════════════════════════════════════════════════ */
-function _VaultRow({ f, t, isOpen, det, btnSecondary, btnDanger, labelStyle, onToggle, onDelete }) {
+function _VaultRow({ f, t, isOpen, det, onToggle, onDelete }) {
+  // Styles are computed INSIDE the row so the parent doesn't have to pass
+  // them as props. Previously the App() body declared these as inline
+  // literals inside an IIFE on every render — fresh object identities
+  // defeated React.memo. Computing them here ties the recompute to the
+  // row's own (memo-gated) re-renders, which only fire when t/isOpen/etc.
+  // actually change for this row.
+  const labelStyle = {fontSize:12,color:t.txM,fontWeight:600,textTransform:"uppercase",letterSpacing:".06em",marginBottom:6,display:"block"};
+  const btnSecondary = {padding:"7px 14px",borderRadius:8,border:`1px solid ${t.bd}`,background:"transparent",color:t.txS,fontSize:13,fontWeight:500,cursor:"pointer",fontFamily:"inherit"};
+  const btnDanger = {padding:"7px 14px",borderRadius:8,border:`1px solid ${t.er}40`,background:`${t.er}10`,color:t.er,fontSize:13,fontWeight:500,cursor:"pointer",fontFamily:"inherit"};
+
   const sizeLabel = typeof f.size_kb === "number"
     ? (f.size_kb >= 1024 ? `${(f.size_kb/1024).toFixed(1)} MB` : `${f.size_kb} KB`)
     : null;
@@ -1524,7 +1534,7 @@ export default function App() {
     } catch (e) {
       setVaultError(`Delete failed: ${e.message || "network error"}`);
     }
-  }, []);
+  }, [fetchVault]);
 
   // Stable toggle for <VaultRow/>: opens the row, closes any other, fires
   // details fetch on first open. Passing this single callback (instead of
@@ -1651,6 +1661,19 @@ export default function App() {
     return m;
   }, [apps]);
 
+  // Pre-filter the company-history list so the JobCard call site doesn't
+  // do an inline `.filter()` per render (fresh array → React.memo would
+  // see a new prop identity on every parent render even when nothing
+  // about that company actually changed). One memo keyed on the already-
+  // memoized companyApps gives every card a stable === reference.
+  const coHistoryByCompany = useMemo(() => {
+    const m = {};
+    for (const k in companyApps) {
+      m[k] = companyApps[k].filter(a => a.status !== "saved");
+    }
+    return m;
+  }, [companyApps]);
+
   // Group expanded "View ▾" rows by job external_id so each <JobCard/>
   // can receive only its own slice. Without this every card would see
   // the full map and React.memo's shallow `===` would break whenever any
@@ -1669,6 +1692,26 @@ export default function App() {
     }
     return m;
   }, [expandedVersionRow]);
+
+  // Per-card slice of versionDetails. Without this every JobCard would
+  // receive the full versionDetails map; any setVersionDetails(prev =>
+  // ({...prev, [vk]: ...})) call from ANY card would produce a new map
+  // identity and React.memo's shallow `vdMap !== nextVdMap` would force
+  // every card to re-render. Build a slice keyed on each card's
+  // expandedByJob entries — cards with no expanded rows share the frozen
+  // EMPTY_OBJ identity so === stays stable.
+  const vdMapByJob = useMemo(() => {
+    const m = {};
+    for (const extId in expandedByJob) {
+      const rows = expandedByJob[extId];
+      const slice = {};
+      for (const vk in rows) {
+        if (versionDetails[vk] !== undefined) slice[vk] = versionDetails[vk];
+      }
+      m[extId] = slice;
+    }
+    return m;
+  }, [expandedByJob, versionDetails]);
 
   // Build filter option lists
   const opts = useMemo(() => {
@@ -1958,8 +2001,6 @@ export default function App() {
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
             {fj.slice(0,60).map(j => {
               const coKey = (j.company || "").toLowerCase();
-              const coHistAll = companyApps[coKey];
-              const coHistory = coHistAll ? coHistAll.filter(a => a.status !== "saved") : EMPTY_ARR;
               return (
                 <JobCard
                   key={j.external_id}
@@ -1967,9 +2008,9 @@ export default function App() {
                   t={t}
                   open={xJ === j.external_id}
                   app={apps[j.external_id]}
-                  coHistory={coHistory}
+                  coHistory={coHistoryByCompany[coKey] || EMPTY_ARR}
                   bm={bestMatchByJob[j.external_id]}
-                  vdMap={versionDetails}
+                  vdMap={vdMapByJob[j.external_id] || EMPTY_OBJ}
                   expandedRows={expandedByJob[j.external_id] || EMPTY_OBJ}
                   onToggleOpen={toggleCardOpen}
                   onSave={saveApp}
@@ -2718,9 +2759,6 @@ export default function App() {
                         t={t}
                         isOpen={vaultExpanded === f.version_key}
                         det={vaultDetails[f.version_key]}
-                        btnSecondary={btnSecondary}
-                        btnDanger={btnDanger}
-                        labelStyle={labelStyle}
                         onToggle={toggleVaultRow}
                         onDelete={deleteVaultVersion}
                       />
