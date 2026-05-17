@@ -249,9 +249,74 @@ def vault_version(version_key):
         return jsonify(rv), 200
 
     elif request.method == "DELETE":
-        from storage.profile_manager import delete_resume_version
-        delete_resume_version(version_key, db_path=DB_PATH)
-        return jsonify({"status": "deleted", "version_key": version_key}), 200
+        # Issue #37: also remove the PDF + text file from disk, otherwise the
+        # entry resurrects on next refresh because list_vault() reads disk.
+        from storage.db import get_conn, get_resume_version
+        from storage.resume_vault import delete_vault_version, list_vault
+
+        # Reject path-traversal-shaped keys BEFORE the existence check so the
+        # response is 400 (malformed) instead of 404 (not found). We also
+        # reject null bytes here — os.path.realpath() raises ValueError on
+        # embedded nulls, and we want a 400 (client error) not a 500.
+        if (
+            "\x00" in version_key
+            or "/" in version_key
+            or "\\" in version_key
+            or ".." in version_key
+        ):
+            return jsonify({"error": f"Invalid version_key: {version_key!r}"}), 400
+
+        # Idempotency (Round 2): if neither a DB row nor any PDF on disk maps
+        # to this key, the resource is already gone. Return 200 with
+        # already_gone:true so retried DELETE calls from queues/clients are
+        # safe. We only 400 on malformed keys (handled above) — 404 is no
+        # longer appropriate because DELETE's post-condition (resource does
+        # not exist) is satisfied.
+        conn = get_conn(DB_PATH)
+        rv = get_resume_version(conn, version_key)
+        conn.close()
+        on_disk = any(f.get("version_key") == version_key for f in list_vault())
+        if not rv and not on_disk:
+            return jsonify({
+                "status": "deleted",
+                "version_key": version_key,
+                "db_row_deleted": False,
+                "pdf_deleted": False,
+                "text_deleted": False,
+                "already_gone": True,
+            }), 200
+
+        try:
+            result = delete_vault_version(version_key, db_path=DB_PATH)
+        except ValueError as e:
+            # R3 Fix: storage-layer ValueError messages can include absolute
+            # paths (e.g. "Path /opt/x escapes vault root /opt/vault"). Log
+            # the detailed message server-side, but return a generic error
+            # to the client. Matches the wording used for null-byte /
+            # path-traversal rejections above.
+            log.warning("Vault delete '%s' rejected: %s", version_key, e)
+            return jsonify({"error": "Invalid version_key"}), 400
+        except OSError as e:
+            # Fix #3 Option A: filesystem failure should NOT proceed with DB
+            # delete. Storage layer re-raises; we surface as 500 so the row
+            # stays and the client can retry. Match the docstring's promise.
+            #
+            # R3 Fix: PermissionError / FileNotFoundError reprs include the
+            # absolute filesystem path (e.g. [Errno 13] Permission denied:
+            # '/opt/render/project/resume_vault/pdf/X.pdf'). Log it, but
+            # don't leak it to the client.
+            log.error("Vault delete '%s' filesystem error: %s", version_key, e)
+            return jsonify({"error": "Filesystem error while deleting version"}), 500
+
+        # Fix #1: omit absolute filesystem paths from the response. The
+        # booleans pdf_deleted/text_deleted already carry the "did we delete
+        # it" signal, and leaking server paths (e.g. /opt/render/project/...)
+        # exposes internal structure to clients. Surface only the basename of
+        # the PDF for UX (which file was removed), nothing else.
+        pdf_path = result.pop("pdf_path", None)
+        result.pop("text_path", None)
+        result["pdf_filename"] = os.path.basename(pdf_path) if pdf_path else None
+        return jsonify({"status": "deleted", **result}), 200
 
 
 @vault_bp.after_request

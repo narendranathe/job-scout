@@ -1520,7 +1520,7 @@ export default function App() {
 
   const deleteVaultVersion = useCallback(async (vk) => {
     if (!RENDER_API) return;
-    if (!window.confirm(`Delete vault version "${vk}"?\n\nNote: this removes the database record only. The PDF file on disk remains; it will reappear next refresh unless removed server-side.`)) return;
+    if (!window.confirm(`Delete vault version "${vk}"? This removes the DB record AND the PDF file from the server.`)) return;
     try {
       const r = await fetch(`${RENDER_API}/api/vault/version/${encodeURIComponent(vk)}`, {method:"DELETE", signal: AbortSignal.timeout(8000)});
       if (!r.ok) {

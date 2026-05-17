@@ -393,6 +393,126 @@ def list_vault() -> list[dict]:
     return results
 
 
+def _safe_unlink_in_vault(path: str) -> bool:
+    """
+    Delete a file only if its resolved (realpath) location is inside VAULT_DIR.
+
+    Defense against path-traversal: even if `path` was built from user input
+    that included `..` or symlinks, realpath() collapses those — if the result
+    escapes the vault directory, we refuse to unlink.
+
+    Returns True if a file was deleted, False if it did not exist.
+    Raises ValueError if the resolved path is outside the vault.
+    """
+    vault_root = os.path.realpath(VAULT_DIR)
+    target = os.path.realpath(path)
+    if not (target == vault_root or target.startswith(vault_root + os.sep)):
+        raise ValueError(
+            f"Refusing to delete path outside vault: {target!r} not under {vault_root!r}"
+        )
+    if not os.path.exists(target):
+        return False
+    os.remove(target)
+    return True
+
+
+def delete_vault_version(version_key: str, db_path: str = None) -> dict:
+    """
+    Fully delete a resume version: the PDF file, the extracted text file,
+    AND the DB row. Handles partial-state vaults gracefully — a missing file
+    or missing DB row is not an error; we reconcile whatever exists.
+
+    This fixes issue #37: previously the route only removed the DB row, but
+    list_vault() reads the filesystem, so the entry resurrected on refresh.
+
+    Returns:
+        {
+            "version_key": str,
+            "db_row_deleted": bool,
+            "pdf_deleted": bool,
+            "text_deleted": bool,
+            "pdf_path": str | None,   # path attempted (None if no PDF found)
+            "text_path": str,
+        }
+
+    Raises:
+        ValueError if version_key is empty, contains path-traversal sequences,
+        or resolves to a path outside VAULT_DIR.
+        OSError if a vault file exists but cannot be removed. In that case
+        the DB row is NOT deleted — callers should surface the error so the
+        client can retry, rather than orphaning a row whose file is still
+        on disk. (Round 2 Fix #3: code now matches docstring guarantee.)
+    """
+    if not version_key or not isinstance(version_key, str):
+        raise ValueError("version_key is required")
+
+    # Block obvious traversal attempts at the key level before touching disk.
+    # Flask's default <string:> converter already strips '/', but URL-encoded
+    # variants or future routing changes could let them through.
+    if "/" in version_key or "\\" in version_key or ".." in version_key:
+        raise ValueError(f"Invalid version_key: {version_key!r}")
+
+    _ensure_vault()
+
+    if not db_path:
+        db_path = os.environ.get(
+            "DB_PATH", os.path.join(os.path.dirname(__file__), "..", "jobscout.db")
+        )
+
+    pdf_dir = os.path.join(VAULT_DIR, "pdf")
+    text_dir = os.path.join(VAULT_DIR, "text")
+
+    # Locate the PDF whose parsed filename → this version_key.
+    pdf_path = None
+    try:
+        for fname in os.listdir(pdf_dir):
+            if not fname.lower().endswith(".pdf"):
+                continue
+            meta = parse_resume_filename(fname)
+            if meta.get("version_key") == version_key:
+                pdf_path = os.path.join(pdf_dir, fname)
+                break
+    except FileNotFoundError:
+        pdf_path = None
+
+    text_path = os.path.join(text_dir, f"{version_key}.txt")
+
+    # Round 2 Fix #3: propagate OSError so the DB row stays put when an
+    # unlink fails. The previous behaviour (swallow + log warning + still
+    # delete the row) directly contradicted the docstring's "filesystem
+    # failure does not orphan the row" promise — the row was orphaned the
+    # OTHER way: file on disk, row gone, vault permanently un-listable.
+    pdf_deleted = False
+    if pdf_path:
+        pdf_deleted = _safe_unlink_in_vault(pdf_path)
+
+    text_deleted = _safe_unlink_in_vault(text_path)
+
+    # Delete DB row last (so a filesystem failure doesn't orphan the row).
+    from storage.db import get_conn
+    conn = get_conn(db_path)
+    cur = conn.execute(
+        "DELETE FROM resume_versions WHERE version_key = ?", (version_key,)
+    )
+    db_row_deleted = cur.rowcount > 0
+    conn.commit()
+    conn.close()
+
+    log.info(
+        "Vault delete '%s': pdf=%s text=%s db=%s",
+        version_key, pdf_deleted, text_deleted, db_row_deleted,
+    )
+
+    return {
+        "version_key": version_key,
+        "db_row_deleted": db_row_deleted,
+        "pdf_deleted": pdf_deleted,
+        "text_deleted": text_deleted,
+        "pdf_path": pdf_path,
+        "text_path": text_path,
+    }
+
+
 def bulk_import(
     source_dir: str,
     db_path: str = None,
