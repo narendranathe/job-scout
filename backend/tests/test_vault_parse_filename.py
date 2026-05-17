@@ -371,3 +371,61 @@ def test_parse_filename_503_includes_retry_after_seconds_in_body(client):
         assert body["retry_after"] >= 0
     finally:
         vault_routes._parse_filename_semaphore.release()
+
+
+# ─── COMBINE: body-size cap + filename echo removal + broad except ─────────
+
+
+def test_parse_filename_rejects_oversized_body_via_content_length(client):
+    """COMBINE / critic pick A: a giant JSON body with a short filename
+    field still wastes memory if we let the parser run. The Content-Length
+    check rejects it before any deserialisation."""
+    huge = '{"filename": "x.pdf", "junk": "' + ("A" * 5000) + '"}'
+    resp = client.post(
+        "/api/vault/parse-filename",
+        data=huge,
+        content_type="application/json",
+    )
+    assert resp.status_code == 413
+    body = resp.get_json()
+    assert "too large" in (body or {}).get("error", "").lower()
+
+
+def test_parse_filename_400_does_not_echo_filename(client):
+    """COMBINE: previous 400 body echoed the submitted filename back,
+    creating a log-poisoning reflection oracle on an unauthenticated
+    endpoint. The error body must NOT leak the input."""
+    resp = client.post(
+        "/api/vault/parse-filename",
+        json={"filename": "\x00invalid\x00.pdf"},
+    )
+    if resp.status_code == 400:
+        body = resp.get_json()
+        assert "filename" not in body, f"400 body leaks filename: {body}"
+        assert "\x00" not in str(body), "400 body leaks raw input bytes"
+
+
+def test_parse_filename_handles_arbitrary_exceptions(client, monkeypatch):
+    """COMBINE: previously narrow except list (TypeError, ValueError,
+    AttributeError, IndexError) would let re.error / MemoryError /
+    catastrophic backtracking 500 with a traceback. Broaden to bare
+    Exception. Sentinel exception type proves we catch beyond the list."""
+    class CustomError(Exception):
+        pass
+
+    def boom(_fn):
+        raise CustomError("simulated re.error / MemoryError / etc")
+
+    import storage.resume_vault as rv
+    monkeypatch.setattr(rv, "parse_resume_filename", boom)
+
+    resp = client.post(
+        "/api/vault/parse-filename",
+        json={"filename": "anything.pdf"},
+    )
+    assert resp.status_code == 400, (
+        f"broad except missed CustomError (got {resp.status_code}; "
+        f"likely 500 with traceback)"
+    )
+    body = resp.get_json()
+    assert "simulated" not in str(body), "leaks exception message"

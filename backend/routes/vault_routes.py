@@ -121,6 +121,15 @@ PARSE_FILENAME_MAX_CONCURRENT = int(
 # clients (and CDNs / browser fetch retry logic) back off instead of
 # hammering. Tuned to the expected parse cost (microseconds) plus jitter.
 PARSE_FILENAME_RETRY_AFTER_SEC = 1
+# Body-size cap (COMBINE: from #4A's design). The filename field tops
+# out at 256 chars, so the JSON envelope (`{"filename": "..."}` + 1-2
+# more legal keys + whitespace) cannot exceed ~4 KB even with maximum-
+# length input. Rejecting larger bodies at Content-Length check time
+# is the cheapest possible memory-DoS guard for an unauth endpoint —
+# Werkzeug never reads the body, json parser never runs.
+PARSE_FILENAME_MAX_BODY_BYTES = int(
+    os.environ.get("PARSE_FILENAME_MAX_BODY_BYTES", str(4 * 1024))
+)
 
 _parse_filename_semaphore = threading.BoundedSemaphore(
     value=PARSE_FILENAME_MAX_CONCURRENT
@@ -677,6 +686,19 @@ def vault_parse_filename():
     if request.method == "OPTIONS":
         return "", 200
 
+    # Body-size cap BEFORE any parsing. From critic head-to-head pick A:
+    # without this, a 100 MB JSON blob with a 5-char `filename` field
+    # still hits Werkzeug's parser + request.get_json (memory DoS).
+    # content_length is the Content-Length header value — None means
+    # the client didn't send one, which we also reject (chunked uploads
+    # have no place on a pure-function echo endpoint).
+    if request.content_length is None:
+        return jsonify({"error": "Content-Length required"}), 411
+    if request.content_length > PARSE_FILENAME_MAX_BODY_BYTES:
+        return jsonify({
+            "error": f"body too large (max {PARSE_FILENAME_MAX_BODY_BYTES} bytes)",
+        }), 413
+
     # Validate body BEFORE acquiring the concurrency slot — rejecting
     # malformed requests outside the semaphore means a flood of
     # 400-shaped traffic can't pin the cap and lock out legitimate users.
@@ -718,15 +740,22 @@ def vault_parse_filename():
         from storage.resume_vault import parse_resume_filename
         try:
             result = parse_resume_filename(fn)
-        except (TypeError, ValueError, AttributeError, IndexError) as e:
+        except Exception as e:
+            # COMBINE: critic flagged the narrow exception list (#4B
+            # original) missed re.error, MemoryError, regex catastrophic
+            # backtracking — any of which would 500 with a traceback.
+            # ``except Exception`` covers the lot. The wizard preview
+            # has no business knowing internals; log type + len server-
+            # side, return generic 400 only.
+            #
+            # COMBINE: critic flagged echoing back `fn` in the body
+            # creates a log-poisoning reflection oracle for an
+            # unauthenticated endpoint. Dropped.
             log.info(
                 "parse-filename rejected input (len=%d, %s: %s)",
                 len(fn), type(e).__name__, e,
             )
-            return jsonify({
-                "error": "could not parse filename",
-                "filename": fn,
-            }), 400
+            return jsonify({"error": "could not parse filename"}), 400
         return jsonify(result), 200
     finally:
         # Always release — even if jsonify itself blows up, we must not
