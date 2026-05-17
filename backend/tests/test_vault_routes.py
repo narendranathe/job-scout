@@ -157,34 +157,57 @@ def test_best_match_top_n_integral_float_slices(client):
     assert len(data["rankings"]) == 5
 
 
+def test_best_match_top_n_integral_float_at_cap_slices(client):
+    """top_n=50.0 → integral float at the cap; coerced to int(50), accepted (not 400).
+
+    Boundary case: float-at-cap must NOT fall into the lenient bucket and must
+    NOT raise the over-cap 400. With 10 mock resumes, ``rankings[:50]`` returns
+    all 10.
+    """
+    resp = client.post(
+        "/api/vault/best-match",
+        json={"job_description": "Python", "top_n": 50.0},
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["count"] == 10
+    assert len(data["rankings"]) == 10
+
+
 # --- Lenient inputs -> treated as absent ------------------------------
 
 
 @pytest.mark.parametrize(
     "bad_top_n",
     [
-        0,             # zero
-        -1,            # negative int
-        "foo",         # string
-        "5",           # numeric string — still a string
-        True,          # bool True (Python treats as int 1, but we reject bools)
-        False,         # bool False — the OTHER bool, round 1 only tested True
-        5.7,           # non-integral float
-        0.5,           # non-integral fractional float
-        [],            # list
-        [5],           # non-empty list
-        {},            # empty dict
-        {"n": 5},      # dict
+        0,                # zero
+        -1,               # negative int
+        "foo",            # string
+        "5",              # numeric string — still a string
+        "DROP TABLE",     # string with spaces / SQL-ish — still a string
+        True,             # bool True (Python treats as int 1, but we reject bools)
+        False,            # bool False — the OTHER bool, round 1 only tested True
+        5.7,              # non-integral float
+        0.5,              # non-integral fractional float
+        float("inf"),     # +inf — is_integer() → False → lenient
+        float("nan"),     # nan — is_integer() → False → lenient
+        [],               # list
+        [5],              # non-empty list
+        {},               # empty dict
+        {"n": 5},         # dict
     ],
     ids=[
         "zero",
         "negative",
         "string_alpha",
         "string_numeric",
+        "string_text",
         "bool_true",
         "bool_false",
         "float_non_integral",
         "float_fractional",
+        "float_inf",
+        "float_nan",
         "list_empty",
         "list_nonempty",
         "dict_empty",
