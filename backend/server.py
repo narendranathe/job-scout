@@ -712,6 +712,14 @@ def index():
 # ─── CORS preflight ───────────────────────────────────────────────
 @app.after_request
 def add_cors(response):
+    # Skip vault + admin routes — their blueprints own their own CORS
+    # (issue #34: vault endpoints honor ALLOWED_ORIGINS env allowlist
+    # instead of returning a blanket "*"). Flask runs blueprint
+    # after_request hooks before app-level hooks, so without this guard
+    # the blueprint's restricted Allow-Origin gets clobbered by "*" here.
+    path = request.path or ""
+    if path.startswith("/api/vault/") or path.startswith("/api/admin/"):
+        return response
     response.headers["Access-Control-Allow-Origin"]  = "*"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"

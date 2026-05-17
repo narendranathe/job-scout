@@ -215,6 +215,25 @@ def parse_resume_filename(filename: str) -> dict:
     }
 
 
+# Whitelist regex for filename-safe characters (issue #35). Anything outside
+# this set is stripped *after* the standard space->underscore mapping is
+# applied. Matches admin_routes / canonical naming convention: ASCII letters,
+# digits, underscore, hyphen. Dots are deliberately excluded so attackers
+# can't smuggle in ".." segments via a sanitized-looking input.
+_FILENAME_SAFE_RE = re.compile(r"[^A-Za-z0-9_\-]")
+
+
+def _sanitize_path_component(raw: str) -> str:
+    """Strip everything outside [A-Za-z0-9_-] after collapsing whitespace
+    to underscores. Returns "" if nothing safe remains."""
+    if not raw:
+        return ""
+    # Collapse whitespace runs to a single underscore before stripping so
+    # "Goldman   Sachs" doesn't become "GoldmanSachs".
+    collapsed = re.sub(r"\s+", "_", raw.strip())
+    return _FILENAME_SAFE_RE.sub("", collapsed)
+
+
 def canonical_filename(company: str, role: str = None, ext: str = ".pdf") -> str:
     """
     Generate filename following YOUR convention.
@@ -223,14 +242,37 @@ def canonical_filename(company: str, role: str = None, ext: str = ".pdf") -> str
     'Narendranath_Goldman_Sachs_DE.pdf'
     >>> canonical_filename("Meta")
     'Narendranath_Meta.pdf'
+
+    Security (issue #35): both ``company`` and ``role`` are sanitized down
+    to ``[A-Za-z0-9_-]``. Inputs that resolve to an empty string after
+    sanitization (e.g. ``"../../"``) raise ``ValueError`` so we never
+    silently write to ``Narendranath_.pdf`` or worse, somewhere off-vault.
     """
+    safe_company = _sanitize_path_component(company)
+    if not safe_company:
+        raise ValueError(
+            f"company sanitizes to empty string (input: {company!r}); "
+            f"only [A-Za-z0-9_-] characters are allowed"
+        )
+
     # Reverse role alias for short suffix
     role_short = None
     if role:
+        # Look up the alias *before* sanitizing — "Data Engineer" should
+        # still map to "DE" rather than being mangled to "Data_Engineer".
         rev_aliases = {v.lower(): k.upper() for k, v in ROLE_ALIASES.items()}
-        role_short = rev_aliases.get(role.lower(), role.replace(" ", "_"))
+        alias = rev_aliases.get(role.lower())
+        if alias:
+            role_short = _sanitize_path_component(alias)
+        else:
+            role_short = _sanitize_path_component(role.replace(" ", "_"))
+        if not role_short:
+            raise ValueError(
+                f"role sanitizes to empty string (input: {role!r}); "
+                f"only [A-Za-z0-9_-] characters are allowed"
+            )
 
-    parts = ["Narendranath", company.replace(" ", "_")]
+    parts = ["Narendranath", safe_company]
     if role_short:
         parts.append(role_short)
 
@@ -290,6 +332,11 @@ def extract_text_from_docx(docx_path: str) -> str:
 #  VAULT OPERATIONS — Save, List, Import
 # ═══════════════════════════════════════════════════════════════════
 
+# Issue #36: 10 MB hard cap on stored PDFs. Mirrors MAX_PDF_BYTES in
+# routes/vault_routes.py so direct callers (CLI, tests) get the same limit.
+MAX_PDF_BYTES = 10_000_000
+
+
 def save_pdf_to_vault(
     pdf_bytes: bytes,
     company: str,
@@ -315,12 +362,41 @@ def save_pdf_to_vault(
             "skills": [...],
             "char_count": 4521,
         }
+
+    Raises:
+        ValueError: ``pdf_bytes`` exceeds ``MAX_PDF_BYTES``, lacks the
+            ``%PDF-`` magic header, the company/role inputs sanitize to
+            empty, or the resolved write path escapes ``VAULT_DIR``.
     """
+    # Issue #36: cheap size + magic-byte checks first, before we touch the
+    # filesystem at all. Order is intentional — size check before magic so
+    # a 1 GB junk payload can't burn cycles on the .startswith() scan.
+    if len(pdf_bytes) > MAX_PDF_BYTES:
+        raise ValueError(
+            f"PDF too large: {len(pdf_bytes)} bytes (max {MAX_PDF_BYTES})"
+        )
+    if not pdf_bytes.startswith(b"%PDF-"):
+        raise ValueError("not a PDF (missing %PDF- magic bytes)")
+
     _ensure_vault()
 
-    # Generate canonical filename
+    # Generate canonical filename (sanitizes company/role internally —
+    # raises ValueError if either resolves to an empty string).
     fname = canonical_filename(company, role, ".pdf")
     vault_path = os.path.join(VAULT_DIR, "pdf", fname)
+
+    # Issue #35: realpath assertion. Even if canonical_filename were buggy
+    # and let a "../" slip through, os.path.realpath of the destination
+    # must stay strictly under the realpath of the vault directory. We
+    # compare with a trailing separator so /tmp/vault_evil isn't accepted
+    # as a sub-path of /tmp/vault.
+    vault_pdf_dir = os.path.realpath(os.path.join(VAULT_DIR, "pdf"))
+    resolved = os.path.realpath(vault_path)
+    if not (resolved == vault_pdf_dir or
+            resolved.startswith(vault_pdf_dir + os.sep)):
+        raise ValueError(
+            f"refusing to write outside vault: {resolved!r} not under {vault_pdf_dir!r}"
+        )
 
     # Write PDF
     with open(vault_path, "wb") as f:
