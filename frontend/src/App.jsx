@@ -1,5 +1,9 @@
 import { useState, useMemo, useEffect, useCallback, useRef, memo } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, AreaChart, Area } from "recharts";
+// API + auth helpers extracted to lib/api.js (1/N of the App.jsx split).
+// Same constants, same behavior — only the location changes. Existing
+// `${RENDER_API}/...` template strings work unchanged.
+import { DEFAULT_RENDER_URL, STATIC_URL, RENDER_API, apiToken, authHeaders } from "./lib/api.js";
 
 /* ═══ Theme ═══════════════════════════════════════════════════════════ */
 const TH = {
@@ -324,14 +328,7 @@ function searchRank(job, ql) {
  * The value is read once at module load; the Save action calls location.reload()
  * so every existing `${RENDER_API}/...` template string keeps working.
  */
-const DEFAULT_RENDER_URL = "https://jobscout-api-lasz.onrender.com";
-const _readApiUrl = () => {
-  if (typeof window === "undefined") return "";
-  try { return (window.localStorage.getItem("jobscout_api_url") || "").trim(); }
-  catch { return ""; }
-};
-const RENDER_API = (_readApiUrl() || import.meta.env.VITE_RENDER_URL || "").replace(/\/+$/, "");
-const STATIC_URL = "./api-data.json";
+// DEFAULT_RENDER_URL / RENDER_API / STATIC_URL imported from lib/api.js (above).
 
 /* ───── Vault auth helpers ───────────────────────────────────────────
  * When the backend has API_SECRET set, every /api/vault/* call must
@@ -344,15 +341,7 @@ const STATIC_URL = "./api-data.json";
  *                 token exists, so calls in dev (no API_SECRET) work
  *                 unchanged.
  */
-const apiToken = () => {
-  if (typeof window === "undefined") return "";
-  try { return window.localStorage.getItem("vault_token") || ""; }
-  catch { return ""; }
-};
-const authHeaders = () => {
-  const t = apiToken();
-  return t ? { Authorization: `Bearer ${t}` } : {};
-};
+// apiToken / authHeaders imported from lib/api.js (top of file).
 
 /* ───── First-run setup panel ────────────────────────────────────────────
  * When RENDER_API is "" (fresh browser, no env var, nothing in
