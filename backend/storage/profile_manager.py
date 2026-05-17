@@ -307,13 +307,37 @@ def _coerce_bool(val) -> bool:
 
 
 def verify_pin(pin: str, db_path: str = DB_PATH) -> bool:
-    """Verify PIN. Returns True if no PIN is set (open access)."""
+    """Verify PIN. Returns True if no PIN is set (open access).
+
+    NOTE: callers that mint session cookies (``/api/login``) MUST gate
+    on ``has_pin()`` BEFORE calling this — the "True on no PIN" branch
+    is intentional for the legacy ``/api/verify-pin`` open-access
+    semantics, but it would let an unauthenticated caller mint a
+    30-day write-scoped session if blindly trusted in login flows.
+    """
     conn = get_conn(db_path)
     row = conn.execute("SELECT pin_hash FROM user_profile WHERE id = 1").fetchone()
     conn.close()
     if not row or not row["pin_hash"]:
         return True  # No PIN set — open access
     return _hash_pin(pin) == row["pin_hash"]
+
+
+def has_pin(db_path: str = DB_PATH) -> bool:
+    """Return True iff a non-empty PIN hash is stored on this server.
+
+    Distinct from ``verify_pin`` — this is the predicate session-issuing
+    code paths use to decide whether a PIN check is even meaningful. On
+    a fresh install with no PIN, ``verify_pin`` returns True for any
+    input; ``has_pin`` returns False, which is what login code needs to
+    refuse to mint a cookie until the owner sets a PIN via the wizard.
+    """
+    conn = get_conn(db_path)
+    row = conn.execute("SELECT pin_hash FROM user_profile WHERE id = 1").fetchone()
+    conn.close()
+    if not row:
+        return False
+    return bool(row["pin_hash"])
 
 
 def set_pin(pin: str, db_path: str = DB_PATH):
