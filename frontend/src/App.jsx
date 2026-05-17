@@ -324,7 +324,7 @@ function searchRank(job, ql) {
  * The value is read once at module load; the Save action calls location.reload()
  * so every existing `${RENDER_API}/...` template string keeps working.
  */
-const DEFAULT_RENDER_URL = "https://jobscout-api.onrender.com";
+const DEFAULT_RENDER_URL = "https://jobscout-api-lasz.onrender.com";
 const _readApiUrl = () => {
   if (typeof window === "undefined") return "";
   try { return (window.localStorage.getItem("jobscout_api_url") || "").trim(); }
