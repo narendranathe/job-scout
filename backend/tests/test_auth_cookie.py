@@ -48,6 +48,12 @@ def client(tmp_path, monkeypatch):
     server.DB_PATH = db_path
     server.app.config["TESTING"] = True
 
+    # Drop the in-memory setup-epoch cache so a stale value from a
+    # previous test (which used a different DB_PATH) doesn't reject
+    # setup cookies issued under this fixture's fresh DB.
+    from routes._auth import reset_setup_epoch_cache
+    reset_setup_epoch_cache()
+
     with server.app.test_client() as c:
         yield c
 
@@ -90,10 +96,128 @@ def test_login_with_empty_pin_returns_401(client_with_pin):
 
 
 def test_login_when_no_pin_set_succeeds(client):
-    """Fresh install: no PIN means login is a no-op that still mints a session."""
+    """Fresh install: no PIN means login still mints a session — but a
+    scope-limited one. The wizard needs the cookie to walk through Steps
+    1-5; we just refuse to give it full-app powers until /api/set-pin
+    has run.
+    """
     resp = client.post("/api/login", json={"pin": ""})
     assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["status"] == "ok"
+    assert body["scope"] == "setup", (
+        "fresh-install login must return a setup-scope cookie, not a "
+        "full-power one (CVE-style privilege-escalation regression)"
+    )
     assert "jobscout_session=" in resp.headers.get("Set-Cookie", "")
+
+
+# ─── Regression: no-PIN privilege escalation ──────────────────────────────
+
+def test_no_pin_login_cookie_cannot_touch_vault_writes(client):
+    """REGRESSION: pre-fix, /api/login with no PIN minted a full 30-day
+    session that could call every gated endpoint. Now the setup-scope
+    cookie should be rejected with ``setup_scope_insufficient`` on
+    routes outside the narrow wizard allowlist.
+
+    Allowlist routes (/api/profile POST, /api/set-pin, /api/vault/upload,
+    /api/vault/parse-filename, /api/vault/list, /api/vault/stats) are
+    covered by their own positive-path tests below. We pick
+    ``/api/vault/import`` and ``/api/vault/best-match`` as the
+    out-of-scope probes — both are real attack surface (bulk import
+    overwrites the vault; best-match exfiltrates whatever resumes the
+    server has) and both flow through the unified ``require_auth`` hook.
+    """
+    # Get the no-PIN setup cookie.
+    resp = client.post("/api/login", json={"pin": ""})
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["scope"] == "setup"
+    csrf = body["csrf_token"]
+
+    # /api/vault/import — bulk import is not on the setup allowlist.
+    resp = client.post(
+        "/api/vault/import",
+        json={"directory": "/etc"},
+        headers={"X-CSRF-Token": csrf, "Content-Type": "application/json"},
+    )
+    assert resp.status_code == 403, (
+        f"setup-scope cookie reached /api/vault/import (got "
+        f"{resp.status_code}); the privilege-escalation vuln is back"
+    )
+    assert resp.get_json().get("error") == "setup_scope_insufficient"
+
+    # /api/vault/best-match — exfiltration probe; also not allowlisted.
+    resp = client.post(
+        "/api/vault/best-match",
+        json={"job_description": "x" * 100},
+        headers={"X-CSRF-Token": csrf, "Content-Type": "application/json"},
+    )
+    assert resp.status_code == 403
+    assert resp.get_json().get("error") == "setup_scope_insufficient"
+
+
+def test_setup_cookie_invalidated_after_set_pin(client):
+    """Once a PIN is set, every outstanding setup cookie must stop
+    working. The legitimate user (or an attacker, in the race scenario)
+    has to call /api/login again with the new PIN to get back in.
+    """
+    # 1. Mint a setup cookie pre-PIN.
+    resp = client.post("/api/login", json={"pin": ""})
+    assert resp.status_code == 200
+    csrf = resp.get_json()["csrf_token"]
+
+    # 2. Use the cookie to set a PIN (this is the legitimate flow).
+    resp = client.post(
+        "/api/set-pin",
+        json={"pin": "9999"},
+        headers={"X-CSRF-Token": csrf, "Content-Type": "application/json"},
+    )
+    assert resp.status_code == 200
+
+    # 3. Same cookie should now be rejected on the very next request,
+    # even on an allowlisted path — the epoch advanced past iat.
+    resp = client.get("/api/vault/list")
+    assert resp.status_code == 401, (
+        "setup cookie survived /api/set-pin; epoch invalidation is broken"
+    )
+
+    # 4. Logging in with the new PIN issues a full-scope cookie.
+    resp = client.post("/api/login", json={"pin": "9999"})
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["scope"] == "full"
+
+
+def test_setup_cookie_allows_pin_set_and_profile_update(client):
+    """Positive path: the wizard's actual happy-path calls must succeed
+    on the setup cookie. /api/profile POST and /api/set-pin are the two
+    that are strictly required to get out of setup mode.
+    """
+    resp = client.post("/api/login", json={"pin": ""})
+    csrf = resp.get_json()["csrf_token"]
+
+    # /api/profile POST — wizard Steps 2/3/4 persist roles, companies, etc.
+    resp = client.post(
+        "/api/profile",
+        json={"dream_companies": ["Anthropic", "OpenAI"]},
+        headers={"X-CSRF-Token": csrf, "Content-Type": "application/json"},
+    )
+    assert resp.status_code == 200, (
+        f"setup-scope cookie should allow /api/profile POST (got "
+        f"{resp.status_code} {resp.get_data(as_text=True)[:200]})"
+    )
+
+    # /api/set-pin — wizard Step 6 ends setup phase.
+    resp = client.post(
+        "/api/set-pin",
+        json={"pin": "1234"},
+        headers={"X-CSRF-Token": csrf, "Content-Type": "application/json"},
+    )
+    assert resp.status_code == 200, (
+        f"setup-scope cookie should allow /api/set-pin (got "
+        f"{resp.status_code} {resp.get_data(as_text=True)[:200]})"
+    )
 
 
 def test_logout_clears_cookie(client_with_pin):

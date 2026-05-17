@@ -306,8 +306,32 @@ def _coerce_bool(val) -> bool:
     return bool(val)
 
 
+def has_pin_set(db_path: str = DB_PATH) -> bool:
+    """Return True iff a PIN hash is persisted for user 1.
+
+    Callers that need to branch on "PIN exists?" should use this rather
+    than ``verify_pin('') == True``, because verify_pin's open-access
+    semantics on a missing hash were the root cause of the no-PIN
+    privilege-escalation vuln. ``has_pin_set`` answers a pure existence
+    question with no side-channel surprises.
+    """
+    conn = get_conn(db_path)
+    row = conn.execute("SELECT pin_hash FROM user_profile WHERE id = 1").fetchone()
+    conn.close()
+    return bool(row and row["pin_hash"])
+
+
 def verify_pin(pin: str, db_path: str = DB_PATH) -> bool:
-    """Verify PIN. Returns True if no PIN is set (open access)."""
+    """Verify PIN. Returns True if no PIN is set (open access).
+
+    NOTE — the "open access" return when no PIN is set is *legacy*
+    behaviour preserved for the deprecated ``/api/verify-pin`` endpoint
+    and assorted internal callers that historically used a missing PIN
+    as "single-user dev install, let me through". Authentication paths
+    that mint sessions MUST gate on ``has_pin_set`` first instead of
+    treating ``verify_pin('') == True`` as "any PIN works". See
+    ``api_login`` for the correct pattern.
+    """
     conn = get_conn(db_path)
     row = conn.execute("SELECT pin_hash FROM user_profile WHERE id = 1").fetchone()
     conn.close()

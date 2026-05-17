@@ -24,6 +24,9 @@ from flask import Blueprint, jsonify, request
 from core import config as _config
 from core.config import check_api_secret
 from routes._auth import (
+    SCOPE_FULL,
+    SCOPE_SETUP,
+    invalidate_setup_cookies,
     issue_session,
     require_auth,
     set_session_cookie_headers,
@@ -131,7 +134,15 @@ def api_verify_pin():
 
 @profile_bp.route("/api/set-pin", methods=["POST", "OPTIONS"])
 def api_set_pin():
-    """Set or change the dashboard PIN. Bearer- or cookie-authed."""
+    """Set or change the dashboard PIN. Bearer- or cookie-authed.
+
+    Side-effect: invalidates any outstanding ``setup``-scope cookies (see
+    routes._auth). This is what closes the no-PIN privilege-escalation
+    vulnerability — even if an attacker raced the user to mint a setup
+    cookie, the first /api/set-pin call (legitimate or not) burns it.
+    The caller then has to re-authenticate via /api/login with the new
+    PIN to get a full-scope session.
+    """
     if request.method == "OPTIONS":
         return "", 204
     deny = require_auth(request)
@@ -145,6 +156,7 @@ def api_set_pin():
         if len(pin) < 4:
             return jsonify({"error": "PIN must be at least 4 characters"}), 400
         set_pin(pin, _config.DB_PATH)
+        invalidate_setup_cookies()
         return jsonify({"status": "pin_set"}), 200, {"Access-Control-Allow-Origin": "*"}
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -154,24 +166,56 @@ def api_set_pin():
 def api_login():
     """Trade a valid PIN for a signed session cookie + CSRF token.
 
-    When no PIN is set on this server, login is a no-op — the response
-    still mints a session so the wizard's "create your account" flow
-    works without an awkward two-step. When a PIN is set, the request
-    must include ``{"pin": "..."}`` and it must verify.
+    Three branches, in order:
 
-    Response body:
+    1. **No PIN set on this server** (fresh install): mint a short-lived
+       ``setup``-scope cookie. The wizard can use it to call /api/profile,
+       /api/resume, /api/vault/upload, and /api/set-pin — but nothing
+       else. Closes the historical privilege-escalation vulnerability
+       where a fresh Render instance would hand any caller a 30-day
+       full-power session in exchange for an empty PIN.
+    2. **PIN set and request verifies**: mint a full 30-day session.
+       Side-effects: ``invalidate_setup_cookies`` is called so any
+       outstanding pre-PIN setup cookies (e.g. from an attacker who
+       lost the race) become immediately useless.
+    3. **PIN set and request does not verify**: 401.
 
-        {"status": "ok", "csrf_token": "..."}
+    Response body in either success branch:
 
-    The CSRF token MUST be sent with every state-changing request as
+        {"status": "ok", "csrf_token": "...", "scope": "full"|"setup"}
+
+    The ``scope`` field lets the dashboard show "Setup mode — set a PIN
+    to unlock the full app" banner during onboarding. The CSRF token
+    MUST be sent with every state-changing request as
     ``X-CSRF-Token: <token>``. It rotates on every login.
     """
     if request.method == "OPTIONS":
         return "", 204
     try:
-        from storage.profile_manager import init_profile_tables, verify_pin
+        from storage.profile_manager import (
+            init_profile_tables,
+            has_pin_set,
+            verify_pin,
+        )
         init_profile_tables(_config.DB_PATH)
         pin = (request.get_json(silent=True) or {}).get("pin", "")
+
+        if not has_pin_set(_config.DB_PATH):
+            # No PIN on disk → pre-PIN onboarding flow. Mint a setup-
+            # scope cookie regardless of what the caller sent for
+            # ``pin`` — there's nothing to verify. The scope itself is
+            # what limits damage.
+            cookie_value, csrf = issue_session(scope=SCOPE_SETUP)
+            headers = {
+                "Access-Control-Allow-Origin": "*",
+                **set_session_cookie_headers(cookie_value),
+            }
+            return jsonify({
+                "status": "ok",
+                "csrf_token": csrf,
+                "scope": SCOPE_SETUP,
+            }), 200, headers
+
         if not verify_pin(pin, _config.DB_PATH):
             # Constant-ish delay path: verify_pin already does the pbkdf2
             # work for both correct and incorrect PINs, so this 401 has
@@ -179,12 +223,19 @@ def api_login():
             return jsonify({"error": "invalid_pin"}), 401, {
                 "Access-Control-Allow-Origin": "*"
             }
-        cookie_value, csrf = issue_session()
+        # Successful PIN auth — burn any lingering setup cookies and
+        # mint a full session.
+        invalidate_setup_cookies()
+        cookie_value, csrf = issue_session(scope=SCOPE_FULL)
         headers = {
             "Access-Control-Allow-Origin": "*",
             **set_session_cookie_headers(cookie_value),
         }
-        return jsonify({"status": "ok", "csrf_token": csrf}), 200, headers
+        return jsonify({
+            "status": "ok",
+            "csrf_token": csrf,
+            "scope": SCOPE_FULL,
+        }), 200, headers
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
