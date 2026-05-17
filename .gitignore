@@ -80,3 +80,7 @@ resume-projects.md
 resume_narendranath.tex
 backend/resume_vault/
 .claude-memory.md
+# Claude Code agent worktree scratch space — created by the Agent tool's
+# `isolation: "worktree"` mode. Each agent gets a temporary worktree here;
+# none of it should ever be committed.
+.claude/worktrees/
