@@ -29,6 +29,28 @@ vault_bp = Blueprint("vault", __name__)
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "..", "jobscout.db"))
 
+_TOP_N_CAP = 50
+
+
+def _parse_top_n(raw):
+    """Return validated top_n int (1..cap), or None for "use default = all".
+
+    Lenient on garbage types (bool, non-integral float, str, list, dict, <=0):
+    callers get all rankings. Strict on overflow: ``raw > _TOP_N_CAP`` raises
+    ``ValueError`` so the route can return 400.
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, float):
+        if not raw.is_integer():
+            return None
+        raw = int(raw)
+    if not isinstance(raw, int) or raw <= 0:
+        return None
+    if raw > _TOP_N_CAP:
+        raise ValueError(raw)
+    return raw
+
 
 @vault_bp.route("/api/vault/upload", methods=["POST", "OPTIONS"])
 def vault_upload():
@@ -170,7 +192,16 @@ def vault_best_match():
     Rank all resume versions against a job description. Best fit first.
 
     JSON body:
-        {"job_description": "We are looking for a Senior Data Engineer..."}
+        {
+            "job_description": "We are looking for a Senior Data Engineer...",
+            "top_n": 5    // optional, positive int <= 50; slices the rankings
+        }
+
+    Response:
+        {"count": <total resumes scanned>, "rankings": [... up to top_n entries ...]}
+
+    `count` always reflects the total number of resumes scanned (not the
+    sliced length), so callers can tell whether more results exist.
     """
     if request.method == "OPTIONS":
         return "", 200
@@ -182,8 +213,17 @@ def vault_best_match():
     if not jd:
         return jsonify({"error": "job_description required"}), 400
 
+    raw_top_n = data.get("top_n")
+    try:
+        top_n = _parse_top_n(raw_top_n)
+    except ValueError:
+        return jsonify({
+            "error": f"top_n must be <= {_TOP_N_CAP} (got {raw_top_n})"
+        }), 400
+
     results = find_best_resume_for_job(jd, db_path=DB_PATH)
-    return jsonify({"count": len(results), "rankings": results}), 200
+    rankings = results[:top_n] if top_n is not None else results
+    return jsonify({"count": len(results), "rankings": rankings}), 200
 
 
 @vault_bp.route("/api/vault/stats", methods=["GET"])

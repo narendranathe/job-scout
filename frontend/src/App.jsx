@@ -546,12 +546,12 @@ export default function App() {
       const r = await fetch(`${RENDER_API}/api/vault/best-match`, {
         method:"POST",
         headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({job_description: jd}),
+        body: JSON.stringify({job_description: jd, top_n: 5}),
         signal: AbortSignal.timeout(15000),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
-      const rankings = Array.isArray(d.rankings) ? d.rankings.slice(0, 5) : [];
+      const rankings = Array.isArray(d.rankings) ? d.rankings : [];
       setBestMatchByJob(prev => ({...prev, [key]: {loading:false, error:null, data:{count:d.count||0, rankings}}}));
     } catch (e) {
       const msg = (e?.name === "TimeoutError" || /timed out/i.test(e?.message||""))
