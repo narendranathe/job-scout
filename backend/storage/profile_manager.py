@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 from datetime import datetime, timezone
 
 log = logging.getLogger(__name__)
@@ -102,7 +103,15 @@ def get_conn(db_path: str = DB_PATH):
 
 
 def init_profile_tables(db_path: str = DB_PATH):
-    """Create user_profile table if it doesn't exist."""
+    """Create user_profile table if it doesn't exist.
+
+    Idempotent migration: also adds the ``default_resume_version`` column to
+    rows from older DBs that pre-date the job-fit chip feature (Issue #39).
+    CREATE TABLE handles fresh installs; ALTER TABLE handles in-place
+    upgrades. The ALTER is wrapped in try/except because SQLite has no
+    IF NOT EXISTS for ADD COLUMN — the second app boot will raise
+    OperationalError, which we swallow.
+    """
     conn = get_conn(db_path)
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS user_profile (
@@ -114,12 +123,29 @@ def init_profile_tables(db_path: str = DB_PATH):
             preferred_locations TEXT DEFAULT '[]',
             dream_companies TEXT DEFAULT '[]',
             dream_role_keywords TEXT DEFAULT '[]',
+            default_resume_version TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         INSERT OR IGNORE INTO user_profile (id, created_at, updated_at)
         VALUES (1, datetime('now'), datetime('now'));
     """)
+    # In-place migration for existing DBs that pre-date this column. Rows get
+    # NULL, which the GET endpoint surfaces as ``null`` so the dashboard
+    # knows "no default → no chip".
+    #
+    # Narrow except: SQLite only signals "column already exists" via
+    # OperationalError with a specific message. Anything else (locked DB,
+    # permission denied, disk full) should bubble — silently swallowing
+    # those would mask real failures behind a "tables ready" log line.
+    try:
+        conn.execute(
+            "ALTER TABLE user_profile ADD COLUMN default_resume_version TEXT"
+        )
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        if "duplicate column" not in str(e).lower():
+            raise
     conn.commit()
     conn.close()
     log.info("Profile tables ready")
@@ -146,25 +172,67 @@ def get_profile(db_path: str = DB_PATH) -> dict:
     return p
 
 
+class ProfileValidationError(ValueError):
+    """Raised when an update_profile() input fails validation.
+
+    Carrying a distinct exception type lets the Flask layer surface a 400
+    (client error) for these — generic Exceptions still bubble to a 500.
+    """
+
+
 def update_profile(updates: dict, db_path: str = DB_PATH):
-    """Update allowed profile fields."""
+    """Update allowed profile fields.
+
+    ``default_resume_version`` is validated against the resume_versions
+    table before persisting — pointing the default at a non-existent key
+    would mean the dashboard fires job-fit calls that 404 forever.
+    Passing ``None`` or empty string clears the default (no chip on cards).
+    """
     ALLOWED = [
         "custom_skills", "preferred_locations",
         "dream_companies", "dream_role_keywords",
+        "default_resume_version",
     ]
     conn = get_conn(db_path)
     now = datetime.now(timezone.utc).isoformat()
     sets, values = [], []
     for key in ALLOWED:
-        if key in updates:
+        if key not in updates:
+            continue
+        val = updates[key]
+        if key == "default_resume_version":
+            # Treat empty string / explicit None as "clear the default".
+            # Anything else must point to an existing resume_versions row.
+            if val in (None, "", False):
+                values.append(None)
+            else:
+                if not isinstance(val, str):
+                    conn.close()
+                    raise ProfileValidationError(
+                        f"default_resume_version must be a string, got "
+                        f"{type(val).__name__}"
+                    )
+                exists = conn.execute(
+                    "SELECT 1 FROM resume_versions WHERE version_key = ?",
+                    (val,),
+                ).fetchone()
+                if not exists:
+                    conn.close()
+                    raise ProfileValidationError(
+                        f"resume version '{val}' not found"
+                    )
+                values.append(val)
             sets.append(f"{key} = ?")
-            val = updates[key]
+        else:
+            sets.append(f"{key} = ?")
             values.append(json.dumps(val) if isinstance(val, list) else val)
     if sets:
         sets.append("updated_at = ?")
         values.append(now)
         values.append(1)
-        conn.execute(f"UPDATE user_profile SET {', '.join(sets)} WHERE id = ?", values)
+        conn.execute(
+            f"UPDATE user_profile SET {', '.join(sets)} WHERE id = ?", values
+        )
         conn.commit()
     conn.close()
 

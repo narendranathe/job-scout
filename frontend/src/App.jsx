@@ -575,6 +575,21 @@ function stopProp(e) { e.stopPropagation(); }
 const EMPTY_OBJ = Object.freeze({});
 const EMPTY_ARR = Object.freeze([]);
 
+// Default-resume job-fit chip color scale (Issue #39 part A). ≥75% green,
+// 50–75% yellow, <50% red. Returns plain hex strings derived from `pct` +
+// the active theme so React.memo doesn't have to track new object
+// identities each render.
+//
+// R2: also returns a `label` ("Strong"/"Moderate"/"Weak") and `icon`
+// (colored circle emoji) so the chip carries non-color signals — WCAG
+// 1.4.1 (use of color) requires that meaning isn't conveyed by color
+// alone. Screen readers and color-blind users see the same information.
+function _jobFitTone(pct, t) {
+  if (pct >= 75) return { fg: t.ok, bg: `${t.ok}18`, bd: `${t.ok}40`, label: "Strong",   icon: "🟢" };
+  if (pct >= 50) return { fg: t.wm, bg: `${t.wm}18`, bd: `${t.wm}40`, label: "Moderate", icon: "🟡" };
+  return            { fg: t.er, bg: `${t.er}18`, bd: `${t.er}40`, label: "Weak",     icon: "🔴" };
+}
+
 function _JobCard({
   j,
   t,
@@ -582,6 +597,7 @@ function _JobCard({
   app,
   coHistory,
   bm,
+  jobFit,
   vdMap,
   expandedRows,
   pdfState,
@@ -604,6 +620,54 @@ function _JobCard({
     boxShadow:open?t.sh:t.shS,opacity:isApplied?0.45:1,
   };
   const handleCardClick = () => onToggleOpen(j.external_id);
+
+  // Job-fit chip: only rendered when a default resume is configured AND a
+  // score has been (or is being) fetched for THIS card. Three visual
+  // states, each visually distinct:
+  //  - loading:  "📄 …" on muted background
+  //  - error:    "⚠️ —" on warning-tinted background (separate from loading
+  //              so a stuck request doesn't look like an in-flight one)
+  //  - scored:   color + emoji + percent + (tone) label
+  //
+  // WCAG 1.4.1: the chip is NEVER color-only. The score variant carries a
+  // green/yellow/red emoji icon (visible to users who can't perceive the
+  // background color) AND an aria-label spelling out the tone ("Strong",
+  // "Moderate", "Weak") for screen readers.
+  const fitChip = (() => {
+    if (!jobFit) return null;
+    if (jobFit.loading) {
+      return (
+        <span title="Loading resume match…"
+          aria-label="Resume match: loading"
+          role="status"
+          style={{padding:"3px 7px",borderRadius:6,background:`${t.txM}15`,border:`1px solid ${t.txM}30`,
+            fontSize:11,fontWeight:700,color:t.txM,whiteSpace:"nowrap"}}>
+          📄 …
+        </span>
+      );
+    }
+    if (jobFit.error || jobFit.pct == null) {
+      return (
+        <span title={jobFit.error || "No match score"}
+          aria-label={`Resume match: error${jobFit.error ? ` — ${jobFit.error}` : ""}`}
+          style={{padding:"3px 7px",borderRadius:6,background:`${t.wm}15`,border:`1px solid ${t.wm}40`,
+            fontSize:11,fontWeight:700,color:t.wm,whiteSpace:"nowrap"}}>
+          ⚠️ —
+        </span>
+      );
+    }
+    const pct = jobFit.pct;
+    const tone = _jobFitTone(pct, t);
+    return (
+      <span
+        title={`Resume match against default version${jobFit.versionKey ? ` (${jobFit.versionKey})` : ""}: ${pct}% (${tone.label})`}
+        aria-label={`Resume match: ${pct} percent — ${tone.label}`}
+        style={{padding:"3px 8px",borderRadius:6,background:tone.bg,border:`1px solid ${tone.bd}`,
+          fontSize:11,fontWeight:800,color:tone.fg,whiteSpace:"nowrap",letterSpacing:".02em"}}>
+        {tone.icon} {pct}%
+      </span>
+    );
+  })();
 
   return (
     <div onClick={handleCardClick} style={cardStyle}>
@@ -631,6 +695,7 @@ function _JobCard({
           </div>
         </div>
         <div style={JC_STYLES.scoreCluster}>
+          {fitChip}
           <div style={{width:52,height:52,borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",background:t.sBg(sc)}}>
             <span style={{fontSize:20,fontWeight:800,color:t.sTx(sc),fontFamily:"'Playfair Display',serif"}}>{(sc*100).toFixed(0)}</span>
           </div>
@@ -836,7 +901,7 @@ const JobCard = memo(_JobCard);
    Same idea as JobCard: extracted from filteredFiles.map so toggling
    one row's open state doesn't re-render every other row.
    ═══════════════════════════════════════════════════════════════════ */
-function _VaultRow({ f, t, isOpen, det, onToggle, onDelete }) {
+function _VaultRow({ f, t, isOpen, isDefault, det, onToggle, onDelete, onSetDefault }) {
   // Styles are computed INSIDE the row so the parent doesn't have to pass
   // them as props. Previously the App() body declared these as inline
   // literals inside an IIFE on every render — fresh object identities
@@ -846,16 +911,27 @@ function _VaultRow({ f, t, isOpen, det, onToggle, onDelete }) {
   const labelStyle = {fontSize:12,color:t.txM,fontWeight:600,textTransform:"uppercase",letterSpacing:".06em",marginBottom:6,display:"block"};
   const btnSecondary = {padding:"7px 14px",borderRadius:8,border:`1px solid ${t.bd}`,background:"transparent",color:t.txS,fontSize:13,fontWeight:500,cursor:"pointer",fontFamily:"inherit"};
   const btnDanger = {padding:"7px 14px",borderRadius:8,border:`1px solid ${t.er}40`,background:`${t.er}10`,color:t.er,fontSize:13,fontWeight:500,cursor:"pointer",fontFamily:"inherit"};
+  // Set-as-default: outlined → click → ★ Default pill once selected. The
+  // active variant is intentionally disabled — clicking it again would be
+  // a no-op POST.
+  const btnDefault = {padding:"7px 12px",borderRadius:8,border:`1px solid ${t.ac}50`,background:`${t.ac}10`,color:t.ac,fontSize:13,fontWeight:600,cursor:"pointer",fontFamily:"inherit"};
+  const btnDefaultActive = {padding:"7px 12px",borderRadius:8,border:`1px solid ${t.ac}`,background:t.ac,color:"#fff",fontSize:13,fontWeight:700,cursor:"default",fontFamily:"inherit"};
 
   const sizeLabel = typeof f.size_kb === "number"
     ? (f.size_kb >= 1024 ? `${(f.size_kb/1024).toFixed(1)} MB` : `${f.size_kb} KB`)
     : null;
   return (
-    <div style={{background:t.bgS,borderRadius:10,border:`1px solid ${t.bd}`,overflow:"hidden"}}>
+    <div style={{background:isDefault?`${t.ac}08`:t.bgS,borderRadius:10,border:`1px solid ${isDefault?t.ac:t.bd}`,overflow:"hidden"}}>
       <div style={{padding:"12px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}} className="vault-row">
         <div style={{flex:1,minWidth:200}}>
-          <div style={{fontSize:14,fontWeight:700,color:t.tx}}>
+          <div style={{fontSize:14,fontWeight:700,color:t.tx,display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
             {f.company || "—"}{f.role ? ` · ${f.role}` : ""}
+            {isDefault && (
+              <span title="This resume drives the Resume Match % chip on job cards"
+                style={{fontSize:10,padding:"2px 7px",borderRadius:5,background:t.ac,color:"#fff",fontWeight:800,letterSpacing:".05em",textTransform:"uppercase"}}>
+                ★ Default
+              </span>
+            )}
           </div>
           <div style={{fontSize:12,color:t.txM,marginTop:3,wordBreak:"break-word"}}>
             <span style={{fontFamily:"monospace",color:t.ac}}>{f.version_key}</span>
@@ -864,6 +940,19 @@ function _VaultRow({ f, t, isOpen, det, onToggle, onDelete }) {
           </div>
         </div>
         <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          {isDefault ? (
+            <button type="button" style={btnDefaultActive}
+              aria-label={`${f.version_key} is the current default resume`}
+              disabled>
+              ★ Default
+            </button>
+          ) : (
+            <button type="button" style={btnDefault}
+              aria-label={`Set ${f.version_key} as the default resume`}
+              onClick={() => onSetDefault && onSetDefault(f.version_key)}>
+              ☆ Set as default
+            </button>
+          )}
           <button type="button" style={btnSecondary}
             aria-expanded={isOpen}
             aria-label={`${isOpen?"Hide":"View"} details for ${f.version_key}`}
@@ -954,6 +1043,67 @@ export default function App() {
   // Per-version-key PDF download state: { [versionKey]: {loading, error} }
   const [pdfDownloadState, setPdfDownloadState] = useState({});
 
+  // ── Default-resume → per-card job-fit chip (Issue #39 part A) ────
+  // `defaultResumeVersion` is the user's chosen "main" resume, fetched
+  // from /api/profile on mount. When null, no chip is rendered and we
+  // never fire job-fit calls. `jobFitByJob` caches per-card results
+  // {loading, error, pct, versionKey} so the parent batch effect can
+  // tell which jobs still need a fetch for the current default.
+  // `jobFitInflightRef` caps concurrency at MAX_JOB_FIT_CONCURRENCY.
+  // `jobFitPendingRef` tracks "we're about to fetch this id" so two
+  // pump() ticks can't queue the same id before fetchJobFit() bumps
+  // the inflight counter.
+  const [defaultResumeVersion, setDefaultResumeVersion] = useState(null);
+  const [defaultUpdating, setDefaultUpdating] = useState(false);
+  const [defaultMsg, setDefaultMsg] = useState(null);
+  // R2 #2: empty-state hint banner above the Jobs list when no default
+  // resume is configured. Persisted dismissal in localStorage so users
+  // who've already seen the hint don't get pestered every reload.
+  const [defaultHintDismissed, setDefaultHintDismissed] = useState(() => {
+    try { return localStorage.getItem("jobscout_default_hint_dismissed") === "1"; }
+    catch { return false; }
+  });
+  const dismissDefaultHint = useCallback(() => {
+    setDefaultHintDismissed(true);
+    try { localStorage.setItem("jobscout_default_hint_dismissed", "1"); } catch {}
+  }, []);
+  const [jobFitByJob, setJobFitByJob] = useState({});
+  const jobFitInflightRef = useRef(0);
+  const jobFitPendingRef = useRef(new Set());
+  // R2 #6: event-driven re-pump replaces the old setInterval(250ms). The
+  // batch effect below installs its `pump` function into this ref so
+  // fetchJobFit()'s finally block can immediately try to fill the
+  // freshly-vacated slot. Mutating a ref doesn't trigger a re-render.
+  const jobFitPumpRef = useRef(() => {});
+
+  // Fetch the profile once on mount so we know whether to render chips.
+  // No retry/backoff — if /api/profile is offline, we just don't show
+  // chips, which is the same as "no default configured".
+  useEffect(() => {
+    if (!RENDER_API) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch(`${RENDER_API}/api/profile`, {
+          signal: AbortSignal.timeout(8000),
+        });
+        if (!r.ok || cancelled) return;
+        const d = await r.json();
+        if (cancelled) return;
+        setDefaultResumeVersion(d.default_resume_version || null);
+      } catch (_e) { /* offline / 5xx — silently no chip */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Wipe the job-fit cache when the user changes default resume — stale
+  // percentages against the OLD resume would mislead. The parent batch
+  // effect re-queues every visible card after this clears.
+  useEffect(() => {
+    setJobFitByJob({});
+    jobFitPendingRef.current = new Set();
+  }, [defaultResumeVersion]);
+
   const fetchBestMatch = useCallback(async (job) => {
     const key = job.external_id;
     if (!key) return;
@@ -988,6 +1138,64 @@ export default function App() {
         ? "Match timed out — try again"
         : (e?.message === "HTTP 404" ? "Vault endpoint not found" : (e?.message||"Failed"));
       setBestMatchByJob(prev => ({...prev, [key]: {loading:false, error:msg, data:null}}));
+    }
+  }, []);
+
+  // Tunables for the per-card job-fit fetcher. Grouped + named so reviewers
+  // don't have to grep two unrelated literals (5 and 60) across this file.
+  //  - MAX_JOB_FIT_CONCURRENCY: enough that the top of a freshly-mounted
+  //    Jobs tab fills in within ~2-3 seconds, low enough that we don't
+  //    trip Render's free-tier worker pool.
+  //  - JOB_FIT_VISIBLE_SLICE: matches the same `.slice(0, N)` used to render
+  //    JobCards below, so we only fetch fits for cards the user can see.
+  //    Must stay in sync with the render slice.
+  const MAX_JOB_FIT_CONCURRENCY = 5;
+  const JOB_FIT_VISIBLE_SLICE = 60;
+
+  // Fetches a single job-fit result. Designed to be invoked from the
+  // batch effect — pre-checks cache + inflight set so the effect can
+  // fire-and-forget. The inflight counter is decremented in `finally`
+  // so a thrown error doesn't permanently park the slot.
+  const fetchJobFit = useCallback(async (extId, jobDescription, versionKey) => {
+    if (!RENDER_API || !extId || !versionKey) {
+      jobFitPendingRef.current.delete(extId);
+      return;
+    }
+    const jd = (jobDescription || "").trim().slice(0, 20000);
+    if (!jd) {
+      setJobFitByJob(prev => ({...prev, [extId]: {loading:false, error:"No JD", pct:null, versionKey}}));
+      jobFitPendingRef.current.delete(extId);
+      return;
+    }
+    jobFitInflightRef.current += 1;
+    setJobFitByJob(prev => {
+      const cur = prev[extId];
+      if (cur && cur.versionKey === versionKey && cur.pct != null) return prev;
+      return {...prev, [extId]: {loading:true, error:null, pct:null, versionKey}};
+    });
+    try {
+      const r = await fetch(`${RENDER_API}/api/vault/job-fit`, {
+        method: "POST",
+        headers: {"Content-Type":"application/json", ...authHeaders()},
+        body: JSON.stringify({version_key: versionKey, job_description: jd}),
+        signal: AbortSignal.timeout(12000),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      const combined = typeof d.combined_score === "number" ? d.combined_score : 0;
+      const pct = Math.round(combined * 100);
+      setJobFitByJob(prev => ({...prev, [extId]: {loading:false, error:null, pct, versionKey}}));
+    } catch (e) {
+      const msg = (e?.name === "TimeoutError") ? "timeout" : (e?.message || "failed");
+      setJobFitByJob(prev => ({...prev, [extId]: {loading:false, error:msg, pct:null, versionKey}}));
+    } finally {
+      jobFitInflightRef.current = Math.max(0, jobFitInflightRef.current - 1);
+      jobFitPendingRef.current.delete(extId);
+      // R2 #6: immediately try to refill the slot we just freed. The
+      // batch effect installs the live pump function into this ref; if
+      // we're not on the Jobs tab anymore (or the effect cleaned up),
+      // the ref still points to a no-op so this is safe.
+      jobFitPumpRef.current();
     }
   }, []);
 
@@ -1650,6 +1858,45 @@ export default function App() {
     }
   }, [fetchVaultVersionDetails]);
 
+  // Set a vault version as the user's default resume (Issue #39 part A).
+  // Round-trips through POST /api/profile so the backend validates the
+  // key exists; on success we mirror the new value into local state to
+  // flip the badge instantly. Pass empty string to clear the default.
+  const setAsDefaultResume = useCallback(async (versionKey) => {
+    if (!RENDER_API) return;
+    setDefaultUpdating(true);
+    setDefaultMsg(null);
+    try {
+      const r = await fetch(`${RENDER_API}/api/profile`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json", ...authHeaders()},
+        body: JSON.stringify({default_resume_version: versionKey || ""}),
+        signal: AbortSignal.timeout(8000),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setDefaultMsg({ok:false, text: d.error || `HTTP ${r.status}`});
+        return;
+      }
+      setDefaultResumeVersion(versionKey || null);
+      setDefaultMsg({ok:true, text: versionKey
+        ? `✅ Default resume set to ${versionKey}`
+        : "✅ Default resume cleared"});
+    } catch (e) {
+      setDefaultMsg({ok:false, text: e.message || "Network error"});
+    } finally {
+      setDefaultUpdating(false);
+    }
+  }, []);
+
+  // Auto-clear the toast 4s after a successful set so it doesn't hang
+  // around as visual noise.
+  useEffect(() => {
+    if (!defaultMsg || !defaultMsg.ok) return;
+    const id = setTimeout(() => setDefaultMsg(null), 4000);
+    return () => clearTimeout(id);
+  }, [defaultMsg]);
+
   const compareVaultVersions = async () => {
     if (!RENDER_API || !vaultCmpA || !vaultCmpB || vaultCmpA === vaultCmpB) return;
     setVaultCmpLoading(true);
@@ -1934,6 +2181,66 @@ export default function App() {
     return j;
   }, [enriched,selRoles,selExp,selStates,selCities,selATS,remoteOnly,h1bOnly,platinumOnly,highCompOnly,selSalary,selPosted,q,so]);
 
+  // Latest-cache ref so the batch effect below can read the current
+  // jobFitByJob without subscribing to it as a dep (which would tear
+  // down + rebuild the interval on every single fit result writing
+  // back into state — 60 cards × one fit each = 60 effect rebuilds).
+  const jobFitCacheRef = useRef(jobFitByJob);
+  useEffect(() => { jobFitCacheRef.current = jobFitByJob; }, [jobFitByJob]);
+
+  // Parent-level batch fetcher for the per-card job-fit chips (Issue
+  // #39 part A). Walks the *visible* slice of `fj` (the same 60 cards
+  // we actually render) and queues fetches for any job that doesn't
+  // already have a fresh cached score for the current
+  // `defaultResumeVersion`. Concurrency-capped by
+  // `MAX_JOB_FIT_CONCURRENCY` via a useRef counter — the queue drains
+  // itself as in-flight requests finish.
+  //
+  // R2 #6: event-driven refill replaces the old 250ms setInterval. We
+  // install `pump` into `jobFitPumpRef`, and fetchJobFit()'s finally
+  // block invokes the ref to retry immediately when a slot frees up.
+  // No more wasted timer ticks while the queue is idle and steady.
+  //
+  // Critical: this effect intentionally OMITS `jobFitByJob` from its
+  // deps and reads through `jobFitCacheRef` instead. Including it
+  // would rebuild the effect on every result write-back.
+  useEffect(() => {
+    if (!RENDER_API || !defaultResumeVersion || tab !== "jobs") {
+      // Make absolutely sure stale pump from a previous effect run
+      // doesn't keep dequeuing after we navigated away.
+      jobFitPumpRef.current = () => {};
+      return;
+    }
+    const visible = fj.slice(0, JOB_FIT_VISIBLE_SLICE);
+    let cancelled = false;
+    const pump = () => {
+      if (cancelled) return;
+      const cache = jobFitCacheRef.current;
+      for (const j of visible) {
+        if (jobFitInflightRef.current >= MAX_JOB_FIT_CONCURRENCY) break;
+        const extId = j.external_id;
+        if (!extId) continue;
+        if (jobFitPendingRef.current.has(extId)) continue;
+        const existing = cache[extId];
+        // skip if already fetched (or in flight) for the current default
+        if (existing && existing.versionKey === defaultResumeVersion) continue;
+        // mark pending BEFORE fetchJobFit() reads inflight to avoid two
+        // pump() ticks queuing the same id while the first call hasn't
+        // yet bumped the counter.
+        jobFitPendingRef.current.add(extId);
+        fetchJobFit(extId, j.description || j.title || "", defaultResumeVersion);
+      }
+    };
+    jobFitPumpRef.current = pump;
+    pump();
+    return () => {
+      cancelled = true;
+      // Restore no-op so a late finally() from a request we're
+      // abandoning doesn't trigger queueing into the wrong context.
+      jobFitPumpRef.current = () => {};
+    };
+  }, [fj, defaultResumeVersion, tab, fetchJobFit]);
+
   const activeN = [selRoles,selStates,selCities,selATS,selExp].reduce((n,a)=>n+a.length,0)
     +(remoteOnly?1:0)+(h1bOnly?1:0)+(platinumOnly?1:0)+(highCompOnly?1:0)+(selSalary!=="All"?1:0)+(selPosted!=="All"?1:0);
   const clearAll = () => {
@@ -2118,9 +2425,37 @@ export default function App() {
             </div>
           )}
 
+          {/* R2 #2: empty-state hint when no default resume is configured.
+              Tells users why the "Resume Match" chip is missing and gives
+              them a one-click path to the Vault tab to fix it. Dismissible
+              so it doesn't nag forever once the user knows. */}
+          {!defaultResumeVersion && !defaultHintDismissed && (
+            <div role="note"
+              style={{display:"flex",alignItems:"center",gap:12,padding:"12px 16px",marginBottom:14,
+                background:`${t.ac}10`,border:`1px solid ${t.ac}30`,borderRadius:10,color:t.tx,fontSize:14}}>
+              <span style={{fontSize:18,lineHeight:1}}>💡</span>
+              <span style={{flex:1,lineHeight:1.5}}>
+                Set a default resume in the{" "}
+                <button onClick={() => setTab("vault")}
+                  style={{background:"none",border:"none",padding:0,color:t.ac,fontWeight:700,
+                    fontSize:14,fontFamily:"inherit",cursor:"pointer",textDecoration:"underline"}}>
+                  Vault
+                </button>{" "}
+                tab to see auto-match scores on every job card.
+              </span>
+              <button onClick={dismissDefaultHint}
+                aria-label="Dismiss default-resume hint"
+                title="Dismiss"
+                style={{background:"none",border:`1px solid ${t.bd}`,color:t.txM,
+                  fontSize:14,padding:"3px 10px",borderRadius:6,cursor:"pointer",fontFamily:"inherit"}}>
+                ✕
+              </button>
+            </div>
+          )}
+
           {/* Job cards */}
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
-            {fj.slice(0,60).map(j => {
+            {fj.slice(0, JOB_FIT_VISIBLE_SLICE).map(j => {
               const coKey = (j.company || "").toLowerCase();
               return (
                 <JobCard
@@ -2131,6 +2466,7 @@ export default function App() {
                   app={apps[j.external_id]}
                   coHistory={coHistoryByCompany[coKey] || EMPTY_ARR}
                   bm={bestMatchByJob[j.external_id]}
+                  jobFit={jobFitByJob[j.external_id]}
                   vdMap={vdMapByJob[j.external_id] || EMPTY_OBJ}
                   expandedRows={expandedByJob[j.external_id] || EMPTY_OBJ}
                   pdfState={pdfStateByJob[j.external_id] || EMPTY_OBJ}
@@ -2144,9 +2480,9 @@ export default function App() {
                 />
               );
             })}
-            {fj.length>60 && (
+            {fj.length > JOB_FIT_VISIBLE_SLICE && (
               <div style={{textAlign:"center",padding:18,color:t.txM,fontSize:15}}>
-                Showing 60 of {fj.length} — use filters to narrow results
+                Showing {JOB_FIT_VISIBLE_SLICE} of {fj.length} — use filters to narrow results
               </div>
             )}
             {fj.length===0 && (
@@ -2701,6 +3037,48 @@ export default function App() {
                 </div>
               )}
 
+              {/* Default-resume status banner (Issue #39 part A) — surfaces
+                  which version is currently driving the Resume Match chip on
+                  job cards. Lets the user discover the feature even when
+                  scrolling vault entries first. */}
+              <div style={{...cardStyle,
+                borderColor:defaultResumeVersion?`${t.ac}40`:`${t.txM}30`,
+                background:defaultResumeVersion?`${t.ac}08`:`${t.txM}05`,
+                marginBottom:18}}>
+                <div style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+                  <span style={{fontSize:13,fontWeight:700,color:t.txM,textTransform:"uppercase",letterSpacing:".06em"}}>
+                    Default Resume
+                  </span>
+                  {defaultResumeVersion ? (
+                    <>
+                      <span style={{fontSize:14,fontFamily:"monospace",color:t.ac,fontWeight:700}}>
+                        ★ {defaultResumeVersion}
+                      </span>
+                      <span style={{fontSize:12,color:t.txM}}>
+                        — drives the "Resume Match %" chip on each job card
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setAsDefaultResume("")}
+                        disabled={defaultUpdating}
+                        style={{...btnSecondary,marginLeft:"auto",opacity:defaultUpdating?0.5:1}}
+                        aria-label="Clear default resume">
+                        Clear default
+                      </button>
+                    </>
+                  ) : (
+                    <span style={{fontSize:13,color:t.txM}}>
+                      None set — click <em>Set as default</em> on any vault entry below to enable the per-card resume-match chip.
+                    </span>
+                  )}
+                </div>
+                {defaultMsg && (
+                  <div style={{marginTop:10,fontSize:13,color:defaultMsg.ok?t.ok:t.er,fontWeight:600}}>
+                    {defaultMsg.text}
+                  </div>
+                )}
+              </div>
+
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:12,marginBottom:18}}>
                 {[
                   [vaultStats?.pdf_count ?? "—","PDFs in Vault",t.ac],
@@ -2881,9 +3259,11 @@ export default function App() {
                         f={f}
                         t={t}
                         isOpen={vaultExpanded === f.version_key}
+                        isDefault={defaultResumeVersion === f.version_key}
                         det={vaultDetails[f.version_key]}
                         onToggle={toggleVaultRow}
                         onDelete={deleteVaultVersion}
+                        onSetDefault={setAsDefaultResume}
                       />
                     ))}
                   </div>
