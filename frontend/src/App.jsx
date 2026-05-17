@@ -519,6 +519,54 @@ export default function App() {
   const [xJ,setXJ] = useState(null);
   const [menuOpen,setMenuOpen] = useState(false);
 
+  // Best-match vault integration on job cards
+  const [bestMatchByJob, setBestMatchByJob] = useState({});
+  const [versionDetails, setVersionDetails] = useState({});
+  const [expandedVersionRow, setExpandedVersionRow] = useState({});
+
+  const fetchBestMatch = useCallback(async (job) => {
+    if (!RENDER_API) {
+      setBestMatchByJob(prev => ({...prev, [job.external_id]: {loading:false, error:"No API configured", data:null}}));
+      return;
+    }
+    const jd = (job.description || job.title || "").trim();
+    if (!jd) {
+      setBestMatchByJob(prev => ({...prev, [job.external_id]: {loading:false, error:"No job description", data:null}}));
+      return;
+    }
+    setBestMatchByJob(prev => ({...prev, [job.external_id]: {loading:true, error:null, data:null}}));
+    try {
+      const r = await fetch(`${RENDER_API}/api/vault/best-match`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({job_description: jd}),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      const rankings = Array.isArray(d.rankings) ? d.rankings.slice(0, 5) : [];
+      setBestMatchByJob(prev => ({...prev, [job.external_id]: {loading:false, error:null, data:{count:d.count||0, rankings}}}));
+    } catch (e) {
+      setBestMatchByJob(prev => ({...prev, [job.external_id]: {loading:false, error:e.message||"Failed", data:null}}));
+    }
+  }, []);
+
+  const fetchVersionDetails = useCallback(async (versionKey) => {
+    if (!RENDER_API || !versionKey) return;
+    if (versionDetails[versionKey]?.data || versionDetails[versionKey]?.loading) return;
+    setVersionDetails(prev => ({...prev, [versionKey]: {loading:true, error:null, data:null}}));
+    try {
+      const r = await fetch(`${RENDER_API}/api/vault/version/${encodeURIComponent(versionKey)}`, {
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      setVersionDetails(prev => ({...prev, [versionKey]: {loading:false, error:null, data:d}}));
+    } catch (e) {
+      setVersionDetails(prev => ({...prev, [versionKey]: {loading:false, error:e.message||"Failed", data:null}}));
+    }
+  }, [versionDetails]);
+
   // Filters
   const [q,sQ]             = useState("");
   const [selRoles,setSelRoles]     = useState([]);
@@ -1393,6 +1441,21 @@ export default function App() {
                         >
                           ✓ Applied
                         </button>
+                        {(() => {
+                          const bm = bestMatchByJob[j.external_id];
+                          const loading = bm?.loading;
+                          return (
+                            <button
+                              onClick={e => { e.stopPropagation(); if (!loading) fetchBestMatch(j); }}
+                              disabled={loading}
+                              style={{padding:"9px 14px",borderRadius:8,border:`1.5px solid ${t.vi}`,
+                                background:loading?`${t.vi}10`:`${t.vi}18`,color:t.vi,
+                                fontSize:13,fontWeight:700,cursor:loading?"wait":"pointer",fontFamily:"inherit",
+                                transition:"all .15s",whiteSpace:"nowrap",opacity:loading?0.7:1}}>
+                              {loading?"Matching…":(bm?.data?"↻ Refresh Match":"📄 Find Best Resume")}
+                            </button>
+                          );
+                        })()}
                         <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
                           {Object.keys(ST_LABEL).map(st => {
                             const cur = apps[j.external_id];
@@ -1410,6 +1473,99 @@ export default function App() {
                           })}
                         </div>
                       </div>
+                      {(() => {
+                        const bm = bestMatchByJob[j.external_id];
+                        if (!bm || bm.loading) return null;
+                        if (bm.error) {
+                          return (
+                            <div onClick={e=>e.stopPropagation()} style={{marginTop:12,padding:"10px 14px",borderRadius:8,background:`${t.wm}10`,border:`1px solid ${t.wm}30`,color:t.wm,fontSize:13}}>
+                              Resume match failed: {bm.error}
+                            </div>
+                          );
+                        }
+                        if (!bm.data || !bm.data.rankings || bm.data.rankings.length === 0) {
+                          return (
+                            <div onClick={e=>e.stopPropagation()} style={{marginTop:12,padding:"10px 14px",borderRadius:8,background:`${t.bd}30`,border:`1px solid ${t.bd}`,color:t.txM,fontSize:13}}>
+                              No resume versions found in vault.
+                            </div>
+                          );
+                        }
+                        return (
+                          <div onClick={e=>e.stopPropagation()}
+                            style={{marginTop:14,padding:"14px 16px",borderRadius:10,background:`${t.vi}08`,border:`1px solid ${t.vi}40`}}>
+                            <div style={{fontSize:12,fontWeight:700,color:t.vi,textTransform:"uppercase",letterSpacing:".06em",marginBottom:10}}>
+                              📄 Top {bm.data.rankings.length} resume matches · {bm.data.count} in vault
+                            </div>
+                            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                              {bm.data.rankings.map((rk, idx) => {
+                                const rowKey = `${j.external_id}:${rk.version_key}`;
+                                const isRowOpen = !!expandedVersionRow[rowKey];
+                                const vd = versionDetails[rk.version_key];
+                                const pct = Math.round((rk.combined_score||0)*100);
+                                const skillPct = rk.skill_match_pct||0;
+                                const matchedCount = Array.isArray(rk.matched_skills)?rk.matched_skills.length:0;
+                                return (
+                                  <div key={rk.version_key}
+                                    style={{padding:"10px 12px",borderRadius:8,background:t.cd,border:`1px solid ${t.bd}`}}>
+                                    <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                                      <span style={{fontSize:12,fontWeight:800,color:t.txM,minWidth:24}}>#{idx+1}</span>
+                                      <span style={{fontSize:14,fontWeight:700,color:t.tx,flex:1,minWidth:140,wordBreak:"break-word"}}>
+                                        {rk.display_name || rk.version_key}
+                                      </span>
+                                      <div style={{display:"flex",alignItems:"center",gap:8,minWidth:160,flex:"0 1 220px"}}>
+                                        <div style={{flex:1,height:8,background:`${t.bd}80`,borderRadius:5,overflow:"hidden"}}>
+                                          <div style={{width:`${Math.max(0,Math.min(100,pct))}%`,height:"100%",background:t.vi,transition:"width .25s"}}/>
+                                        </div>
+                                        <span style={{fontSize:13,fontWeight:800,color:t.vi,minWidth:38,textAlign:"right"}}>{pct}%</span>
+                                      </div>
+                                      <span title="Skills matched" style={{fontSize:12,color:t.txM,fontWeight:600,whiteSpace:"nowrap"}}>
+                                        🎯 {matchedCount} skill{matchedCount===1?"":"s"} · {skillPct}%
+                                      </span>
+                                      <button
+                                        onClick={() => {
+                                          setExpandedVersionRow(prev => ({...prev, [rowKey]: !prev[rowKey]}));
+                                          if (!isRowOpen) fetchVersionDetails(rk.version_key);
+                                        }}
+                                        style={{padding:"5px 11px",borderRadius:6,border:`1px solid ${t.vi}50`,background:isRowOpen?`${t.vi}20`:"transparent",color:t.vi,fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
+                                        {isRowOpen?"Hide":"View"}
+                                      </button>
+                                    </div>
+                                    {isRowOpen && (
+                                      <div style={{marginTop:10,padding:"10px 12px",borderRadius:6,background:`${t.bd}30`,fontSize:12,color:t.txS,lineHeight:1.7}}>
+                                        {vd?.loading && <span style={{color:t.txM}}>Loading version details…</span>}
+                                        {vd?.error && <span style={{color:t.wm}}>Failed: {vd.error}</span>}
+                                        {vd?.data && (
+                                          <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                                            <div><span style={{color:t.txM,fontWeight:700}}>Key:</span> {vd.data.version_key}</div>
+                                            {vd.data.display_name && <div><span style={{color:t.txM,fontWeight:700}}>Name:</span> {vd.data.display_name}</div>}
+                                            {Array.isArray(vd.data.target_companies) && vd.data.target_companies.length>0 && (
+                                              <div><span style={{color:t.txM,fontWeight:700}}>Companies:</span> {vd.data.target_companies.join(", ")}</div>
+                                            )}
+                                            {Array.isArray(vd.data.target_roles) && vd.data.target_roles.length>0 && (
+                                              <div><span style={{color:t.txM,fontWeight:700}}>Roles:</span> {vd.data.target_roles.join(", ")}</div>
+                                            )}
+                                            {vd.data.created_at && <div><span style={{color:t.txM,fontWeight:700}}>Created:</span> {vd.data.created_at}</div>}
+                                            {vd.data.updated_at && <div><span style={{color:t.txM,fontWeight:700}}>Updated:</span> {vd.data.updated_at}</div>}
+                                            {vd.data.notes && <div><span style={{color:t.txM,fontWeight:700}}>Notes:</span> {vd.data.notes}</div>}
+                                            {Array.isArray(vd.data.extracted_skills) && vd.data.extracted_skills.length>0 && (
+                                              <div style={{marginTop:4}}>
+                                                <span style={{color:t.txM,fontWeight:700}}>Skills ({vd.data.extracted_skills.length}):</span>{" "}
+                                                {vd.data.extracted_skills.slice(0,18).join(", ")}
+                                                {vd.data.extracted_skills.length>18?"…":""}
+                                              </div>
+                                            )}
+                                          </div>
+                                        )}
+                                        {!vd && <span style={{color:t.txM}}>Loading…</span>}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
                   )}
                 </div>
