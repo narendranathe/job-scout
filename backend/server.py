@@ -37,9 +37,9 @@ from core.scrape_status import broker
 from core.scrape_orchestrator import run_scrape
 from storage.db import init_db, get_conn, get_stats
 
-# CLAUDE.md tech-debt #2 — server.py split. Shared constants now live in
-# core/config.py so new route blueprints can import them without having
-# to import server itself (which would cause circular imports).
+# CLAUDE.md tech-debt #2 — server.py split. Shared constants and state
+# now live in core/* so new route blueprints can import them without
+# having to import server itself (which would cause circular imports).
 # Re-exported here for now so existing routes keep working unchanged;
 # each subsequent extraction PR will swap the in-file references over.
 from core.config import (
@@ -50,6 +50,7 @@ from core.config import (
     _BEARER_RE,
     check_api_secret,
 )
+from core.state import State, state
 
 logging.basicConfig(
     level=logging.INFO,
@@ -68,53 +69,9 @@ from routes.admin_routes import admin_bp
 app.register_blueprint(admin_bp)
 
 
-# ─── Shared State ──────────────────────────────────────────────────
-class State:
-    def __init__(self):
-        self.started_at   = datetime.now(timezone.utc).isoformat()
-        self.last_scrape_at = None
-        self.last_duration  = 0
-        self.total_cycles   = 0
-        self.total_new      = 0
-        self.last_error     = None
-        self.is_scraping    = False
-        self._cached_json   = None
-        self._cached_at     = None
-
-    def update_cache(self, data: dict):
-        self._cached_json = json.dumps(data, default=str, separators=(",", ":"))
-        self._cached_at   = datetime.now(timezone.utc).isoformat()
-
-    def get_cache(self) -> str | None:
-        return self._cached_json
-
-    def record_cycle(self, duration: float, stats: dict, error: str = None):
-        self.last_scrape_at = datetime.now(timezone.utc).isoformat()
-        self.last_duration  = round(duration, 1)
-        self.total_cycles  += 1
-        self.total_new     += stats.get("new", 0)
-        self.last_error     = error
-        self.is_scraping    = False
-
-    def health(self) -> dict:
-        return {
-            "status":            "scraping" if self.is_scraping else "idle",
-            "started_at":        self.started_at,
-            "uptime_hours":      round(
-                (datetime.now(timezone.utc) - datetime.fromisoformat(self.started_at)).total_seconds() / 3600, 1
-            ),
-            "last_scrape_at":    self.last_scrape_at,
-            "last_duration_sec": self.last_duration,
-            "total_cycles":      self.total_cycles,
-            "total_new_jobs":    self.total_new,
-            "last_error":        self.last_error,
-            "cache_fresh_at":    self._cached_at,
-            "companies_tracked": TOTAL_COMPANIES,
-            "fast_interval_sec": FAST_INTERVAL,
-        }
-
-
-state = State()
+# State + state singleton are imported above from core.state (PR 2/8).
+# Kept the import block compact so future readers see all shared deps in
+# one place at the top of the file rather than scattered through.
 
 # ─── Night quiet hours ────────────────────────────────────────────
 def is_quiet_hours() -> bool:
