@@ -89,14 +89,22 @@ python main.py --stats   # Check results
 **3. Deploy to Render**
 1. Go to [render.com](https://render.com) → New → Blueprint → connect this repo
 2. Render reads `render.yaml` → deploys automatically
-3. Note your URL: `https://jobscout-api.onrender.com`
+3. Note your URL from the Render dashboard. Render usually appends a
+   random suffix when the service name is taken, so it'll look like
+   `https://jobscout-api-lasz.onrender.com` rather than
+   `https://jobscout-api.onrender.com`. Always copy it from the
+   service page — don't guess.
 
 **4. Connect dashboard**
-```bash
-cd frontend
-cp .env.example .env
-# Edit .env: VITE_RENDER_URL=https://jobscout-api.onrender.com
-```
+- Easiest (v3.1+): open the deployed dashboard, click ⚙️ in the header,
+  paste your URL into the **Server Settings** panel, and click Save.
+  Stored in browser localStorage — no rebuild needed.
+- Or via env (for CI builds):
+  ```bash
+  cd frontend
+  cp .env.example .env
+  # Edit .env: VITE_RENDER_URL=https://jobscout-api-lasz.onrender.com
+  ```
 
 **5. Push to GitHub + enable Pages**
 ```bash
