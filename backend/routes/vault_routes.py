@@ -71,6 +71,14 @@ MAX_PDF_BYTES = 10_000_000
 # but rejecting early gives the caller a clearer error and avoids spending
 # CPU on absurd inputs.
 MAX_FIELD_LEN = 80
+# Issue #41 — job_description payload cap.
+# /api/vault/best-match runs TF-IDF over the whole vault (~95 resumes) +
+# the JD, so its compute cost scales with len(jd). Without a cap, a single
+# multi-megabyte string forces a full tokenization + TF-IDF rebuild +
+# N cosine sims — the highest-leverage DoS vector against the free-tier
+# Render dyno. 50_000 chars ≈ 10k tokens is roomy for any real JD
+# (the longest staffing pages on the public ATSes top out around 8k chars).
+MAX_JD_BYTES = 50_000
 
 # Comma-separated list of allowed origins. Empty/unset = legacy "*" with warning.
 ALLOWED_ORIGINS = [
@@ -315,6 +323,11 @@ def vault_job_fit():
     jd = data.get("job_description", "").strip()
     if not vk or not jd:
         return jsonify({"error": "version_key and job_description required"}), 400
+    # Issue #41 — refuse oversized payloads. 413 = Payload Too Large.
+    if len(jd) > MAX_JD_BYTES:
+        return jsonify({
+            "error": f"job_description too long ({len(jd)} chars; max {MAX_JD_BYTES})"
+        }), 413
 
     result = compare_resume_to_job(vk, jd, db_path=DB_PATH)
     return jsonify(result), 200
@@ -346,6 +359,13 @@ def vault_best_match():
     jd = data.get("job_description", "").strip()
     if not jd:
         return jsonify({"error": "job_description required"}), 400
+    # Issue #41 — refuse oversized payloads. Best-match is the most expensive
+    # vault endpoint (TF-IDF rebuild over all ~95 resumes + the JD), so the
+    # JD cap matters most here. 413 = Payload Too Large.
+    if len(jd) > MAX_JD_BYTES:
+        return jsonify({
+            "error": f"job_description too long ({len(jd)} chars; max {MAX_JD_BYTES})"
+        }), 413
 
     raw_top_n = data.get("top_n")
     try:
