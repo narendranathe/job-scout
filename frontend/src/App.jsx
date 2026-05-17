@@ -364,15 +364,31 @@ export default function App() {
   // ── Onboarding wizard gate (PRD #89 Slice 2) ─────────────────────
   // First-run detection runs once on mount once Render is configured.
   // Possible states:
-  //   "loading" — probe in flight
-  //   "first-run" — show wizard (blocking)
-  //   "force"    — ?force=1 / /setup path → show wizard
+  //   "loading"        — probe in flight
+  //   "first-run"      — show wizard (blocking)
+  //   "force"          — ?force=1 / /setup path → show wizard
+  //   "login-required" — /api/profile returned 401/403; we can't tell
+  //                      first-run vs onboarded until the user logs in.
+  //                      Render a login affordance (Slice 4 LoginScreen,
+  //                      or the SetupPanel fallback below) and re-probe
+  //                      via redetectOnboarding() once auth succeeds.
   //   "onboarded" / "unknown" — render dashboard normally
   // The wizard's onComplete callback flips this to "onboarded" without
   // re-probing, so a successful completion doesn't bounce the user.
   const [onboardingState, setOnboardingState] = useState(
     RENDER_API ? "loading" : "unknown"
   );
+  // Re-runnable detection — Slice 4's LoginScreen will call this from
+  // its onSuccess handler so the dashboard transitions straight into
+  // the wizard (or skips it) without a full page reload.
+  const redetectOnboarding = useCallback(() => {
+    if (!RENDER_API) {
+      setOnboardingState("unknown");
+      return;
+    }
+    setOnboardingState("loading");
+    detectOnboardingState().then((s) => setOnboardingState(s));
+  }, []);
   useEffect(() => {
     if (!RENDER_API) {
       setOnboardingState("unknown");
@@ -388,6 +404,11 @@ export default function App() {
   }, []);
   const wizardActive =
     onboardingState === "first-run" || onboardingState === "force";
+  // PIN/Bearer-protected deployment with no valid credentials yet. The
+  // wizard MUST stay hidden here — we genuinely don't know whether the
+  // user is first-run or already onboarded. Slice 4 will replace this
+  // banner with a proper LoginScreen.
+  const loginRequired = onboardingState === "login-required";
 
   // Best-match vault integration on job cards
   const [bestMatchByJob, setBestMatchByJob] = useState({});
@@ -1810,6 +1831,55 @@ export default function App() {
             }
           }}
         />
+      )}
+      {loginRequired && !setupOpen && (
+        // Stand-in for Slice 4's <LoginScreen>. The wizard can't render
+        // (we don't know if first-run yet) and the dashboard would be
+        // useless without an auth token, so block with a banner that
+        // points the user at the SetupPanel for token entry. When Slice 4
+        // lands, swap this for <LoginScreen onSuccess={redetectOnboarding} />.
+        <div role="dialog" aria-modal="true" aria-labelledby="login-required-title"
+          style={{
+            position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", zIndex:9998,
+            display:"flex", alignItems:"center", justifyContent:"center", padding:"20px",
+          }}>
+          <div style={{
+            background:t.cd, color:t.tx, border:`1px solid ${t.bd}`, borderRadius:14,
+            padding:"28px", maxWidth:480, width:"100%",
+            boxShadow:t.shL || "0 12px 40px rgba(0,0,0,0.35)",
+            fontFamily:"inherit",
+          }}>
+            <h2 id="login-required-title" style={{
+              margin:"0 0 10px", fontSize:20, fontWeight:700,
+              fontFamily:"'Playfair Display',serif",
+            }}>
+              🔒 Login required
+            </h2>
+            <p style={{margin:"0 0 18px", fontSize:14, color:t.txM, lineHeight:1.55}}>
+              Your JobScout server is PIN/token protected. Sign in to
+              continue — the dashboard needs your profile before it can
+              decide whether to show the onboarding wizard.
+            </p>
+            <div style={{display:"flex", gap:10, justifyContent:"flex-end", flexWrap:"wrap"}}>
+              <button type="button" onClick={redetectOnboarding}
+                style={{
+                  padding:"10px 16px", borderRadius:8, fontSize:14, fontWeight:600,
+                  cursor:"pointer", fontFamily:"inherit", border:`1px solid ${t.bd}`,
+                  background:"transparent", color:t.txM,
+                }}>
+                Retry
+              </button>
+              <button type="button" onClick={() => setSetupOpen(true)}
+                style={{
+                  padding:"10px 16px", borderRadius:8, fontSize:14, fontWeight:600,
+                  cursor:"pointer", fontFamily:"inherit", border:"none",
+                  background:t.gP || t.ac, color:"#fff",
+                }}>
+                Open server settings
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       <div className="page-pad">
