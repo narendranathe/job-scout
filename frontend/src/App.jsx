@@ -519,6 +519,68 @@ export default function App() {
   const [xJ,setXJ] = useState(null);
   const [menuOpen,setMenuOpen] = useState(false);
 
+  // Best-match vault integration on job cards
+  const [bestMatchByJob, setBestMatchByJob] = useState({});
+  const [versionDetails, setVersionDetails] = useState({});
+  const [expandedVersionRow, setExpandedVersionRow] = useState({});
+
+  const fetchBestMatch = useCallback(async (job) => {
+    const key = job.external_id;
+    if (!key) return;
+    if (!RENDER_API) {
+      setBestMatchByJob(prev => ({...prev, [key]: {loading:false, error:"No API configured", data:null}}));
+      return;
+    }
+    let already = false;
+    setBestMatchByJob(prev => {
+      if (prev[key]?.loading) { already = true; return prev; }
+      return {...prev, [key]: {loading:true, error:null, data:prev[key]?.data || null}};
+    });
+    if (already) return;
+    const jd = (job.description || job.title || "").trim().slice(0, 20000);
+    if (!jd) {
+      setBestMatchByJob(prev => ({...prev, [key]: {loading:false, error:"No job description", data:null}}));
+      return;
+    }
+    try {
+      const r = await fetch(`${RENDER_API}/api/vault/best-match`, {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({job_description: jd}),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      const rankings = Array.isArray(d.rankings) ? d.rankings.slice(0, 5) : [];
+      setBestMatchByJob(prev => ({...prev, [key]: {loading:false, error:null, data:{count:d.count||0, rankings}}}));
+    } catch (e) {
+      const msg = (e?.name === "TimeoutError" || /timed out/i.test(e?.message||""))
+        ? "Match timed out — try again"
+        : (e?.message === "HTTP 404" ? "Vault endpoint not found" : (e?.message||"Failed"));
+      setBestMatchByJob(prev => ({...prev, [key]: {loading:false, error:msg, data:null}}));
+    }
+  }, []);
+
+  const fetchVersionDetails = useCallback(async (versionKey) => {
+    if (!RENDER_API || !versionKey) return;
+    let skip = false;
+    setVersionDetails(prev => {
+      if (prev[versionKey]?.data || prev[versionKey]?.loading) { skip = true; return prev; }
+      return {...prev, [versionKey]: {loading:true, error:null, data:null}};
+    });
+    if (skip) return;
+    try {
+      const r = await fetch(`${RENDER_API}/api/vault/version/${encodeURIComponent(versionKey)}`, {
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      setVersionDetails(prev => ({...prev, [versionKey]: {loading:false, error:null, data:d}}));
+    } catch (e) {
+      setVersionDetails(prev => ({...prev, [versionKey]: {loading:false, error:e.message||"Failed", data:null}}));
+    }
+  }, []);
+
   // Filters
   const [q,sQ]             = useState("");
   const [selRoles,setSelRoles]     = useState([]);
@@ -557,6 +619,39 @@ export default function App() {
   // Pipeline kanban — API-backed application list
   const [applications, setApplications] = useState([]);
   const [appLoading, setAppLoading] = useState(false);
+
+  // Resume Vault tab
+  const [vaultStats, setVaultStats]         = useState(null);
+  const [vaultFiles, setVaultFiles]         = useState([]);
+  const [vaultLoading, setVaultLoading]     = useState(false);
+  const [vaultError, setVaultError]         = useState("");
+  const [vaultSearch, setVaultSearch]       = useState("");
+  const [vaultSort, setVaultSort]           = useState("company");
+  const [vaultExpanded, setVaultExpanded]   = useState(null);
+  const [vaultDetails, setVaultDetails]     = useState({});
+  const [vaultCmpA, setVaultCmpA]           = useState("");
+  const [vaultCmpB, setVaultCmpB]           = useState("");
+  const [vaultCmpResult, setVaultCmpResult] = useState(null);
+  const [vaultCmpLoading, setVaultCmpLoading] = useState(false);
+  const [vaultUpFile, setVaultUpFile]       = useState(null);
+  const [vaultUpCompany, setVaultUpCompany] = useState("");
+  const [vaultUpRole, setVaultUpRole]       = useState("");
+  const [vaultUpStatus, setVaultUpStatus]   = useState(null);
+  const [vaultUpLoading, setVaultUpLoading] = useState(false);
+  const vaultFileInputRef = useRef(null);
+  const filteredVaultFiles = useMemo(() => {
+    const q = vaultSearch.toLowerCase();
+    const arr = q
+      ? vaultFiles.filter(f => [f.version_key, f.company, f.role, f.filename, f.display_name]
+          .filter(Boolean).some(v => String(v).toLowerCase().includes(q)))
+      : vaultFiles.slice();
+    const k = vaultSort;
+    arr.sort((a, b) => {
+      if (k === "size_bytes") return (b.size_bytes || 0) - (a.size_bytes || 0);
+      return String(a[k] || "").toLowerCase().localeCompare(String(b[k] || "").toLowerCase());
+    });
+    return arr;
+  }, [vaultFiles, vaultSearch, vaultSort]);
 
   // Manual scrape trigger + live progress polling (#19, #20).
   // `scraping` reflects "we should keep polling the status endpoint at the
@@ -932,6 +1027,142 @@ export default function App() {
     } catch {}
   };
 
+  const fetchVault = useCallback(async () => {
+    if (!RENDER_API) return;
+    setVaultLoading(true);
+    setVaultError("");
+    try {
+      const [sr, lr] = await Promise.all([
+        fetch(`${RENDER_API}/api/vault/stats`, {signal: AbortSignal.timeout(8000)}),
+        fetch(`${RENDER_API}/api/vault/list`,  {signal: AbortSignal.timeout(8000)}),
+      ]);
+      if (sr.ok) setVaultStats(await sr.json());
+      else setVaultStats(null);
+      if (lr.ok) {
+        const j = await lr.json();
+        setVaultFiles(j.files || []);
+      } else {
+        setVaultFiles([]);
+      }
+      if (!sr.ok || !lr.ok) {
+        setVaultError(`Vault load failed: stats HTTP ${sr.status}, list HTTP ${lr.status}`);
+      }
+    } catch (e) {
+      setVaultError(e.message || "Failed to load vault");
+    } finally {
+      setVaultLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (tab === "vault" && RENDER_API && !vaultStats && !vaultLoading) fetchVault();
+  }, [tab, fetchVault, vaultStats, vaultLoading]);
+
+  const fetchVaultVersionDetails = async (vk) => {
+    if (!RENDER_API || vaultDetails[vk]) return;
+    setVaultDetails(prev => ({...prev, [vk]: {__loading:true}}));
+    try {
+      const r = await fetch(`${RENDER_API}/api/vault/version/${encodeURIComponent(vk)}`, {signal: AbortSignal.timeout(8000)});
+      if (r.ok) {
+        const d = await r.json();
+        setVaultDetails(prev => ({...prev, [vk]: d}));
+      } else {
+        let msg = `HTTP ${r.status}`;
+        try { const j = await r.json(); if (j?.error) msg = j.error; } catch {}
+        setVaultDetails(prev => ({...prev, [vk]: {error: msg}}));
+      }
+    } catch (e) {
+      setVaultDetails(prev => ({...prev, [vk]: {error: e.message || "Failed to load details"}}));
+    }
+  };
+
+  const deleteVaultVersion = async (vk) => {
+    if (!RENDER_API) return;
+    if (!window.confirm(`Delete vault version "${vk}"?\n\nNote: this removes the database record only. The PDF file on disk remains; it will reappear next refresh unless removed server-side.`)) return;
+    try {
+      const r = await fetch(`${RENDER_API}/api/vault/version/${encodeURIComponent(vk)}`, {method:"DELETE", signal: AbortSignal.timeout(8000)});
+      if (!r.ok) {
+        let msg = `HTTP ${r.status}`;
+        try { const j = await r.json(); if (j?.error) msg = j.error; } catch {}
+        setVaultError(`Delete failed: ${msg}`);
+        return;
+      }
+      setVaultDetails(prev => { const n = {...prev}; delete n[vk]; return n; });
+      fetchVault();
+    } catch (e) {
+      setVaultError(`Delete failed: ${e.message || "network error"}`);
+    }
+  };
+
+  const compareVaultVersions = async () => {
+    if (!RENDER_API || !vaultCmpA || !vaultCmpB || vaultCmpA === vaultCmpB) return;
+    setVaultCmpLoading(true);
+    setVaultCmpResult(null);
+    try {
+      const r = await fetch(`${RENDER_API}/api/vault/compare`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({version_a: vaultCmpA, version_b: vaultCmpB}),
+      });
+      const d = await r.json();
+      setVaultCmpResult(d);
+    } catch (e) {
+      setVaultCmpResult({error: e.message || "Compare failed"});
+    } finally {
+      setVaultCmpLoading(false);
+    }
+  };
+
+  const uploadVaultPdf = async () => {
+    if (!RENDER_API || !vaultUpFile || !vaultUpCompany.trim()) {
+      setVaultUpStatus({ok:false, msg:"PDF file and company name required"});
+      return;
+    }
+    if (vaultUpFile.size > 5 * 1024 * 1024) {
+      setVaultUpStatus({ok:false, msg:`❌ File too large (${(vaultUpFile.size/1024/1024).toFixed(1)} MB) — max 5 MB`});
+      return;
+    }
+    setVaultUpLoading(true);
+    setVaultUpStatus(null);
+    try {
+      const b64 = await new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => {
+          const res = fr.result || "";
+          const idx = String(res).indexOf("base64,");
+          resolve(idx >= 0 ? String(res).slice(idx + 7) : "");
+        };
+        fr.onerror = () => reject(new Error("Failed to read file"));
+        fr.readAsDataURL(vaultUpFile);
+      });
+      const r = await fetch(`${RENDER_API}/api/vault/upload`, {
+        method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          pdf_base64: b64,
+          company: vaultUpCompany.trim(),
+          role: vaultUpRole.trim() || undefined,
+          filename: vaultUpFile.name,
+        }),
+      });
+      const d = await r.json();
+      if (r.ok) {
+        setVaultUpStatus({ok:true, msg:`✅ Uploaded as ${d.version_key} (${d.skill_count||0} skills)`});
+        setVaultUpFile(null);
+        setVaultUpCompany("");
+        setVaultUpRole("");
+        if (vaultFileInputRef.current) vaultFileInputRef.current.value = "";
+        setVaultDetails(prev => { const n = {...prev}; delete n[d.version_key]; return n; });
+        setVaultCmpResult(null);
+        fetchVault();
+      } else {
+        setVaultUpStatus({ok:false, msg:`❌ ${d.error || "Upload failed"}`});
+      }
+    } catch (e) {
+      setVaultUpStatus({ok:false, msg:`❌ ${e.message}`});
+    } finally {
+      setVaultUpLoading(false);
+    }
+  };
+
   const allJobs = data?.jobs   || [];
   const stats   = data?.stats  || {};
   const dist    = data?.distributions || {};
@@ -1134,7 +1365,7 @@ export default function App() {
   );
 
   const trackerCount = Object.keys(apps).length;
-  const TABS = ["jobs","rare","analytics","companies","trends","tracker","pipeline","monitor"];
+  const TABS = ["jobs","rare","analytics","companies","trends","tracker","vault","pipeline","monitor"];
 
   const PIPELINE_STAGES = [
     { key: 'saved',      label: 'Saved',        color: '#6b7280' },
@@ -1165,7 +1396,7 @@ export default function App() {
                   color:tab===tb?"#fff":t.txM,
                   fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit",
                   textTransform:"capitalize",transition:"all .15s",flexShrink:0}}>
-                {tb==="monitor"?"🖥 Monitor":tb==="tracker"?`📋 Tracker${trackerCount?" ("+trackerCount+")":""}`:tb==="pipeline"?`🗂 Pipeline${applications.length?" ("+applications.length+")":""}`:tb==="rare"?`🎯 Rare${stats.rare_skills?" ("+stats.rare_skills+")":""}`:tb}
+                {tb==="monitor"?"🖥 Monitor":tb==="tracker"?`📋 Tracker${trackerCount?" ("+trackerCount+")":""}`:tb==="pipeline"?`🗂 Pipeline${applications.length?" ("+applications.length+")":""}`:tb==="rare"?`🎯 Rare${stats.rare_skills?" ("+stats.rare_skills+")":""}`:tb==="vault"?`📁 Vault${vaultFiles.length?" ("+vaultFiles.length+")":""}`:tb}
               </button>
             ))}
           </div>
@@ -1393,6 +1624,22 @@ export default function App() {
                         >
                           ✓ Applied
                         </button>
+                        {(() => {
+                          const bm = bestMatchByJob[j.external_id];
+                          const loading = bm?.loading;
+                          return (
+                            <button
+                              type="button"
+                              onClick={e => { e.stopPropagation(); if (!loading) fetchBestMatch(j); }}
+                              disabled={loading || !j.external_id}
+                              style={{padding:"9px 14px",borderRadius:8,border:`1.5px solid ${t.vi}`,
+                                background:loading?`${t.vi}10`:`${t.vi}18`,color:t.vi,
+                                fontSize:13,fontWeight:700,cursor:loading?"wait":"pointer",fontFamily:"inherit",
+                                transition:"all .15s",whiteSpace:"nowrap",opacity:loading?0.7:1,minHeight:36}}>
+                              {loading?"Matching…":(bm?.data?"↻ Refresh Match":"📄 Find Best Resume")}
+                            </button>
+                          );
+                        })()}
                         <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
                           {Object.keys(ST_LABEL).map(st => {
                             const cur = apps[j.external_id];
@@ -1410,6 +1657,101 @@ export default function App() {
                           })}
                         </div>
                       </div>
+                      {(() => {
+                        const bm = bestMatchByJob[j.external_id];
+                        if (!bm || bm.loading) return null;
+                        if (bm.error) {
+                          return (
+                            <div onClick={e=>e.stopPropagation()} style={{marginTop:12,padding:"10px 14px",borderRadius:8,background:`${t.wm}10`,border:`1px solid ${t.wm}30`,color:t.wm,fontSize:13}}>
+                              Resume match failed: {bm.error}
+                            </div>
+                          );
+                        }
+                        if (!bm.data || !bm.data.rankings || bm.data.rankings.length === 0) {
+                          return (
+                            <div onClick={e=>e.stopPropagation()} style={{marginTop:12,padding:"10px 14px",borderRadius:8,background:`${t.bd}30`,border:`1px solid ${t.bd}`,color:t.txM,fontSize:13}}>
+                              No resume versions found in vault.
+                            </div>
+                          );
+                        }
+                        return (
+                          <div onClick={e=>e.stopPropagation()}
+                            style={{marginTop:14,padding:"14px 16px",borderRadius:10,background:`${t.vi}08`,border:`1px solid ${t.vi}40`}}>
+                            <div style={{fontSize:12,fontWeight:700,color:t.vi,textTransform:"uppercase",letterSpacing:".06em",marginBottom:10}}>
+                              📄 Top {bm.data.rankings.length} resume matches · {bm.data.count} in vault
+                            </div>
+                            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                              {bm.data.rankings.map((rk, idx) => {
+                                const rowKey = `${j.external_id}:${rk.version_key}`;
+                                const isRowOpen = !!expandedVersionRow[rowKey];
+                                const vd = versionDetails[rk.version_key];
+                                const pct = Math.round((rk.combined_score||0)*100);
+                                const skillPct = rk.skill_match_pct||0;
+                                const matchedCount = Array.isArray(rk.matched_skills)?rk.matched_skills.length:0;
+                                return (
+                                  <div key={rk.version_key}
+                                    style={{padding:"10px 12px",borderRadius:8,background:t.cd,border:`1px solid ${t.bd}`}}>
+                                    <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                                      <span style={{fontSize:12,fontWeight:800,color:t.txM,minWidth:24}}>#{idx+1}</span>
+                                      <span style={{fontSize:14,fontWeight:700,color:t.tx,flex:1,minWidth:140,wordBreak:"break-word"}}>
+                                        {rk.display_name || rk.version_key}
+                                      </span>
+                                      <div style={{display:"flex",alignItems:"center",gap:8,minWidth:160,flex:"0 1 220px"}}>
+                                        <div style={{flex:1,height:8,background:`${t.bd}80`,borderRadius:5,overflow:"hidden"}}>
+                                          <div style={{width:`${Math.max(0,Math.min(100,pct))}%`,height:"100%",background:t.vi,transition:"width .25s"}}/>
+                                        </div>
+                                        <span style={{fontSize:13,fontWeight:800,color:t.vi,minWidth:38,textAlign:"right"}}>{pct}%</span>
+                                      </div>
+                                      <span title={`${matchedCount} matched skills · ${skillPct}% skill overlap`} style={{fontSize:12,color:t.txM,fontWeight:600}}>
+                                        🎯 {matchedCount} · {skillPct}%
+                                      </span>
+                                      <button
+                                        type="button"
+                                        aria-expanded={isRowOpen}
+                                        aria-label={`${isRowOpen?"Hide":"View"} details for ${rk.display_name || rk.version_key}`}
+                                        onClick={() => {
+                                          setExpandedVersionRow(prev => ({...prev, [rowKey]: !prev[rowKey]}));
+                                          if (!isRowOpen) fetchVersionDetails(rk.version_key);
+                                        }}
+                                        style={{padding:"8px 12px",borderRadius:6,border:`1px solid ${t.vi}50`,background:isRowOpen?`${t.vi}20`:"transparent",color:t.vi,fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",minHeight:32}}>
+                                        {isRowOpen?"Hide ▴":"View ▾"}
+                                      </button>
+                                    </div>
+                                    {isRowOpen && (
+                                      <div style={{marginTop:10,padding:"10px 12px",borderRadius:6,background:`${t.bd}30`,fontSize:12,color:t.txS,lineHeight:1.7}}>
+                                        {vd?.loading && <span style={{color:t.txM}}>Loading version details…</span>}
+                                        {vd?.error && <span style={{color:t.wm}}>Failed: {vd.error}</span>}
+                                        {vd?.data && (
+                                          <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                                            <div><span style={{color:t.txM,fontWeight:700}}>Key:</span> {vd.data.version_key}</div>
+                                            {vd.data.display_name && <div><span style={{color:t.txM,fontWeight:700}}>Name:</span> {vd.data.display_name}</div>}
+                                            {Array.isArray(vd.data.target_companies) && vd.data.target_companies.length>0 && (
+                                              <div><span style={{color:t.txM,fontWeight:700}}>Companies:</span> {vd.data.target_companies.join(", ")}</div>
+                                            )}
+                                            {Array.isArray(vd.data.target_roles) && vd.data.target_roles.length>0 && (
+                                              <div><span style={{color:t.txM,fontWeight:700}}>Roles:</span> {vd.data.target_roles.join(", ")}</div>
+                                            )}
+                                            {vd.data.created_at && <div><span style={{color:t.txM,fontWeight:700}}>Created:</span> {vd.data.created_at}</div>}
+                                            {vd.data.updated_at && <div><span style={{color:t.txM,fontWeight:700}}>Updated:</span> {vd.data.updated_at}</div>}
+                                            {vd.data.notes && <div><span style={{color:t.txM,fontWeight:700}}>Notes:</span> {vd.data.notes}</div>}
+                                            {Array.isArray(vd.data.extracted_skills) && vd.data.extracted_skills.length>0 && (
+                                              <div style={{marginTop:4}}>
+                                                <span style={{color:t.txM,fontWeight:700}}>Skills ({vd.data.extracted_skills.length}):</span>{" "}
+                                                {vd.data.extracted_skills.slice(0,18).join(", ")}
+                                                {vd.data.extracted_skills.length>18?"…":""}
+                                              </div>
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
                   )}
                 </div>
@@ -1940,6 +2282,311 @@ export default function App() {
           );
         })()}
 
+        {/* ════════════ VAULT ════════════ */}
+        {tab==="vault" && (() => {
+          const filteredFiles = filteredVaultFiles;
+
+          const labelStyle = {fontSize:12,color:t.txM,fontWeight:600,textTransform:"uppercase",letterSpacing:".06em",marginBottom:6,display:"block"};
+          const cardStyle = {background:t.cd,borderRadius:14,padding:24,border:`1px solid ${t.bd}`,boxShadow:t.shS,marginBottom:18};
+          const btnPrimary = {padding:"9px 18px",borderRadius:9,border:"none",background:t.gP,color:"#fff",fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit"};
+          const btnSecondary = {padding:"7px 14px",borderRadius:8,border:`1px solid ${t.bd}`,background:"transparent",color:t.txS,fontSize:13,fontWeight:500,cursor:"pointer",fontFamily:"inherit"};
+          const btnDanger = {padding:"7px 14px",borderRadius:8,border:`1px solid ${t.er}40`,background:`${t.er}10`,color:t.er,fontSize:13,fontWeight:500,cursor:"pointer",fontFamily:"inherit"};
+
+          return (
+            <div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:18,flexWrap:"wrap",gap:12}}>
+                <h2 style={{margin:0,fontSize:24,fontWeight:700,color:t.tx,fontFamily:"'Playfair Display',serif"}}>Resume Vault</h2>
+                <div style={{display:"flex",gap:10,alignItems:"center"}}>
+                  {vaultLoading && <span style={{fontSize:13,color:t.txM,fontStyle:"italic"}}>Loading...</span>}
+                  <button onClick={fetchVault} disabled={vaultLoading} style={btnSecondary}>↻ Refresh</button>
+                </div>
+              </div>
+
+              {!RENDER_API && (
+                <div style={{...cardStyle,borderColor:`${t.er}40`,background:`${t.er}08`,color:t.er}}>
+                  ⚠️ No Render API configured. Set VITE_RENDER_URL in your .env file.
+                </div>
+              )}
+
+              {vaultError && (
+                <div style={{...cardStyle,borderColor:`${t.er}40`,background:`${t.er}08`,color:t.er}}>
+                  ❌ {vaultError}
+                </div>
+              )}
+
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:12,marginBottom:18}}>
+                {[
+                  [vaultStats?.pdf_count ?? "—","PDFs in Vault",t.ac],
+                  [vaultStats?.text_count ?? "—","Extracted Texts",t.bl],
+                  [(vaultStats?.total_size_mb ?? 0) + " MB","Total Size",t.wm],
+                  [vaultStats?.unique_companies ?? "—","Companies",t.vi],
+                  [vaultStats?.db_versions ?? "—","DB Versions",t.ok],
+                ].map(([v,l,c]) => (
+                  <div key={l} style={{padding:18,borderRadius:12,background:`${c}10`,border:`1px solid ${c}30`,textAlign:"center"}}>
+                    <div style={{fontSize:28,fontWeight:700,color:c,fontFamily:"'Playfair Display',serif"}}>{v}</div>
+                    <div style={{fontSize:12,color:t.txM,marginTop:4,textTransform:"uppercase",letterSpacing:".05em",fontWeight:600}}>{l}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={cardStyle}>
+                <h3 style={{margin:"0 0 16px",fontSize:13,color:t.txM,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em"}}>Upload New Resume</h3>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:12}}>
+                  <div>
+                    <label htmlFor="vault-up-file" style={labelStyle}>PDF File <span style={{color:t.txS,fontWeight:400}}>(max 5 MB)</span></label>
+                    <input id="vault-up-file" ref={vaultFileInputRef} type="file" accept="application/pdf,.pdf"
+                      onChange={e => setVaultUpFile(e.target.files?.[0] || null)}
+                      style={{...iS,padding:"9px 12px"}}/>
+                  </div>
+                  <div>
+                    <label htmlFor="vault-up-company" style={labelStyle}>Company <span style={{color:t.er}}>*</span></label>
+                    <input id="vault-up-company" type="text" placeholder="e.g. Goldman Sachs"
+                      value={vaultUpCompany} maxLength={80} required aria-required="true"
+                      onChange={e => setVaultUpCompany(e.target.value)}
+                      style={iS}/>
+                  </div>
+                  <div>
+                    <label htmlFor="vault-up-role" style={labelStyle}>Role (optional)</label>
+                    <input id="vault-up-role" type="text" placeholder="e.g. Data Engineer"
+                      value={vaultUpRole} maxLength={80}
+                      onChange={e => setVaultUpRole(e.target.value)}
+                      style={iS}/>
+                  </div>
+                </div>
+                <div style={{display:"flex",gap:12,alignItems:"center",marginTop:14,flexWrap:"wrap"}}>
+                  <button onClick={uploadVaultPdf}
+                    disabled={vaultUpLoading || !vaultUpFile || !vaultUpCompany.trim()}
+                    style={{...btnPrimary,opacity:(vaultUpLoading || !vaultUpFile || !vaultUpCompany.trim())?0.5:1}}>
+                    {vaultUpLoading ? "Uploading..." : "Upload to Vault"}
+                  </button>
+                  {vaultUpStatus && (
+                    <span style={{fontSize:13,color:vaultUpStatus.ok?t.ok:t.er,fontWeight:600}}>
+                      {vaultUpStatus.msg}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div style={cardStyle}>
+                <h3 style={{margin:"0 0 16px",fontSize:13,color:t.txM,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em"}}>Compare Two Versions (TF-IDF)</h3>
+                {(() => {
+                  const seen = new Set();
+                  const uniqueOptions = vaultFiles.filter(f => {
+                    if (!f.version_key || seen.has(f.version_key)) return false;
+                    seen.add(f.version_key);
+                    return true;
+                  });
+                  const opts = (
+                    <>
+                      <option value="">— select —</option>
+                      {uniqueOptions.map(f => (
+                        <option key={f.version_key} value={f.version_key}>
+                          {f.version_key}{f.display_name ? ` (${f.display_name})` : ""}
+                        </option>
+                      ))}
+                    </>
+                  );
+                  return (
+                    <>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr auto",gap:12,alignItems:"end"}} className="vault-cmp-grid">
+                        <div>
+                          <label htmlFor="vault-cmp-a" style={labelStyle}>Version A</label>
+                          <select id="vault-cmp-a" value={vaultCmpA} onChange={e => setVaultCmpA(e.target.value)} style={iS}>{opts}</select>
+                        </div>
+                        <div>
+                          <label htmlFor="vault-cmp-b" style={labelStyle}>Version B</label>
+                          <select id="vault-cmp-b" value={vaultCmpB} onChange={e => setVaultCmpB(e.target.value)} style={iS}>{opts}</select>
+                        </div>
+                        <button type="button" onClick={compareVaultVersions}
+                          disabled={vaultCmpLoading || !vaultCmpA || !vaultCmpB || vaultCmpA === vaultCmpB}
+                          style={{...btnPrimary,opacity:(vaultCmpLoading || !vaultCmpA || !vaultCmpB || vaultCmpA === vaultCmpB)?0.5:1}}>
+                          {vaultCmpLoading ? "Comparing..." : "Compare"}
+                        </button>
+                      </div>
+                      {uniqueOptions.length < 2 && (
+                        <div style={{marginTop:10,fontSize:12,color:t.txM}}>Need at least 2 distinct versions in the vault to compare.</div>
+                      )}
+                    </>
+                  );
+                })()}
+                {vaultCmpResult && (
+                  <div style={{marginTop:18,padding:16,background:t.bgS,borderRadius:10,border:`1px solid ${t.bd}`}}>
+                    {vaultCmpResult.error ? (
+                      <div style={{color:t.er,fontWeight:600}}>❌ {vaultCmpResult.error}</div>
+                    ) : (
+                      <>
+                        <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:14,flexWrap:"wrap"}}>
+                          <div style={{fontSize:36,fontWeight:700,color:t.ac,fontFamily:"'Playfair Display',serif"}}>
+                            {Math.round(typeof vaultCmpResult.similarity_pct === "number" ? vaultCmpResult.similarity_pct : (vaultCmpResult.similarity||0)*100)}%
+                          </div>
+                          <div style={{fontSize:14,color:t.txS,flex:1,minWidth:200}}>
+                            {vaultCmpResult.interpretation || "Similarity score"}
+                          </div>
+                        </div>
+                        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:12}}>
+                          {vaultCmpResult.shared_skills?.length > 0 && (
+                            <div>
+                              <div style={labelStyle}>Shared Skills ({vaultCmpResult.shared_skills.length})</div>
+                              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                                {vaultCmpResult.shared_skills.slice(0,30).map(s => (
+                                  <span key={s} style={{fontSize:12,padding:"3px 9px",borderRadius:6,background:`${t.ok}15`,color:t.ok,border:`1px solid ${t.ok}30`}}>{s}</span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {vaultCmpResult.only_a?.length > 0 && (
+                            <div>
+                              <div style={labelStyle}>Only in A ({vaultCmpResult.only_a.length})</div>
+                              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                                {vaultCmpResult.only_a.slice(0,30).map(s => (
+                                  <span key={s} style={{fontSize:12,padding:"3px 9px",borderRadius:6,background:`${t.bl}15`,color:t.bl,border:`1px solid ${t.bl}30`}}>{s}</span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {vaultCmpResult.only_b?.length > 0 && (
+                            <div>
+                              <div style={labelStyle}>Only in B ({vaultCmpResult.only_b.length})</div>
+                              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                                {vaultCmpResult.only_b.slice(0,30).map(s => (
+                                  <span key={s} style={{fontSize:12,padding:"3px 9px",borderRadius:6,background:`${t.vi}15`,color:t.vi,border:`1px solid ${t.vi}30`}}>{s}</span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div style={cardStyle}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16,flexWrap:"wrap",gap:12}}>
+                  <h3 style={{margin:0,fontSize:13,color:t.txM,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em"}}>
+                    Browse Vault ({filteredFiles.length}{vaultFiles.length !== filteredFiles.length ? ` of ${vaultFiles.length}` : ""})
+                  </h3>
+                  <div style={{display:"flex",gap:10,flexWrap:"wrap"}}>
+                    <input type="text" placeholder="Search vault..."
+                      value={vaultSearch}
+                      onChange={e => setVaultSearch(e.target.value)}
+                      style={{...iS,maxWidth:240,padding:"8px 12px",fontSize:14}}/>
+                    <select value={vaultSort} onChange={e => setVaultSort(e.target.value)}
+                      style={{...iS,width:"auto",padding:"8px 12px",fontSize:14,cursor:"pointer"}}>
+                      <option value="company">Sort: Company</option>
+                      <option value="role">Sort: Role</option>
+                      <option value="version_key">Sort: Key</option>
+                      <option value="filename">Sort: Filename</option>
+                      <option value="size_bytes">Sort: Size</option>
+                    </select>
+                  </div>
+                </div>
+
+                {filteredFiles.length === 0 ? (
+                  <div style={{padding:32,textAlign:"center",color:t.txM,fontStyle:"italic"}}>
+                    {vaultLoading ? "Loading vault files..." : "No vault files found."}
+                  </div>
+                ) : (
+                  <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                    {filteredFiles.map(f => {
+                      const isOpen = vaultExpanded === f.version_key;
+                      const det = vaultDetails[f.version_key];
+                      const sizeLabel = typeof f.size_kb === "number"
+                        ? (f.size_kb >= 1024 ? `${(f.size_kb/1024).toFixed(1)} MB` : `${f.size_kb} KB`)
+                        : null;
+                      return (
+                        <div key={f.filename || f.version_key} style={{background:t.bgS,borderRadius:10,border:`1px solid ${t.bd}`,overflow:"hidden"}}>
+                          <div style={{padding:"12px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}} className="vault-row">
+                            <div style={{flex:1,minWidth:200}}>
+                              <div style={{fontSize:14,fontWeight:700,color:t.tx}}>
+                                {f.company || "—"}{f.role ? ` · ${f.role}` : ""}
+                              </div>
+                              <div style={{fontSize:12,color:t.txM,marginTop:3,wordBreak:"break-word"}}>
+                                <span style={{fontFamily:"monospace",color:t.ac}}>{f.version_key}</span>
+                                {f.filename && <span> · {f.filename}</span>}
+                                {sizeLabel && <span> · {sizeLabel}</span>}
+                              </div>
+                            </div>
+                            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                              <button type="button" style={btnSecondary}
+                                aria-expanded={isOpen}
+                                aria-label={`${isOpen?"Hide":"View"} details for ${f.version_key}`}
+                                onClick={() => {
+                                  if (isOpen) { setVaultExpanded(null); }
+                                  else { setVaultExpanded(f.version_key); fetchVaultVersionDetails(f.version_key); }
+                                }}>
+                                {isOpen ? "Hide" : "View Details"}
+                              </button>
+                              <button type="button" style={btnDanger}
+                                aria-label={`Delete vault version ${f.version_key}`}
+                                onClick={() => deleteVaultVersion(f.version_key)}>
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                          {isOpen && (
+                            <div style={{padding:"14px 16px",borderTop:`1px solid ${t.bd}`,background:t.cd}}>
+                              {!det || det.__loading ? (
+                                <div style={{color:t.txM,fontStyle:"italic",fontSize:13}}>Loading details...</div>
+                              ) : det.error ? (
+                                <div style={{color:t.er,fontSize:13}}>❌ {det.error}</div>
+                              ) : (
+                                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:12}}>
+                                  <div>
+                                    <div style={labelStyle}>Display Name</div>
+                                    <div style={{fontSize:14,color:t.tx}}>{det.display_name || "—"}</div>
+                                  </div>
+                                  <div>
+                                    <div style={labelStyle}>Target Companies</div>
+                                    <div style={{fontSize:14,color:t.tx}}>
+                                      {(det.target_companies || []).join(", ") || "—"}
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <div style={labelStyle}>Target Roles</div>
+                                    <div style={{fontSize:14,color:t.tx}}>
+                                      {(det.target_roles || []).join(", ") || "—"}
+                                    </div>
+                                  </div>
+                                  <div style={{gridColumn:"1 / -1"}}>
+                                    <div style={labelStyle}>Extracted Skills ({(det.extracted_skills || []).length})</div>
+                                    <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                                      {(det.extracted_skills || []).slice(0,40).map(s => (
+                                        <span key={s} style={{fontSize:12,padding:"3px 9px",borderRadius:6,background:t.acL,color:t.ac,border:`1px solid ${t.ac}30`}}>{s}</span>
+                                      ))}
+                                      {(det.extracted_skills || []).length === 0 && <span style={{color:t.txM,fontSize:13,fontStyle:"italic"}}>none</span>}
+                                    </div>
+                                  </div>
+                                  {det.notes && (
+                                    <div style={{gridColumn:"1 / -1"}}>
+                                      <div style={labelStyle}>Notes</div>
+                                      <div style={{fontSize:13,color:t.txS}}>{det.notes}</div>
+                                    </div>
+                                  )}
+                                  <div>
+                                    <div style={labelStyle}>Resume Length</div>
+                                    <div style={{fontSize:14,color:t.tx}}>{(det.resume_text || "").length.toLocaleString()} chars</div>
+                                  </div>
+                                  {det.updated_at && (
+                                    <div>
+                                      <div style={labelStyle}>Updated</div>
+                                      <div style={{fontSize:14,color:t.tx}}>{timeAgo(det.updated_at)}</div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
         {/* ════════════ PIPELINE ════════════ */}
         {tab==="pipeline" && (
           <div>
@@ -2363,6 +3010,9 @@ export default function App() {
           .filter-bar select,.filter-bar input{font-size:14px}
           .job-card-top{flex-wrap:wrap}
           .job-meta{gap:8px!important}
+          .vault-cmp-grid{grid-template-columns:1fr!important}
+          .vault-row{flex-direction:column;align-items:stretch!important}
+          .vault-row button{width:100%}
         }
 
         /* ── Scrollbar ── */
