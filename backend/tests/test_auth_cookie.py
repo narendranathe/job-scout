@@ -271,3 +271,233 @@ def test_cookie_signed_with_session_secret_key(monkeypatch):
     payload = read_session(cookie_a)
     assert payload is not None
     assert "csrf" in payload
+
+
+# ─── Multi-worker fallback key (regression for random-401s bug) ────────────
+
+def _reset_fallback_cache():
+    """Helper: clear the module-level fallback key cache so subsequent
+    calls hit the file (or generate fresh). Mirrors what a freshly-forked
+    gunicorn worker sees on its first auth request."""
+    import routes._auth as auth
+    auth._FALLBACK_KEY_CACHE = None
+
+
+def test_fallback_key_is_shared_across_workers(tmp_path, monkeypatch):
+    """Two simulated worker processes (cleared module cache) must derive
+    the SAME fallback key from the shared file — a cookie signed by one
+    must verify on the other. Pre-fix this failed because each worker
+    generated its own random ``secrets.token_hex(32)`` at import time.
+    """
+    from routes._auth import issue_session, read_session
+
+    # Force dev mode + a writable, isolated key file.
+    monkeypatch.delenv("SESSION_SECRET_KEY", raising=False)
+    monkeypatch.delenv("API_SECRET", raising=False)
+    monkeypatch.delenv("JOBSCOUT_ENV", raising=False)
+    monkeypatch.delenv("FLASK_ENV", raising=False)
+    monkeypatch.delenv("RENDER", raising=False)
+    monkeypatch.delenv("DYNO", raising=False)
+    key_file = tmp_path / "session.key"
+    monkeypatch.setenv("SESSION_KEY_FILE", str(key_file))
+
+    # Worker A starts cold, mints a session.
+    _reset_fallback_cache()
+    cookie, _csrf = issue_session()
+    assert key_file.exists(), "first worker should have persisted the key"
+    key_a = key_file.read_text().strip()
+    assert len(key_a) >= 32
+
+    # Worker B starts cold and tries to verify worker A's cookie.
+    _reset_fallback_cache()
+    payload = read_session(cookie)
+    assert payload is not None, (
+        "second worker rejected the first worker's cookie — fallback key "
+        "is not being shared across forked workers"
+    )
+    assert "csrf" in payload
+
+    # And the file content didn't change (B read, didn't overwrite).
+    assert key_file.read_text().strip() == key_a
+
+
+def test_production_mode_hard_fails_without_secret(monkeypatch, tmp_path):
+    """In production, neither SESSION_SECRET_KEY nor API_SECRET set must
+    raise immediately rather than silently mint a per-worker key."""
+    from routes._auth import issue_session
+    import routes._auth as auth
+
+    monkeypatch.delenv("SESSION_SECRET_KEY", raising=False)
+    monkeypatch.delenv("API_SECRET", raising=False)
+    monkeypatch.setenv("SESSION_KEY_FILE", str(tmp_path / "k"))
+    monkeypatch.setenv("JOBSCOUT_ENV", "production")
+    _reset_fallback_cache()
+
+    with pytest.raises(RuntimeError, match="fallback signing key in production"):
+        issue_session()
+
+    # Cleanup: drop the prod flag so later tests aren't affected.
+    monkeypatch.delenv("JOBSCOUT_ENV", raising=False)
+    _reset_fallback_cache()
+
+
+def test_production_with_session_secret_key_works(monkeypatch, tmp_path):
+    """Production mode is fine as long as SESSION_SECRET_KEY is set —
+    the hard-fail is only the fallback path, not every prod request."""
+    from routes._auth import issue_session, read_session
+
+    monkeypatch.delenv("API_SECRET", raising=False)
+    monkeypatch.setenv("SESSION_SECRET_KEY", "prod-key-xyz")
+    monkeypatch.setenv("JOBSCOUT_ENV", "production")
+    monkeypatch.setenv("SESSION_KEY_FILE", str(tmp_path / "k"))
+    _reset_fallback_cache()
+
+    cookie, _csrf = issue_session()
+    assert read_session(cookie) is not None
+
+
+def test_production_with_api_secret_only_works(monkeypatch, tmp_path):
+    """API_SECRET alone (legacy single-secret deployments) is also fine
+    in production — it satisfies the explicit-key requirement."""
+    from routes._auth import issue_session, read_session
+
+    monkeypatch.delenv("SESSION_SECRET_KEY", raising=False)
+    monkeypatch.setenv("API_SECRET", "legacy-prod-secret")
+    monkeypatch.setenv("JOBSCOUT_ENV", "production")
+    monkeypatch.setenv("SESSION_KEY_FILE", str(tmp_path / "k"))
+    _reset_fallback_cache()
+
+    cookie, _csrf = issue_session()
+    assert read_session(cookie) is not None
+
+
+def test_render_env_flag_triggers_production(monkeypatch, tmp_path):
+    """RENDER=true (set by Render automatically) must trip the prod check."""
+    from routes._auth import issue_session
+
+    monkeypatch.delenv("SESSION_SECRET_KEY", raising=False)
+    monkeypatch.delenv("API_SECRET", raising=False)
+    monkeypatch.delenv("JOBSCOUT_ENV", raising=False)
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setenv("SESSION_KEY_FILE", str(tmp_path / "k"))
+    _reset_fallback_cache()
+
+    with pytest.raises(RuntimeError):
+        issue_session()
+
+    monkeypatch.delenv("RENDER", raising=False)
+    _reset_fallback_cache()
+
+
+def test_fallback_key_file_permissions_restricted(tmp_path, monkeypatch):
+    """The persisted fallback key file must not be world-readable —
+    cookies signed with a leaked key can be forged."""
+    import stat
+    from routes._auth import issue_session
+
+    monkeypatch.delenv("SESSION_SECRET_KEY", raising=False)
+    monkeypatch.delenv("API_SECRET", raising=False)
+    monkeypatch.delenv("JOBSCOUT_ENV", raising=False)
+    monkeypatch.delenv("RENDER", raising=False)
+    key_file = tmp_path / "perm-test.key"
+    monkeypatch.setenv("SESSION_KEY_FILE", str(key_file))
+    _reset_fallback_cache()
+
+    issue_session()
+    mode = stat.S_IMODE(os.stat(key_file).st_mode)
+    # Owner read/write only — no group or other access.
+    assert mode & stat.S_IRWXG == 0, f"group bits set: {oct(mode)}"
+    assert mode & stat.S_IRWXO == 0, f"world bits set: {oct(mode)}"
+
+
+def test_pre_existing_key_file_is_reused(tmp_path, monkeypatch):
+    """If the key file already exists (e.g. left from a previous run or
+    written by the parent gunicorn process), workers must read it
+    verbatim instead of overwriting."""
+    from routes._auth import issue_session, read_session, _load_or_create_fallback_key
+
+    monkeypatch.delenv("SESSION_SECRET_KEY", raising=False)
+    monkeypatch.delenv("API_SECRET", raising=False)
+    monkeypatch.delenv("JOBSCOUT_ENV", raising=False)
+    monkeypatch.delenv("RENDER", raising=False)
+    monkeypatch.delenv("DYNO", raising=False)
+    key_file = tmp_path / "preseeded.key"
+    preseeded = "a" * 64  # 64 hex chars
+    key_file.write_text(preseeded)
+    monkeypatch.setenv("SESSION_KEY_FILE", str(key_file))
+    _reset_fallback_cache()
+
+    loaded = _load_or_create_fallback_key()
+    assert loaded == preseeded
+
+    # And cookies sign/verify with this preseeded key.
+    cookie, _ = issue_session()
+    assert read_session(cookie) is not None
+    # File content unchanged.
+    assert key_file.read_text() == preseeded
+
+
+# ─── Critic-flagged hardening ──────────────────────────────────────────────
+
+
+def test_fallback_key_raises_on_unwritable_filesystem(tmp_path, monkeypatch):
+    """If the key file can't be persisted, we MUST raise, not silently
+    fall back to a process-local key. Silent fallback re-introduces the
+    multi-worker bug this function was written to fix.
+
+    Forces the failure by monkeypatching ``os.makedirs`` to raise —
+    direct filesystem-perm tests don't work as root (Docker/CI). The
+    interesting behaviour is the exception-handling branch, not how
+    we got there.
+    """
+    from routes import _auth as auth
+
+    monkeypatch.setenv("SESSION_KEY_FILE", str(tmp_path / "wont-be-created" / "key"))
+    monkeypatch.delenv("SESSION_SECRET_KEY", raising=False)
+    monkeypatch.delenv("API_SECRET", raising=False)
+    _reset_fallback_cache()
+
+    real_makedirs = os.makedirs
+
+    def boom_on_jobscout_dir(path, *a, **kw):
+        if "wont-be-created" in str(path):
+            raise OSError(13, "Permission denied")
+        return real_makedirs(path, *a, **kw)
+
+    monkeypatch.setattr(os, "makedirs", boom_on_jobscout_dir)
+
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError, match=r"could not persist session key"):
+        auth._load_or_create_fallback_key()
+
+    # Cache must NOT have been populated with a process-local key —
+    # this is the regression guard against the previous silent fallback.
+    assert auth._FALLBACK_KEY_CACHE is None
+
+
+def test_default_key_dir_is_under_home_not_tmp():
+    """Predictable /tmp paths invite symlink-pre-creation attacks.
+
+    The default key file must live under ~/.jobscout/, not anywhere a
+    local unprivileged user could plant a symlink before first start.
+    """
+    from routes import _auth as auth
+    assert auth._DEFAULT_KEY_FILE.startswith(os.path.expanduser("~/.jobscout"))
+    assert "tmp" not in auth._DEFAULT_KEY_FILE.lower()
+
+
+def test_default_key_dir_created_with_restrictive_perms(tmp_path, monkeypatch):
+    """First-use of the default dir creates it 0o700, not 0o755."""
+    from routes import _auth as auth
+
+    custom = tmp_path / "subdir" / "session-key"
+    monkeypatch.setenv("SESSION_KEY_FILE", str(custom))
+    monkeypatch.delenv("SESSION_SECRET_KEY", raising=False)
+    monkeypatch.delenv("API_SECRET", raising=False)
+    _reset_fallback_cache()
+
+    auth._load_or_create_fallback_key()
+    # The parent dir we just created should be 0o700.
+    parent = custom.parent
+    mode = parent.stat().st_mode & 0o777
+    assert mode == 0o700, f"key dir perms = {oct(mode)} (expected 0o700)"
