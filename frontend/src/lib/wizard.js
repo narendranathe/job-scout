@@ -75,7 +75,20 @@ export async function detectOnboardingState() {
       return "login-required";
     }
 
-    if (!profileResp.ok) return "unknown";
+    if (!profileResp.ok) {
+      // 5xx (server error) or 4xx-other (resource not found, schema
+      // change). Both leave us unable to decide first-run vs onboarded.
+      // We deliberately fall back to "unknown" rather than "first-run"
+      // because a server blip should NOT relaunch the wizard for a
+      // user who already onboarded. The trade-off: a TRUE first-run
+      // user on a flaky server might silently skip the wizard. The
+      // console.warn surfaces this in DevTools so it's debuggable.
+      console.warn(
+        `wizard: /api/profile returned ${profileResp.status} — ` +
+          `skipping wizard. If this is a fresh install, use /setup?force=1.`
+      );
+      return "unknown";
+    }
     const profile = await profileResp.json();
 
     // onboarded_at is the explicit completion marker. Set by the wizard
