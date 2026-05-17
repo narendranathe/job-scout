@@ -23,7 +23,10 @@ export const STATIC_URL = "./api-data.json";
  * Trailing slashes are stripped so callers can `${RENDER_API}/api/...`
  * without worrying about double slashes.
  */
-const _readApiUrl = () => {
+// Exported (PR 5/N) so SetupPanel can read the current value without
+// re-implementing the localStorage probe. Internal-leading underscore
+// kept to mark this as "low-level — most callers want RENDER_API instead".
+export const _readApiUrl = () => {
   if (typeof window === "undefined") return "";
   try { return (window.localStorage.getItem("jobscout_api_url") || "").trim(); }
   catch { return ""; }
