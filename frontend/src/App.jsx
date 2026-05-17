@@ -344,7 +344,6 @@ export default function App() {
   const {data,loading,error,source,health,lastUpdated,refetch} = useJobData();
   const [tab,setTab] = useState("jobs");
   const [xJ,setXJ] = useState(null);
-  const [menuOpen,setMenuOpen] = useState(false);
   // Setup panel: shows blocking when no Render URL is configured;
   // user can also re-open from the header ⚙️ button to edit.
   const [setupOpen, setSetupOpen] = useState(() => !RENDER_API);
@@ -1634,7 +1633,7 @@ export default function App() {
           {/* Tabs — horizontally scrollable on mobile */}
           <div className="nav-tabs">
             {TABS.map(tb => (
-              <button key={tb} onClick={()=>{setTab(tb);setMenuOpen(false);}}
+              <button key={tb} onClick={()=>setTab(tb)}
                 style={{padding:"8px 16px",borderRadius:8,border:"none",
                   background:tab===tb?t.gP:"transparent",
                   color:tab===tb?"#fff":t.txM,
