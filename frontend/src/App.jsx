@@ -525,16 +525,23 @@ export default function App() {
   const [expandedVersionRow, setExpandedVersionRow] = useState({});
 
   const fetchBestMatch = useCallback(async (job) => {
+    const key = job.external_id;
+    if (!key) return;
     if (!RENDER_API) {
-      setBestMatchByJob(prev => ({...prev, [job.external_id]: {loading:false, error:"No API configured", data:null}}));
+      setBestMatchByJob(prev => ({...prev, [key]: {loading:false, error:"No API configured", data:null}}));
       return;
     }
-    const jd = (job.description || job.title || "").trim();
+    let already = false;
+    setBestMatchByJob(prev => {
+      if (prev[key]?.loading) { already = true; return prev; }
+      return {...prev, [key]: {loading:true, error:null, data:prev[key]?.data || null}};
+    });
+    if (already) return;
+    const jd = (job.description || job.title || "").trim().slice(0, 20000);
     if (!jd) {
-      setBestMatchByJob(prev => ({...prev, [job.external_id]: {loading:false, error:"No job description", data:null}}));
+      setBestMatchByJob(prev => ({...prev, [key]: {loading:false, error:"No job description", data:null}}));
       return;
     }
-    setBestMatchByJob(prev => ({...prev, [job.external_id]: {loading:true, error:null, data:null}}));
     try {
       const r = await fetch(`${RENDER_API}/api/vault/best-match`, {
         method:"POST",
@@ -545,16 +552,23 @@ export default function App() {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const d = await r.json();
       const rankings = Array.isArray(d.rankings) ? d.rankings.slice(0, 5) : [];
-      setBestMatchByJob(prev => ({...prev, [job.external_id]: {loading:false, error:null, data:{count:d.count||0, rankings}}}));
+      setBestMatchByJob(prev => ({...prev, [key]: {loading:false, error:null, data:{count:d.count||0, rankings}}}));
     } catch (e) {
-      setBestMatchByJob(prev => ({...prev, [job.external_id]: {loading:false, error:e.message||"Failed", data:null}}));
+      const msg = (e?.name === "TimeoutError" || /timed out/i.test(e?.message||""))
+        ? "Match timed out — try again"
+        : (e?.message === "HTTP 404" ? "Vault endpoint not found" : (e?.message||"Failed"));
+      setBestMatchByJob(prev => ({...prev, [key]: {loading:false, error:msg, data:null}}));
     }
   }, []);
 
   const fetchVersionDetails = useCallback(async (versionKey) => {
     if (!RENDER_API || !versionKey) return;
-    if (versionDetails[versionKey]?.data || versionDetails[versionKey]?.loading) return;
-    setVersionDetails(prev => ({...prev, [versionKey]: {loading:true, error:null, data:null}}));
+    let skip = false;
+    setVersionDetails(prev => {
+      if (prev[versionKey]?.data || prev[versionKey]?.loading) { skip = true; return prev; }
+      return {...prev, [versionKey]: {loading:true, error:null, data:null}};
+    });
+    if (skip) return;
     try {
       const r = await fetch(`${RENDER_API}/api/vault/version/${encodeURIComponent(versionKey)}`, {
         signal: AbortSignal.timeout(10000),
@@ -565,7 +579,7 @@ export default function App() {
     } catch (e) {
       setVersionDetails(prev => ({...prev, [versionKey]: {loading:false, error:e.message||"Failed", data:null}}));
     }
-  }, [versionDetails]);
+  }, []);
 
   // Filters
   const [q,sQ]             = useState("");
@@ -624,6 +638,20 @@ export default function App() {
   const [vaultUpRole, setVaultUpRole]       = useState("");
   const [vaultUpStatus, setVaultUpStatus]   = useState(null);
   const [vaultUpLoading, setVaultUpLoading] = useState(false);
+  const vaultFileInputRef = useRef(null);
+  const filteredVaultFiles = useMemo(() => {
+    const q = vaultSearch.toLowerCase();
+    const arr = q
+      ? vaultFiles.filter(f => [f.version_key, f.company, f.role, f.filename, f.display_name]
+          .filter(Boolean).some(v => String(v).toLowerCase().includes(q)))
+      : vaultFiles.slice();
+    const k = vaultSort;
+    arr.sort((a, b) => {
+      if (k === "size_bytes") return (b.size_bytes || 0) - (a.size_bytes || 0);
+      return String(a[k] || "").toLowerCase().localeCompare(String(b[k] || "").toLowerCase());
+    });
+    return arr;
+  }, [vaultFiles, vaultSearch, vaultSort]);
 
   // Manual scrape trigger + live progress polling (#19, #20).
   // `scraping` reflects "we should keep polling the status endpoint at the
@@ -1009,9 +1037,15 @@ export default function App() {
         fetch(`${RENDER_API}/api/vault/list`,  {signal: AbortSignal.timeout(8000)}),
       ]);
       if (sr.ok) setVaultStats(await sr.json());
+      else setVaultStats(null);
       if (lr.ok) {
         const j = await lr.json();
         setVaultFiles(j.files || []);
+      } else {
+        setVaultFiles([]);
+      }
+      if (!sr.ok || !lr.ok) {
+        setVaultError(`Vault load failed: stats HTTP ${sr.status}, list HTTP ${lr.status}`);
       }
     } catch (e) {
       setVaultError(e.message || "Failed to load vault");
@@ -1020,26 +1054,44 @@ export default function App() {
     }
   }, []);
 
-  useEffect(() => { if (RENDER_API) fetchVault(); }, [fetchVault]);
+  useEffect(() => {
+    if (tab === "vault" && RENDER_API && !vaultStats && !vaultLoading) fetchVault();
+  }, [tab, fetchVault, vaultStats, vaultLoading]);
 
   const fetchVaultVersionDetails = async (vk) => {
     if (!RENDER_API || vaultDetails[vk]) return;
+    setVaultDetails(prev => ({...prev, [vk]: {__loading:true}}));
     try {
-      const r = await fetch(`${RENDER_API}/api/vault/version/${encodeURIComponent(vk)}`);
+      const r = await fetch(`${RENDER_API}/api/vault/version/${encodeURIComponent(vk)}`, {signal: AbortSignal.timeout(8000)});
       if (r.ok) {
         const d = await r.json();
         setVaultDetails(prev => ({...prev, [vk]: d}));
+      } else {
+        let msg = `HTTP ${r.status}`;
+        try { const j = await r.json(); if (j?.error) msg = j.error; } catch {}
+        setVaultDetails(prev => ({...prev, [vk]: {error: msg}}));
       }
-    } catch {}
+    } catch (e) {
+      setVaultDetails(prev => ({...prev, [vk]: {error: e.message || "Failed to load details"}}));
+    }
   };
 
   const deleteVaultVersion = async (vk) => {
     if (!RENDER_API) return;
-    if (!window.confirm(`Delete vault version "${vk}"? This removes the DB record.`)) return;
+    if (!window.confirm(`Delete vault version "${vk}"?\n\nNote: this removes the database record only. The PDF file on disk remains; it will reappear next refresh unless removed server-side.`)) return;
     try {
-      await fetch(`${RENDER_API}/api/vault/version/${encodeURIComponent(vk)}`, {method:"DELETE"});
+      const r = await fetch(`${RENDER_API}/api/vault/version/${encodeURIComponent(vk)}`, {method:"DELETE", signal: AbortSignal.timeout(8000)});
+      if (!r.ok) {
+        let msg = `HTTP ${r.status}`;
+        try { const j = await r.json(); if (j?.error) msg = j.error; } catch {}
+        setVaultError(`Delete failed: ${msg}`);
+        return;
+      }
+      setVaultDetails(prev => { const n = {...prev}; delete n[vk]; return n; });
       fetchVault();
-    } catch {}
+    } catch (e) {
+      setVaultError(`Delete failed: ${e.message || "network error"}`);
+    }
   };
 
   const compareVaultVersions = async () => {
@@ -1063,6 +1115,10 @@ export default function App() {
   const uploadVaultPdf = async () => {
     if (!RENDER_API || !vaultUpFile || !vaultUpCompany.trim()) {
       setVaultUpStatus({ok:false, msg:"PDF file and company name required"});
+      return;
+    }
+    if (vaultUpFile.size > 5 * 1024 * 1024) {
+      setVaultUpStatus({ok:false, msg:`❌ File too large (${(vaultUpFile.size/1024/1024).toFixed(1)} MB) — max 5 MB`});
       return;
     }
     setVaultUpLoading(true);
@@ -1093,6 +1149,9 @@ export default function App() {
         setVaultUpFile(null);
         setVaultUpCompany("");
         setVaultUpRole("");
+        if (vaultFileInputRef.current) vaultFileInputRef.current.value = "";
+        setVaultDetails(prev => { const n = {...prev}; delete n[d.version_key]; return n; });
+        setVaultCmpResult(null);
         fetchVault();
       } else {
         setVaultUpStatus({ok:false, msg:`❌ ${d.error || "Upload failed"}`});
@@ -1570,12 +1629,13 @@ export default function App() {
                           const loading = bm?.loading;
                           return (
                             <button
+                              type="button"
                               onClick={e => { e.stopPropagation(); if (!loading) fetchBestMatch(j); }}
-                              disabled={loading}
+                              disabled={loading || !j.external_id}
                               style={{padding:"9px 14px",borderRadius:8,border:`1.5px solid ${t.vi}`,
                                 background:loading?`${t.vi}10`:`${t.vi}18`,color:t.vi,
                                 fontSize:13,fontWeight:700,cursor:loading?"wait":"pointer",fontFamily:"inherit",
-                                transition:"all .15s",whiteSpace:"nowrap",opacity:loading?0.7:1}}>
+                                transition:"all .15s",whiteSpace:"nowrap",opacity:loading?0.7:1,minHeight:36}}>
                               {loading?"Matching…":(bm?.data?"↻ Refresh Match":"📄 Find Best Resume")}
                             </button>
                           );
@@ -1642,16 +1702,19 @@ export default function App() {
                                         </div>
                                         <span style={{fontSize:13,fontWeight:800,color:t.vi,minWidth:38,textAlign:"right"}}>{pct}%</span>
                                       </div>
-                                      <span title="Skills matched" style={{fontSize:12,color:t.txM,fontWeight:600,whiteSpace:"nowrap"}}>
-                                        🎯 {matchedCount} skill{matchedCount===1?"":"s"} · {skillPct}%
+                                      <span title={`${matchedCount} matched skills · ${skillPct}% skill overlap`} style={{fontSize:12,color:t.txM,fontWeight:600}}>
+                                        🎯 {matchedCount} · {skillPct}%
                                       </span>
                                       <button
+                                        type="button"
+                                        aria-expanded={isRowOpen}
+                                        aria-label={`${isRowOpen?"Hide":"View"} details for ${rk.display_name || rk.version_key}`}
                                         onClick={() => {
                                           setExpandedVersionRow(prev => ({...prev, [rowKey]: !prev[rowKey]}));
                                           if (!isRowOpen) fetchVersionDetails(rk.version_key);
                                         }}
-                                        style={{padding:"5px 11px",borderRadius:6,border:`1px solid ${t.vi}50`,background:isRowOpen?`${t.vi}20`:"transparent",color:t.vi,fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>
-                                        {isRowOpen?"Hide":"View"}
+                                        style={{padding:"8px 12px",borderRadius:6,border:`1px solid ${t.vi}50`,background:isRowOpen?`${t.vi}20`:"transparent",color:t.vi,fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",minHeight:32}}>
+                                        {isRowOpen?"Hide ▴":"View ▾"}
                                       </button>
                                     </div>
                                     {isRowOpen && (
@@ -1680,7 +1743,6 @@ export default function App() {
                                             )}
                                           </div>
                                         )}
-                                        {!vd && <span style={{color:t.txM}}>Loading…</span>}
                                       </div>
                                     )}
                                   </div>
@@ -2222,20 +2284,7 @@ export default function App() {
 
         {/* ════════════ VAULT ════════════ */}
         {tab==="vault" && (() => {
-          const filteredFiles = vaultFiles
-            .filter(f => {
-              if (!vaultSearch) return true;
-              const q = vaultSearch.toLowerCase();
-              return [f.version_key, f.company, f.role, f.filename, f.display_name]
-                .filter(Boolean).some(v => String(v).toLowerCase().includes(q));
-            })
-            .sort((a, b) => {
-              const k = vaultSort;
-              const av = String(a[k] || "").toLowerCase();
-              const bv = String(b[k] || "").toLowerCase();
-              if (k === "size_bytes") return (b.size_bytes || 0) - (a.size_bytes || 0);
-              return av.localeCompare(bv);
-            });
+          const filteredFiles = filteredVaultFiles;
 
           const labelStyle = {fontSize:12,color:t.txM,fontWeight:600,textTransform:"uppercase",letterSpacing:".06em",marginBottom:6,display:"block"};
           const cardStyle = {background:t.cd,borderRadius:14,padding:24,border:`1px solid ${t.bd}`,boxShadow:t.shS,marginBottom:18};
@@ -2284,22 +2333,22 @@ export default function App() {
                 <h3 style={{margin:"0 0 16px",fontSize:13,color:t.txM,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em"}}>Upload New Resume</h3>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:12}}>
                   <div>
-                    <label style={labelStyle}>PDF File</label>
-                    <input type="file" accept="application/pdf,.pdf"
+                    <label htmlFor="vault-up-file" style={labelStyle}>PDF File <span style={{color:t.txS,fontWeight:400}}>(max 5 MB)</span></label>
+                    <input id="vault-up-file" ref={vaultFileInputRef} type="file" accept="application/pdf,.pdf"
                       onChange={e => setVaultUpFile(e.target.files?.[0] || null)}
                       style={{...iS,padding:"9px 12px"}}/>
                   </div>
                   <div>
-                    <label style={labelStyle}>Company <span style={{color:t.er}}>*</span></label>
-                    <input type="text" placeholder="e.g. Goldman Sachs"
-                      value={vaultUpCompany}
+                    <label htmlFor="vault-up-company" style={labelStyle}>Company <span style={{color:t.er}}>*</span></label>
+                    <input id="vault-up-company" type="text" placeholder="e.g. Goldman Sachs"
+                      value={vaultUpCompany} maxLength={80} required aria-required="true"
                       onChange={e => setVaultUpCompany(e.target.value)}
                       style={iS}/>
                   </div>
                   <div>
-                    <label style={labelStyle}>Role (optional)</label>
-                    <input type="text" placeholder="e.g. Data Engineer"
-                      value={vaultUpRole}
+                    <label htmlFor="vault-up-role" style={labelStyle}>Role (optional)</label>
+                    <input id="vault-up-role" type="text" placeholder="e.g. Data Engineer"
+                      value={vaultUpRole} maxLength={80}
                       onChange={e => setVaultUpRole(e.target.value)}
                       style={iS}/>
                   </div>
@@ -2320,35 +2369,46 @@ export default function App() {
 
               <div style={cardStyle}>
                 <h3 style={{margin:"0 0 16px",fontSize:13,color:t.txM,fontWeight:700,textTransform:"uppercase",letterSpacing:".08em"}}>Compare Two Versions (TF-IDF)</h3>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr auto",gap:12,alignItems:"end"}} className="vault-cmp-grid">
-                  <div>
-                    <label style={labelStyle}>Version A</label>
-                    <select value={vaultCmpA} onChange={e => setVaultCmpA(e.target.value)} style={iS}>
+                {(() => {
+                  const seen = new Set();
+                  const uniqueOptions = vaultFiles.filter(f => {
+                    if (!f.version_key || seen.has(f.version_key)) return false;
+                    seen.add(f.version_key);
+                    return true;
+                  });
+                  const opts = (
+                    <>
                       <option value="">— select —</option>
-                      {vaultFiles.map(f => (
+                      {uniqueOptions.map(f => (
                         <option key={f.version_key} value={f.version_key}>
                           {f.version_key}{f.display_name ? ` (${f.display_name})` : ""}
                         </option>
                       ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label style={labelStyle}>Version B</label>
-                    <select value={vaultCmpB} onChange={e => setVaultCmpB(e.target.value)} style={iS}>
-                      <option value="">— select —</option>
-                      {vaultFiles.map(f => (
-                        <option key={f.version_key} value={f.version_key}>
-                          {f.version_key}{f.display_name ? ` (${f.display_name})` : ""}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <button onClick={compareVaultVersions}
-                    disabled={vaultCmpLoading || !vaultCmpA || !vaultCmpB || vaultCmpA === vaultCmpB}
-                    style={{...btnPrimary,opacity:(vaultCmpLoading || !vaultCmpA || !vaultCmpB || vaultCmpA === vaultCmpB)?0.5:1}}>
-                    {vaultCmpLoading ? "Comparing..." : "Compare"}
-                  </button>
-                </div>
+                    </>
+                  );
+                  return (
+                    <>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr auto",gap:12,alignItems:"end"}} className="vault-cmp-grid">
+                        <div>
+                          <label htmlFor="vault-cmp-a" style={labelStyle}>Version A</label>
+                          <select id="vault-cmp-a" value={vaultCmpA} onChange={e => setVaultCmpA(e.target.value)} style={iS}>{opts}</select>
+                        </div>
+                        <div>
+                          <label htmlFor="vault-cmp-b" style={labelStyle}>Version B</label>
+                          <select id="vault-cmp-b" value={vaultCmpB} onChange={e => setVaultCmpB(e.target.value)} style={iS}>{opts}</select>
+                        </div>
+                        <button type="button" onClick={compareVaultVersions}
+                          disabled={vaultCmpLoading || !vaultCmpA || !vaultCmpB || vaultCmpA === vaultCmpB}
+                          style={{...btnPrimary,opacity:(vaultCmpLoading || !vaultCmpA || !vaultCmpB || vaultCmpA === vaultCmpB)?0.5:1}}>
+                          {vaultCmpLoading ? "Comparing..." : "Compare"}
+                        </button>
+                      </div>
+                      {uniqueOptions.length < 2 && (
+                        <div style={{marginTop:10,fontSize:12,color:t.txM}}>Need at least 2 distinct versions in the vault to compare.</div>
+                      )}
+                    </>
+                  );
+                })()}
                 {vaultCmpResult && (
                   <div style={{marginTop:18,padding:16,background:t.bgS,borderRadius:10,border:`1px solid ${t.bd}`}}>
                     {vaultCmpResult.error ? (
@@ -2357,7 +2417,7 @@ export default function App() {
                       <>
                         <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:14,flexWrap:"wrap"}}>
                           <div style={{fontSize:36,fontWeight:700,color:t.ac,fontFamily:"'Playfair Display',serif"}}>
-                            {vaultCmpResult.similarity_pct ?? Math.round((vaultCmpResult.similarity||0)*100)}%
+                            {Math.round(typeof vaultCmpResult.similarity_pct === "number" ? vaultCmpResult.similarity_pct : (vaultCmpResult.similarity||0)*100)}%
                           </div>
                           <div style={{fontSize:14,color:t.txS,flex:1,minWidth:200}}>
                             {vaultCmpResult.interpretation || "Similarity score"}
@@ -2431,8 +2491,11 @@ export default function App() {
                     {filteredFiles.map(f => {
                       const isOpen = vaultExpanded === f.version_key;
                       const det = vaultDetails[f.version_key];
+                      const sizeLabel = typeof f.size_kb === "number"
+                        ? (f.size_kb >= 1024 ? `${(f.size_kb/1024).toFixed(1)} MB` : `${f.size_kb} KB`)
+                        : null;
                       return (
-                        <div key={f.version_key} style={{background:t.bgS,borderRadius:10,border:`1px solid ${t.bd}`,overflow:"hidden"}}>
+                        <div key={f.filename || f.version_key} style={{background:t.bgS,borderRadius:10,border:`1px solid ${t.bd}`,overflow:"hidden"}}>
                           <div style={{padding:"12px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}} className="vault-row">
                             <div style={{flex:1,minWidth:200}}>
                               <div style={{fontSize:14,fontWeight:700,color:t.tx}}>
@@ -2441,25 +2504,29 @@ export default function App() {
                               <div style={{fontSize:12,color:t.txM,marginTop:3,wordBreak:"break-word"}}>
                                 <span style={{fontFamily:"monospace",color:t.ac}}>{f.version_key}</span>
                                 {f.filename && <span> · {f.filename}</span>}
-                                {f.size_kb && <span> · {f.size_kb} KB</span>}
+                                {sizeLabel && <span> · {sizeLabel}</span>}
                               </div>
                             </div>
                             <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                              <button style={btnSecondary}
+                              <button type="button" style={btnSecondary}
+                                aria-expanded={isOpen}
+                                aria-label={`${isOpen?"Hide":"View"} details for ${f.version_key}`}
                                 onClick={() => {
                                   if (isOpen) { setVaultExpanded(null); }
                                   else { setVaultExpanded(f.version_key); fetchVaultVersionDetails(f.version_key); }
                                 }}>
                                 {isOpen ? "Hide" : "View Details"}
                               </button>
-                              <button style={btnDanger} onClick={() => deleteVaultVersion(f.version_key)}>
+                              <button type="button" style={btnDanger}
+                                aria-label={`Delete vault version ${f.version_key}`}
+                                onClick={() => deleteVaultVersion(f.version_key)}>
                                 Delete
                               </button>
                             </div>
                           </div>
                           {isOpen && (
                             <div style={{padding:"14px 16px",borderTop:`1px solid ${t.bd}`,background:t.cd}}>
-                              {!det ? (
+                              {!det || det.__loading ? (
                                 <div style={{color:t.txM,fontStyle:"italic",fontSize:13}}>Loading details...</div>
                               ) : det.error ? (
                                 <div style={{color:t.er,fontSize:13}}>❌ {det.error}</div>
@@ -2943,6 +3010,9 @@ export default function App() {
           .filter-bar select,.filter-bar input{font-size:14px}
           .job-card-top{flex-wrap:wrap}
           .job-meta{gap:8px!important}
+          .vault-cmp-grid{grid-template-columns:1fr!important}
+          .vault-row{flex-direction:column;align-items:stretch!important}
+          .vault-row button{width:100%}
         }
 
         /* ── Scrollbar ── */
