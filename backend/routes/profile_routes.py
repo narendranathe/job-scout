@@ -59,6 +59,11 @@ def api_update_profile():
     min_total_comp, show_unsalaried, onboarded_at, skip_pin_acknowledged)
     alongside the existing fields. ``default_resume_version`` still
     cross-validates against the resume_versions table.
+
+    Side effect: when ``tracked_companies`` adds names that aren't in
+    ``config/companies.py``, fire a rate-limited Discord ping to the
+    maintainer (PRD #89 Slice 4 / Q1). Failure to ping is swallowed —
+    it's a notification, not a correctness invariant.
     """
     if request.method == "OPTIONS":
         return "", 204
@@ -70,19 +75,65 @@ def api_update_profile():
         from storage.profile_manager import (
             init_profile_tables,
             update_profile,
+            get_profile,
             ProfileValidationError,
         )
         init_profile_tables(_config.DB_PATH)
+        payload = request.get_json() or {}
+
+        # Snapshot the prior tracked_companies BEFORE update_profile so
+        # we can diff and only ping on NEW additions.
+        prior_tracked = []
+        if "tracked_companies" in payload:
+            try:
+                prior_tracked = list(
+                    get_profile(_config.DB_PATH).get("tracked_companies", [])
+                )
+            except Exception:
+                prior_tracked = []
+
         try:
-            update_profile(request.get_json() or {}, _config.DB_PATH)
+            update_profile(payload, _config.DB_PATH)
         except ProfileValidationError as ve:
             # Validation failures (e.g. unknown default_resume_version key,
             # negative min_total_comp) are client errors → 400 lets the
             # dashboard show a useful message instead of an opaque 500.
             return jsonify({"error": str(ve)}), 400, {"Access-Control-Allow-Origin": "*"}
+
+        # Fire-and-forget Discord ping for newly-tracked unscraped names.
+        # Runs in the request thread; the notifier itself has an 8s
+        # network timeout and swallows failures.
+        if "tracked_companies" in payload:
+            _maybe_ping_unscraped(payload.get("tracked_companies") or [], prior_tracked)
+
         return jsonify({"status": "updated"}), 200, {"Access-Control-Allow-Origin": "*"}
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+def _maybe_ping_unscraped(new_tracked, prior_tracked):
+    """Fire the rate-limited Discord ping for new unscraped company names.
+
+    Only the diff (new ∖ prior) is reported; the notifier's own
+    rate-limiter handles batching across multiple POSTs in a window.
+    Swallows every exception — notifications are best-effort.
+    """
+    try:
+        from config.companies import COMPANIES
+        scraped = {(c.get("name") or "").lower() for c in COMPANIES}
+        prior_set = {(n or "").lower() for n in (prior_tracked or [])}
+        novel = [
+            n for n in (new_tracked or [])
+            if (n or "").strip()
+            and n.lower() not in scraped
+            and n.lower() not in prior_set
+        ]
+        if not novel:
+            return
+        from alerts.notifier import notify_unscraped_tracking
+        notify_unscraped_tracking(novel)
+    except Exception as e:  # pragma: no cover — defensive
+        log.warning("unscraped-tracking ping failed: %s", e)
 
 
 @profile_bp.route("/api/resume", methods=["POST", "OPTIONS"])
