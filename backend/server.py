@@ -82,6 +82,10 @@ app.register_blueprint(admin_bp)
 # server.py split). Five routes: /, /ping, /api/data, /api/health, /api/stats.
 from routes.data_routes import data_bp
 app.register_blueprint(data_bp)
+# Scrape control endpoints extracted to routes/scrape_routes.py (PR 5/8).
+# POST /api/scrape, GET /api/scrape/status.
+from routes.scrape_routes import scrape_bp
+app.register_blueprint(scrape_bp)
 
 
 # State + state singleton are imported above from core.state (PR 2/8).
@@ -105,57 +109,7 @@ def _check_api_secret() -> bool:
     return check_api_secret(request)
 
 
-@app.route("/api/scrape", methods=["POST", "OPTIONS"])
-def api_trigger_scrape():
-    """Trigger an immediate scrape in a background daemon thread.
-
-    Returns 202 with a status snapshot so the dashboard can poll
-    /api/scrape/status for live progress. A 409 is returned if a scrape is
-    already in flight (per the broker's 10-min watchdog).
-    """
-    if request.method == "OPTIONS":
-        return "", 204
-
-    if not _check_api_secret():
-        return jsonify({"error": "unauthorized"}), 401
-
-    # Atomic check-and-arm: closes the race where two concurrent POSTs both
-    # pass is_running() and spawn two scrape threads. The broker is armed
-    # synchronously before we return 202, so the embedded snapshot already
-    # shows is_running=True — no false "scrape complete" on the first poll.
-    if not broker.try_start("fast", _count_fast_companies()):
-        return jsonify({
-            "started":  False,
-            "reason":   "scrape_in_progress",
-            "snapshot": broker.snapshot(),
-        }), 409
-
-    threading.Thread(
-        target=_run_scrape_async,
-        args=("fast",),
-        daemon=True,
-        name="scrape-worker",
-    ).start()
-
-    return jsonify({
-        "started":  True,
-        "snapshot": broker.snapshot(),
-    }), 202
-
-
-@app.route("/api/scrape/status", methods=["GET"])
-def api_scrape_status():
-    """Live progress snapshot for the in-flight scrape (or last finished run).
-
-    Auth-gated symmetrically with POST /api/scrape: if API_SECRET is set, a
-    matching Bearer token is required. This prevents the snapshot leaking
-    cadence/company-name info to anonymous pollers in deployments that have
-    locked down the trigger.
-    """
-    if not _check_api_secret():
-        return jsonify({"error": "unauthorized"}), 401
-    return jsonify(broker.snapshot()), 200, {"Access-Control-Allow-Origin": "*"}
-
+# /api/scrape, /api/scrape/status extracted to routes/scrape_routes.py (PR 5/8).
 
 # ─── Profile & Resume endpoints ────────────────────────────────────
 
