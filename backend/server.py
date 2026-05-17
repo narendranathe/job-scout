@@ -628,12 +628,15 @@ def api_upload_resume_version_pdf():
         if not file.filename.lower().endswith(".pdf"):
             return jsonify({"error": "Only PDF files are supported"}), 400
 
+        # Standardized on pypdf (CLAUDE.md tech-debt #3): one PDF library
+        # across the whole project. Same extractor as the vault uses on disk.
         try:
-            import pdfplumber, io
+            from storage.resume_vault import extract_text_from_pdf_bytes
             pdf_bytes = file.read()
-            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-                pages_text = [p.extract_text() or "" for p in pdf.pages]
-            text = "\n".join(pages_text).strip()
+            text = extract_text_from_pdf_bytes(
+                pdf_bytes,
+                source=f"upload:{file.filename or version_key}",
+            ).strip()
         except Exception as e:
             return jsonify({"error": f"PDF extraction failed: {e}"}), 500
 

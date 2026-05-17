@@ -286,23 +286,35 @@ def canonical_filename(company: str, role: str = None, ext: str = ".pdf") -> str
 def extract_text_from_pdf(pdf_path: str) -> str:
     """Extract plain text from a PDF file using pypdf."""
     try:
+        with open(pdf_path, "rb") as f:
+            return extract_text_from_pdf_bytes(f.read(), source=pdf_path)
+    except OSError as e:
+        log.error("Failed to read %s: %s", pdf_path, e)
+        return ""
+
+
+def extract_text_from_pdf_bytes(pdf_bytes: bytes, source: str = "<bytes>") -> str:
+    """Extract plain text from an in-memory PDF using pypdf.
+
+    Single source of truth for PDF→text in the project — the upload route
+    (server.py) and the on-disk vault both go through here. ``source`` is
+    only used for logs/errors so we know what produced empty output.
+    """
+    try:
         from pypdf import PdfReader
     except ImportError:
         log.error("pypdf not installed — run: pip install pypdf")
         return ""
 
+    import io
     try:
-        reader = PdfReader(pdf_path)
-        text_parts = []
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text_parts.append(page_text)
-        text = "\n\n".join(text_parts)
-        log.info("Extracted %d chars from %s (%d pages)", len(text), pdf_path, len(reader.pages))
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        text_parts = [p.extract_text() or "" for p in reader.pages]
+        text = "\n\n".join(t for t in text_parts if t)
+        log.info("Extracted %d chars from %s (%d pages)", len(text), source, len(reader.pages))
         return text
     except Exception as e:
-        log.error("Failed to extract text from %s: %s", pdf_path, e)
+        log.error("Failed to extract text from %s: %s", source, e)
         return ""
 
 
