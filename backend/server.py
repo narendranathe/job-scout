@@ -20,8 +20,6 @@ Night quiet hours:
 """
 
 import os
-import re
-import secrets
 import sys
 import json
 import time
@@ -39,26 +37,26 @@ from core.scrape_status import broker
 from core.scrape_orchestrator import run_scrape
 from storage.db import init_db, get_conn, get_stats
 
+# CLAUDE.md tech-debt #2 — server.py split. Shared constants now live in
+# core/config.py so new route blueprints can import them without having
+# to import server itself (which would cause circular imports).
+# Re-exported here for now so existing routes keep working unchanged;
+# each subsequent extraction PR will swap the in-file references over.
+from core.config import (
+    DB_PATH,
+    FAST_INTERVAL,
+    PORT,
+    API_SECRET,
+    _BEARER_RE,
+    check_api_secret,
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
     datefmt="%H:%M:%S",
 )
 log = logging.getLogger("jobscout")
-
-# ─── Config ────────────────────────────────────────────────────────
-DB_PATH      = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "jobscout.db"))
-FAST_INTERVAL = int(os.environ.get("FAST_INTERVAL", "300"))    # seconds between cycles
-# Note: per-company delay is SCRAPE_DELAY in the env; the orchestrator
-# reads it directly. Kept out of this module to avoid two copies.
-PORT          = int(os.environ.get("PORT", "10000"))
-# .strip() so trailing whitespace from .env files / shell exports doesn't
-# silently invalidate every auth attempt with a mysterious 401.
-API_SECRET    = os.environ.get("API_SECRET", "").strip()       # optional Bearer auth gate
-
-# RFC 7235: auth scheme is case-insensitive. Pre-compiled so the
-# per-request hot path is a single regex match.
-_BEARER_RE = re.compile(r"^Bearer\s+(\S+)\s*$", re.IGNORECASE)
 
 app = Flask(__name__)
 
@@ -215,20 +213,13 @@ def _run_scrape_async(mode: str = "fast") -> None:
 
 
 def _check_api_secret() -> bool:
-    """Returns True if the request is authorized (or no secret is configured).
+    """Backward-compat shim over core.config.check_api_secret.
 
-    Hardened against:
-    - Bearer scheme case (RFC 7235): "bearer", "Bearer", "BEARER" all match.
-    - Timing side-channels: ``secrets.compare_digest`` runs in constant time
-      so an attacker can't probe the secret byte-by-byte over many requests.
+    Existing callers pass no args (they rely on Flask's thread-local
+    ``request``). The new helper takes ``request`` explicitly so it can
+    be tested without a Flask context. Equivalent runtime behavior.
     """
-    if not API_SECRET:
-        return True  # dev mode passthrough
-    m = _BEARER_RE.match(request.headers.get("Authorization", ""))
-    if not m:
-        return False
-    token = m.group(1)
-    return secrets.compare_digest(token.encode("utf-8"), API_SECRET.encode("utf-8"))
+    return check_api_secret(request)
 
 
 @app.route("/api/scrape", methods=["POST", "OPTIONS"])
