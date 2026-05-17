@@ -147,6 +147,84 @@ def _check_disk_space() -> dict:
     return _check("disk_space", "pass", f"{free_mb:.0f}MB free")
 
 
+# ── Onboarding observability (PRD #89 §9, Slice 4) ────────────────────
+
+
+def _check_onboarded_users() -> dict:
+    """1 if any user has onboarded, 0 otherwise.
+
+    Always reports ``pass`` — this is informational, not a health
+    signal. The detail string carries the count so it shows up in the
+    doctor response without flipping the overall colour.
+    """
+    try:
+        from storage.db import get_conn
+        conn = get_conn(DB_PATH)
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM user_profile WHERE onboarded_at IS NOT NULL"
+            ).fetchone()
+        finally:
+            conn.close()
+        n = int(row[0] if row else 0)
+        return _check("onboarded_users", "pass", str(n))
+    except Exception as e:
+        return _check("onboarded_users", "warn", f"query failed: {e.__class__.__name__}")
+
+
+def _check_wizard_steps_skipped() -> dict:
+    """Placeholder: count of wizard sessions with skipped steps.
+
+    PRD §9 acknowledges v1 may stub this at 0 — we don't track
+    per-session step-completion telemetry yet. Reporting 0 keeps the
+    counter present so dashboards that consume it don't break later
+    when we wire real measurement.
+    """
+    return _check("wizard_steps_skipped", "pass", "0")
+
+
+def _check_tracked_but_unscraped_companies_count() -> dict:
+    """Count of names in tracked_companies that aren't in COMPANIES.
+
+    Surfaces the gap between user intent and the scraper roster so the
+    maintainer can prioritise adding the most-wanted new ATSes. Hard
+    fail is impossible here — even a query crash should warn, not
+    block the doctor response.
+    """
+    try:
+        from storage.db import get_conn
+        from config.companies import COMPANIES
+        scraped = {(c.get("name") or "").lower() for c in COMPANIES}
+        conn = get_conn(DB_PATH)
+        try:
+            row = conn.execute(
+                "SELECT tracked_companies FROM user_profile WHERE id = 1"
+            ).fetchone()
+        finally:
+            conn.close()
+        if not row or not row[0]:
+            return _check("tracked_but_unscraped_companies_count", "pass", "0")
+        try:
+            tracked = json.loads(row[0]) or []
+        except Exception:
+            tracked = []
+        unscraped = [
+            t for t in tracked
+            if t and t.lower() not in scraped
+        ]
+        return _check(
+            "tracked_but_unscraped_companies_count",
+            "pass",
+            str(len(unscraped)),
+        )
+    except Exception as e:
+        return _check(
+            "tracked_but_unscraped_companies_count",
+            "warn",
+            f"query failed: {e.__class__.__name__}",
+        )
+
+
 def _aggregate(checks: list) -> str:
     statuses = {c["status"] for c in checks}
     if "fail" in statuses:
@@ -164,6 +242,10 @@ DOCTOR_CHECKS = [
     _check_env_vars_present,
     _check_vault_dirs_writable,
     _check_disk_space,
+    # PRD #89 Slice 4 — onboarding observability counters.
+    _check_onboarded_users,
+    _check_wizard_steps_skipped,
+    _check_tracked_but_unscraped_companies_count,
 ]
 
 
@@ -380,6 +462,41 @@ def vault_reindex():
     }
     log.info("vault-reindex: %s", payload)
     return jsonify(payload), 200
+
+
+@admin_bp.route("/reset-onboarding", methods=["POST", "OPTIONS"])
+def reset_onboarding():
+    """Clear ``onboarded_at`` + ``skip_pin_acknowledged`` so the wizard
+    re-fires on the next page load.
+
+    PRD #89 Slice 4. Does NOT touch roles, dream_companies, vault, or
+    PIN — the user gets to walk through the wizard again with their
+    existing config carried in as defaults. (Defaults handling is the
+    wizard's job; this endpoint just flips the gate.)
+    """
+    if request.method == "OPTIONS":
+        return "", 200
+    if not _check_auth():
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        from storage.profile_manager import init_profile_tables
+        from storage.db import get_conn
+        init_profile_tables(DB_PATH)
+        conn = get_conn(DB_PATH)
+        try:
+            conn.execute(
+                "UPDATE user_profile SET onboarded_at = NULL, "
+                "skip_pin_acknowledged = 0, updated_at = datetime('now') "
+                "WHERE id = 1"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        log.info("Onboarding reset — wizard will re-fire on next load")
+        return jsonify({"status": "reset"}), 200
+    except Exception as e:
+        log.exception("reset-onboarding failed")
+        return jsonify({"error": f"reset failed: {e.__class__.__name__}"}), 500
 
 
 @admin_bp.after_request

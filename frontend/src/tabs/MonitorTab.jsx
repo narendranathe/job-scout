@@ -22,6 +22,8 @@ export function MonitorTab({ state }) {
     reextractLoading, reextractMsg, runReextract,
     vacuumLoading, vacuumMsg, vacuumIsErr, runClearCache,
     reindexLoading, reindexMsg, runReindex,
+    // PRD #89 Slice 4 — admin button to re-show the onboarding wizard.
+    resetOnboardingLoading, resetOnboardingMsg, runResetOnboarding,
   } = state;
 
   return (
@@ -235,6 +237,30 @@ export function MonitorTab({ state }) {
               <div style={{marginTop:10,fontSize:14,fontWeight:600,
                 color:reindexMsg.type==="ok"?t.ok:t.er}}>
                 {reindexMsg.text}
+              </div>
+            )}
+          </div>
+
+          {/* Reset onboarding (PRD #89 Slice 4) */}
+          <div style={{padding:18,borderRadius:12,background:t.bgS,border:`1px solid ${t.bd}`}}>
+            <div style={{fontSize:15,fontWeight:700,color:t.tx,marginBottom:6}}>🔄 Reset Onboarding</div>
+            <div style={{fontSize:13,color:t.txM,marginBottom:14}}>
+              Clear the onboarded_at flag and re-show the wizard on next page load.
+              Does not delete your roles, companies, or vault.
+              {!RENDER_API && <span style={{color:t.er}}> (Set VITE_RENDER_URL to enable)</span>}
+            </div>
+            <button onClick={runResetOnboarding} disabled={resetOnboardingLoading||!RENDER_API}
+              style={{padding:"11px 22px",borderRadius:9,border:"none",
+                background:resetOnboardingLoading?t.bgS:(RENDER_API?t.gP:`${t.txM}20`),
+                color:resetOnboardingLoading||!RENDER_API?t.txM:"#fff",
+                fontSize:14,fontWeight:700,cursor:resetOnboardingLoading||!RENDER_API?"not-allowed":"pointer",
+                fontFamily:"inherit",transition:"all .15s"}}>
+              {resetOnboardingLoading?"⏳ Resetting…":"▶ Reset onboarding"}
+            </button>
+            {resetOnboardingMsg && (
+              <div style={{marginTop:10,fontSize:14,fontWeight:600,
+                color:resetOnboardingMsg.type==="ok"?t.ok:t.er}}>
+                {resetOnboardingMsg.text}
               </div>
             )}
           </div>

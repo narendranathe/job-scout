@@ -291,6 +291,72 @@ def _send_discord_message(message: str):
         log.warning("Discord alert failed: %s", e)
 
 
+# ── Unscraped-tracking maintainer ping (PRD #89 Slice 4 / Q1) ─────────
+#
+# When a user adds names to ``user_profile.tracked_companies`` that
+# aren't in ``config/companies.py``, fire ONE Discord ping per day to
+# the maintainer. Coalesces multiple names into a single message so the
+# rate-limit stays honest under bursty inputs.
+#
+# State is process-local — a Render restart resets the rate-limit
+# window, which is acceptable (the message itself only nudges; missing
+# one is not a correctness bug).
+import time as _time
+
+_UNSCRAPED_RATE_LIMIT_SECONDS = 24 * 60 * 60
+_unscraped_state: dict = {
+    "last_sent_at": 0.0,
+    "pending_names": set(),
+}
+
+
+def notify_unscraped_tracking(names) -> bool:
+    """Discord-ping the maintainer about new typed-but-unscraped companies.
+
+    Args:
+        names: iterable of company name strings the user is now tracking
+               that aren't in ``config/companies.py``.
+
+    Returns True if a message was sent, False otherwise (rate-limited,
+    empty input, or Discord misconfigured).
+
+    Rate-limit: at most one ping per ``_UNSCRAPED_RATE_LIMIT_SECONDS``
+    window. New names within the window are queued; the next ping that
+    fires (after the window elapses) batches every queued name.
+    """
+    cleaned = sorted({(n or "").strip() for n in (names or []) if (n or "").strip()})
+    if not cleaned:
+        return False
+
+    # Queue every name; they'll all go out on the next ping.
+    _unscraped_state["pending_names"].update(cleaned)
+
+    now = _time.time()
+    if now - _unscraped_state["last_sent_at"] < _UNSCRAPED_RATE_LIMIT_SECONDS:
+        return False  # rate-limited; queue persists
+
+    if not DISCORD_WEBHOOK:
+        # Silently no-op — clear the queue too so it doesn't grow
+        # unbounded across restarts.
+        _unscraped_state["pending_names"].clear()
+        return False
+
+    batch = sorted(_unscraped_state["pending_names"])
+    message = (
+        "JobScout: a user is tracking unscraped companies: "
+        f"{', '.join(batch)}. "
+        "Consider adding them to `config/companies.py`."
+    )
+    try:
+        requests.post(DISCORD_WEBHOOK, json={"content": message}, timeout=10)
+        _unscraped_state["last_sent_at"] = now
+        _unscraped_state["pending_names"].clear()
+        return True
+    except Exception as e:
+        log.warning("Unscraped-tracking Discord ping failed: %s", e)
+        return False
+
+
 # ── Free: Discord ──────────────────────────────────────────────────────────
 
 def _send_discord(company, title, location, url, score_pct, sal_text, skills_text, tex_b64=None) -> bool:

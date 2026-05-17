@@ -696,6 +696,24 @@ Done (kept for history):
 - ~~#39 Default-resume chip + PDF download~~ → closed; both Approach A and Gap 2 shipped
 - ~~#41 Unbounded job_description DoS~~ → closed; 50KB cap on best-match + job-fit
 - ~~#44 DELETE endpoint inconsistency~~ → closed; legacy endpoint now routes through delete_vault_version
+- ~~#89 First-run onboarding wizard~~ → closed across 4 PRs:
+  - **Slice 1 (PR #98)** — backend foundations: schema migration
+    (5 new user_profile columns), config/role_taxonomy.py, 3 public
+    roster endpoints, cookie + CSRF auth via itsdangerous, vault routes
+    accept Bearer OR cookie. 52 new tests, 223 passing.
+  - **Slice 2 (PR #99)** — `<OnboardingWizard>` shell + steps 1-4
+    (Welcome, Roles, Companies, Locations & comp). useReducer state
+    machine in lib/wizard.js, ChipCloud + StepProgress reusable
+    components, first-run detection + /setup route in App.jsx.
+  - **Slice 3 (PR #100)** — steps 5-6 (drag-drop PDF upload + PIN
+    setup-or-skip-with-consent), POST /api/vault/parse-filename
+    auth-exempt echo endpoint, MissingPinBanner for the no-PIN path.
+  - **Slice 4 (this PR)** — LoginScreen for returning PIN users
+    (3-strike client-side rate limit), PreviewModeBanner for the
+    skip-the-wizard persona, Reset-onboarding admin card +
+    POST /api/admin/reset-onboarding, 3 new doctor counters, rate-
+    limited Discord ping to maintainer for typed-but-unscraped
+    company names.
 
 Open (priority order):
 1. Design work history PostgreSQL schema (AutoApply prerequisite)
@@ -705,3 +723,7 @@ Open (priority order):
    the Vite build is clean but visual correctness needs interactive
    verification. Spot-check Jobs/Vault/Tracker/Pipeline first since they
    have the highest interactivity.
+5. UAT: fresh-laptop walkthrough of the onboarding wizard, ≤ 5 min to
+   first job per PRD #89 G1. Validate ?force=1 re-entry preserves
+   prior config and the bulk uploader still works against PIN-enabled
+   servers.

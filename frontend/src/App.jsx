@@ -22,6 +22,10 @@ import { detectOnboardingState } from "./lib/wizard.js";
 // Permanent banner shown when the user skipped PIN setup during the
 // wizard (Slice 3). Self-decides whether to render based on profile.
 import { MissingPinBanner } from "./components/MissingPinBanner.jsx";
+// Slice 4 — login + preview mode + admin reset hook.
+import { LoginScreen } from "./components/LoginScreen.jsx";
+import { PreviewModeBanner } from "./components/PreviewModeBanner.jsx";
+import { shouldShowLogin, deriveMode, setCsrf } from "./lib/auth.js";
 // Vault tab row (memoized, PR 6/N).
 import { VaultRow } from "./components/VaultRow.jsx";
 // Shared job constants + helpers (PR 7/N + PR 8/N).
@@ -1012,6 +1016,39 @@ export default function App() {
     }
   };
 
+  // Reset onboarding (PRD #89 Slice 4) — clears onboarded_at +
+  // skip_pin_acknowledged so the wizard re-fires on next page load.
+  // Preserves roles, dream_companies, vault, and PIN.
+  const [resetOnboardingLoading, setResetOnboardingLoading] = useState(false);
+  const [resetOnboardingMsg, setResetOnboardingMsg] = useState(null);
+  const runResetOnboarding = async () => {
+    if (!RENDER_API) {
+      setResetOnboardingMsg({type: "err", text: "No Render API configured."});
+      return;
+    }
+    if (!window.confirm("This will return you to the setup wizard. Continue?")) return;
+    setResetOnboardingLoading(true);
+    setResetOnboardingMsg(null);
+    try {
+      const resp = await fetch(`${RENDER_API}/api/admin/reset-onboarding`, {
+        method: "POST",
+        headers: {...authHeaders()},
+        credentials: "include",
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!resp.ok) {
+        const d = await resp.json().catch(() => ({}));
+        setResetOnboardingMsg({type:"err", text: d.error || `HTTP ${resp.status}`});
+      } else {
+        setResetOnboardingMsg({type:"ok", text:"✅ Onboarding reset — reload to see the wizard."});
+      }
+    } catch (e) {
+      setResetOnboardingMsg({type:"err", text:`Could not reach Render: ${e.message}`});
+    } finally {
+      setResetOnboardingLoading(false);
+    }
+  };
+
   const fetchApplications = useCallback(async () => {
     setAppLoading(true);
     try {
@@ -1660,9 +1697,34 @@ export default function App() {
   const trackerCount = Object.keys(apps).length;
   const TABS = ["jobs","rare","analytics","companies","trends","tracker","vault","pipeline","monitor"];
 
+  // Slice 4 gate: returning user with a PIN but no session cookie →
+  // full-page LoginScreen blocking everything else. We skip this when
+  // the wizard is active (the wizard owns the no-cookie flow itself).
+  const loginNeeded = !wizardActive && shouldShowLogin(profile);
+  const dashboardMode = deriveMode(profile);
+
   return (
     <div style={{minHeight:"100vh",background:t.bg,fontFamily:"'Source Sans 3',sans-serif",color:t.tx,fontSize:16}}>
 
+      {loginNeeded && (
+        <LoginScreen
+          t={t}
+          apiBase={RENDER_API}
+          onLoggedIn={(csrf) => {
+            setCsrf(csrf);
+            // Refetch profile so the LoginScreen unmounts and the rest
+            // of the dashboard sees the authenticated state.
+            if (RENDER_API) {
+              fetch(`${RENDER_API}/api/profile`)
+                .then((r) => (r.ok ? r.json() : null))
+                .then((d) => d && setProfile(d))
+                .catch(() => {});
+            }
+          }}
+        />
+      )}
+
+      <PreviewModeBanner t={t} profile={profile} />
       <MissingPinBanner t={t} profile={profile} />
 
       {/* ═══ NAV ═══ */}
@@ -1855,6 +1917,7 @@ export default function App() {
             reextractLoading, reextractMsg, runReextract,
             vacuumLoading, vacuumMsg, vacuumIsErr, runClearCache,
             reindexLoading, reindexMsg, runReindex,
+            resetOnboardingLoading, resetOnboardingMsg, runResetOnboarding,
           }} />
         )}
       </div>
