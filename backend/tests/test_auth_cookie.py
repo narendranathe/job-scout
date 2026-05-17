@@ -89,11 +89,56 @@ def test_login_with_empty_pin_returns_401(client_with_pin):
     assert resp.status_code == 401
 
 
-def test_login_when_no_pin_set_succeeds(client):
-    """Fresh install: no PIN means login is a no-op that still mints a session."""
+def test_login_when_no_pin_set_is_refused(client):
+    """Fresh install: /api/login must refuse to mint a session before a
+    PIN exists. Previously this returned 200 + cookie, letting any
+    attacker who reached a fresh Render instance first get a 30-day
+    write-scoped cookie and full vault write access. See PRD #89 +
+    fix/login-no-pin-vuln. The wizard's PinSetup component handles
+    the bootstrap by calling /api/set-pin first, then /api/login.
+    """
     resp = client.post("/api/login", json={"pin": ""})
-    assert resp.status_code == 200
-    assert "jobscout_session=" in resp.headers.get("Set-Cookie", "")
+    assert resp.status_code == 403
+    body = resp.get_json()
+    assert body["error"] == "pin_not_set"
+    # Critically, NO cookie is issued — the response must not let the
+    # caller drive subsequent CSRF-gated writes.
+    set_cookie = resp.headers.get("Set-Cookie", "")
+    assert "jobscout_session=" not in set_cookie
+
+
+def test_login_when_no_pin_set_rejects_any_pin_value(client):
+    """Even sending a fake PIN must not mint a session before /api/set-pin
+    has run. Catches the regression where an attacker submits any string
+    in the hope of bypassing the empty-string short-circuit.
+    """
+    for guess in ("0000", "1234", "anything", "x" * 64):
+        resp = client.post("/api/login", json={"pin": guess})
+        assert resp.status_code == 403, f"PIN guess {guess!r} unexpectedly accepted"
+        assert "jobscout_session=" not in resp.headers.get("Set-Cookie", "")
+
+
+def test_no_pin_login_then_vault_write_still_unauthorized(client):
+    """End-to-end: even if the /api/login response is misused (e.g. a
+    client treats 403 as success), no session cookie was set, so the
+    follow-up vault write must still 401. Pins the integration: the
+    /api/login fix and the /api/vault/upload gate work together.
+    """
+    # Attacker hits /api/login before the owner has run the wizard.
+    client.post("/api/login", json={"pin": ""})
+    # Try a vault write afterwards — should be flatly unauthorized
+    # because no cookie was minted.
+    from io import BytesIO
+    resp = client.post(
+        "/api/vault/upload",
+        data={
+            "company": "TestCorp",
+            "role": "Data Engineer",
+            "file": (BytesIO(_MIN_PDF), "test.pdf"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 401
 
 
 def test_logout_clears_cookie(client_with_pin):

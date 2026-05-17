@@ -205,12 +205,24 @@ def api_set_pin():
 def api_login():
     """Trade a valid PIN for a signed session cookie + CSRF token.
 
-    When no PIN is set on this server, login is a no-op — the response
-    still mints a session so the wizard's "create your account" flow
-    works without an awkward two-step. When a PIN is set, the request
-    must include ``{"pin": "..."}`` and it must verify.
+    Refuses to mint a session when no PIN is set on this server (HTTP
+    403, ``error: pin_not_set``). Without that guard a fresh-install
+    Render instance would hand out a 30-day write-scoped cookie to the
+    first caller who reaches ``POST /api/login`` with any body — see
+    the security note below.
 
-    Response body:
+    Why this is safe for the onboarding wizard: the wizard's PinSetup
+    component (PRD #89 Slice 3, step 6) first calls ``POST /api/set-pin``
+    using whatever auth the early steps relied on (Bearer token when
+    ``API_SECRET`` is set, dev-mode passthrough when it isn't) and only
+    then calls ``POST /api/login`` with the freshly created PIN. By the
+    time login fires there is always a PIN to verify, so this branch
+    never hits the wizard happy path.
+
+    UI hint: a 403 ``pin_not_set`` response is the dashboard's signal
+    to route the user into ``/setup`` instead of the login screen.
+
+    Response body on success:
 
         {"status": "ok", "csrf_token": "..."}
 
@@ -220,8 +232,21 @@ def api_login():
     if request.method == "OPTIONS":
         return "", 204
     try:
-        from storage.profile_manager import init_profile_tables, verify_pin
+        from storage.profile_manager import (
+            init_profile_tables,
+            verify_pin,
+            has_pin,
+        )
         init_profile_tables(_config.DB_PATH)
+        # Refuse login entirely when no PIN is configured. verify_pin
+        # returns True for any input in this state (open-access dev
+        # semantics), which would otherwise let an unauthenticated
+        # attacker mint a 30-day session cookie + CSRF on a fresh
+        # install before the owner has run the wizard.
+        if not has_pin(_config.DB_PATH):
+            return jsonify({"error": "pin_not_set"}), 403, {
+                "Access-Control-Allow-Origin": "*"
+            }
         pin = (request.get_json(silent=True) or {}).get("pin", "")
         if not verify_pin(pin, _config.DB_PATH):
             # Constant-ish delay path: verify_pin already does the pbkdf2
