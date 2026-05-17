@@ -48,7 +48,7 @@ import os
 import re
 import secrets
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, send_file
 
 log = logging.getLogger(__name__)
 
@@ -451,6 +451,86 @@ def vault_version(version_key):
         result.pop("text_path", None)
         result["pdf_filename"] = os.path.basename(pdf_path) if pdf_path else None
         return jsonify({"status": "deleted", **result}), 200
+
+
+@vault_bp.route("/api/vault/version/<version_key>/pdf", methods=["GET", "OPTIONS"])
+def vault_version_pdf(version_key):
+    """Stream the canonical PDF for a vault version back to the client.
+
+    Auth: covered by the blueprint's ``before_request`` Bearer-token check.
+
+    Path-traversal hardening mirrors the DELETE branch:
+    1. Reject obviously malformed keys (``/``, ``\\``, ``..``, null byte)
+       BEFORE touching disk — the response is 400 (malformed), not 404.
+       Flask's default <string:> converter strips ``/`` already, but URL
+       decoding / future routing changes could let them through, and null
+       bytes raise ``ValueError`` deep inside ``os.path.realpath`` if we
+       don't catch them up front.
+    2. Look up the canonical filename via ``list_vault()`` so we never
+       trust user input as a filename — only filenames that actually
+       parse to this version_key are eligible.
+    3. ``os.path.realpath()`` assertion against ``VAULT_DIR`` BEFORE
+       ``send_file()`` — same pattern as ``_safe_unlink_in_vault``. Even
+       if the parsed filename were somehow malicious, the realpath check
+       guarantees we only serve files under the vault root.
+    """
+    if request.method == "OPTIONS":
+        return "", 200
+
+    # Step 1: reject malformed keys early so the 400 vs 404 distinction is
+    # clean. Identical to the DELETE branch above.
+    if (
+        not version_key
+        or "\x00" in version_key
+        or "/" in version_key
+        or "\\" in version_key
+        or ".." in version_key
+    ):
+        return jsonify({"error": f"Invalid version_key: {version_key!r}"}), 400
+
+    from storage.resume_vault import VAULT_DIR, list_vault
+
+    # Step 2: locate the PDF whose parsed filename → this version_key. We
+    # use list_vault() rather than reconstructing the filename from the
+    # key, because the canonical-name → version_key mapping isn't always
+    # invertible (filename parser handles many real-world variants).
+    # list_vault() returns parse_resume_filename(...) extended with disk
+    # metadata. The original filename lives under "original_filename"; the
+    # full on-disk path lives under "vault_path".
+    pdf_filename = None
+    pdf_path = None
+    for entry in list_vault():
+        if entry.get("version_key") == version_key:
+            pdf_filename = entry.get("original_filename")
+            pdf_path = entry.get("vault_path")
+            break
+
+    if not pdf_path or not pdf_filename:
+        return jsonify({"error": "Version not found"}), 404
+
+    # Step 3: realpath assertion. Defense-in-depth — even if list_vault()
+    # returned a path outside the vault (it shouldn't, but symlinks/future
+    # bugs could change that), we refuse to serve it.
+    vault_root = os.path.realpath(VAULT_DIR)
+    target = os.path.realpath(pdf_path)
+    if not (target == vault_root or target.startswith(vault_root + os.sep)):
+        log.warning(
+            "Vault PDF download '%s' rejected: resolved path %r escapes vault %r",
+            version_key,
+            target,
+            vault_root,
+        )
+        return jsonify({"error": "Invalid version_key"}), 400
+
+    if not os.path.exists(target):
+        return jsonify({"error": "Version not found"}), 404
+
+    return send_file(
+        target,
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=pdf_filename,
+    )
 
 
 @vault_bp.after_request
