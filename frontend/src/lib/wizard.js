@@ -25,11 +25,19 @@ import { RENDER_API, authHeaders } from "./api.js";
  * user has used the dashboard before and skip the wizard.
  *
  * Returns one of:
- *   "first-run"  — show the wizard (blocking)
- *   "force"      — URL says ?force=1 or path /setup, show wizard
- *   "onboarded"  — skip wizard, render dashboard normally
- *   "unknown"    — API call failed; fall back to onboarded (don't
- *                  block users behind a broken probe)
+ *   "first-run"      — show the wizard (blocking)
+ *   "force"          — URL says ?force=1 or path /setup, show wizard
+ *   "onboarded"      — skip wizard, render dashboard normally
+ *   "login-required" — server is PIN-protected and we have no valid
+ *                      Bearer/cookie; caller should prompt for login
+ *                      (Slice 4 LoginScreen) and re-detect on success
+ *   "unknown"        — probe failed for an unrelated reason (network,
+ *                      5xx); fall back to onboarded so a flaky server
+ *                      doesn't permanently block the user
+ *
+ * The probe sends ``credentials: "include"`` + ``authHeaders()`` so an
+ * already-authenticated visitor (Bearer in localStorage OR a valid
+ * session cookie) is recognised and never sees the login prompt.
  */
 export async function detectOnboardingState() {
   // Path / query short-circuits — always win over the API probe so
@@ -45,15 +53,42 @@ export async function detectOnboardingState() {
   try {
     const [profileResp, vaultResp] = await Promise.all([
       fetch(`${RENDER_API}/api/profile`, {
+        headers: { ...authHeaders() },
+        credentials: "include",
         signal: AbortSignal.timeout(8000),
       }),
       fetch(`${RENDER_API}/api/vault/stats`, {
         headers: { ...authHeaders() },
+        credentials: "include",
         signal: AbortSignal.timeout(8000),
       }),
     ]);
 
-    if (!profileResp.ok) return "unknown";
+    // 401/403 on the profile probe means the server is auth-gated and
+    // we have no valid credentials yet. We CANNOT decide first-run vs
+    // onboarded without reading the profile, so the caller has to log
+    // the user in first and re-run this probe. Returning a distinct
+    // sentinel (instead of "unknown") prevents the old bug where a
+    // brand-new user behind a PIN-protected deployment silently
+    // skipped the wizard.
+    if (profileResp.status === 401 || profileResp.status === 403) {
+      return "login-required";
+    }
+
+    if (!profileResp.ok) {
+      // 5xx (server error) or 4xx-other (resource not found, schema
+      // change). Both leave us unable to decide first-run vs onboarded.
+      // We deliberately fall back to "unknown" rather than "first-run"
+      // because a server blip should NOT relaunch the wizard for a
+      // user who already onboarded. The trade-off: a TRUE first-run
+      // user on a flaky server might silently skip the wizard. The
+      // console.warn surfaces this in DevTools so it's debuggable.
+      console.warn(
+        `wizard: /api/profile returned ${profileResp.status} — ` +
+          `skipping wizard. If this is a fresh install, use /setup?force=1.`
+      );
+      return "unknown";
+    }
     const profile = await profileResp.json();
 
     // onboarded_at is the explicit completion marker. Set by the wizard
