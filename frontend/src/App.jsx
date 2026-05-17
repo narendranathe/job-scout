@@ -1,5 +1,4 @@
 import { useState, useMemo, useEffect, useCallback, useRef, memo } from "react";
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, AreaChart, Area } from "recharts";
 // API + auth helpers extracted to lib/api.js (1/N of the App.jsx split).
 // Same constants, same behavior — only the location changes. Existing
 // `${RENDER_API}/...` template strings work unchanged.
@@ -20,10 +19,7 @@ import { VaultRow } from "./components/VaultRow.jsx";
 import {
   ATS_META,
   ROLE_CATS,
-  stopProp,
   EMPTY_OBJ,
-  EMPTY_ARR,
-  jobFitTone as _jobFitTone,
   ST_COLOR,
   ST_LABEL,
   JC_STYLES,
