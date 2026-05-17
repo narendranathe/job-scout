@@ -712,15 +712,70 @@ def api_get_resume_version(version_key):
 
 @app.route("/api/resume/versions/<version_key>", methods=["DELETE", "OPTIONS"])
 def api_delete_resume_version(version_key):
-    """Delete a resume version by key."""
+    """Delete a resume version by key.
+
+    Issue #44: routes through the same ``delete_vault_version`` helper as
+    ``/api/vault/version/<key>``. Previously this called the legacy
+    ``profile_manager.delete_resume_version`` which only removed the DB row,
+    orphaning the PDF + text files on disk — entries resurrected on the
+    next vault refresh because ``list_vault()`` reads disk.
+
+    Behavior matches the vault endpoint: malformed keys → 400, missing →
+    200 with ``already_gone: true`` (idempotent for retried DELETEs),
+    filesystem errors → 500 (DB row preserved so caller can retry).
+    """
     if request.method == "OPTIONS":
         return "", 204
+
+    # Reject obviously malformed keys BEFORE touching disk. Identical guard
+    # to the vault DELETE branch (routes/vault_routes.py).
+    if (
+        not version_key
+        or "\x00" in version_key
+        or "/" in version_key
+        or "\\" in version_key
+        or ".." in version_key
+    ):
+        return jsonify({"error": f"Invalid version_key: {version_key!r}"}), 400, \
+            {"Access-Control-Allow-Origin": "*"}
+
+    from storage.db import get_conn, get_resume_version
+    from storage.resume_vault import delete_vault_version, list_vault
+
+    # Idempotency: if neither a DB row nor a PDF on disk maps to this key,
+    # treat as success (already gone). Mirrors the vault endpoint contract.
+    conn = get_conn(DB_PATH)
+    rv = get_resume_version(conn, version_key)
+    conn.close()
+    on_disk = any(f.get("version_key") == version_key for f in list_vault())
+    if not rv and not on_disk:
+        return jsonify({
+            "status": "deleted",
+            "version_key": version_key,
+            "db_row_deleted": False,
+            "pdf_deleted": False,
+            "text_deleted": False,
+            "already_gone": True,
+        }), 200, {"Access-Control-Allow-Origin": "*"}
+
     try:
-        from storage.profile_manager import delete_resume_version
-        delete_resume_version(version_key, DB_PATH)
-        return jsonify({"status": "deleted"}), 200, {"Access-Control-Allow-Origin": "*"}
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        result = delete_vault_version(version_key, db_path=DB_PATH)
+    except ValueError as e:
+        # Don't leak filesystem paths from storage-layer messages.
+        log.warning("Legacy delete '%s' rejected: %s", version_key, e)
+        return jsonify({"error": "Invalid version_key"}), 400, \
+            {"Access-Control-Allow-Origin": "*"}
+    except OSError as e:
+        log.error("Legacy delete '%s' filesystem error: %s", version_key, e)
+        return jsonify({"error": "Filesystem error while deleting version"}), 500, \
+            {"Access-Control-Allow-Origin": "*"}
+
+    # Drop absolute paths from response; keep only basename for UX.
+    pdf_path = result.pop("pdf_path", None)
+    result.pop("text_path", None)
+    result["pdf_filename"] = os.path.basename(pdf_path) if pdf_path else None
+    return jsonify({"status": "deleted", **result}), 200, \
+        {"Access-Control-Allow-Origin": "*"}
 
 
 @app.route("/api/set-pin", methods=["POST", "OPTIONS"])
