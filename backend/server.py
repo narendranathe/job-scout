@@ -78,6 +78,10 @@ from routes.vault_routes import vault_bp
 app.register_blueprint(vault_bp)
 from routes.admin_routes import admin_bp
 app.register_blueprint(admin_bp)
+# Read-only data endpoints extracted to routes/data_routes.py (PR 4/8 of the
+# server.py split). Five routes: /, /ping, /api/data, /api/health, /api/stats.
+from routes.data_routes import data_bp
+app.register_blueprint(data_bp)
 
 
 # State + state singleton are imported above from core.state (PR 2/8).
@@ -85,42 +89,9 @@ app.register_blueprint(admin_bp)
 # one place at the top of the file rather than scattered through.
 
 # is_quiet_hours + build_cache imported above from core.scrape_loop (PR 3/8).
+# /ping, /api/data, /api/health, /api/stats, / extracted to routes/data_routes.py (PR 4/8).
 
-# ─── Flask routes ─────────────────────────────────────────────────
-
-@app.route("/ping")
-def ping():
-    """Keepalive — GitHub Actions / UptimeRobot hits this every 14 min."""
-    return "ok", 200
-
-
-@app.route("/api/data")
-def api_data():
-    """Full JSON export for dashboard."""
-    cached = state.get_cache()
-    if not cached:
-        build_cache()
-        cached = state.get_cache()
-    if cached:
-        return Response(cached, mimetype="application/json", headers={
-            "Access-Control-Allow-Origin": "*",
-            "Cache-Control": "public, max-age=60",
-        })
-    return jsonify({"error": "No data yet — first scrape in progress"}), 503
-
-
-@app.route("/api/health")
-def api_health():
-    return jsonify(state.health()), 200, {"Access-Control-Allow-Origin": "*"}
-
-
-@app.route("/api/stats")
-def api_stats():
-    try:
-        return jsonify(get_stats(DB_PATH)), 200, {"Access-Control-Allow-Origin": "*"}
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
+# ─── Flask routes (write/auth endpoints; data endpoints in Blueprint) ─
 
 # _count_fast_companies + _run_scrape_async imported above from core.scrape_loop.
 
@@ -702,24 +673,7 @@ def api_set_pin():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/")
-def index():
-    # Auto-discover routes from app.url_map so this list never drifts when
-    # new blueprints are registered. Filter out static/internal Flask
-    # routes and keep the output stable across deploys (sorted).
-    endpoints = sorted({
-        r.rule for r in app.url_map.iter_rules()
-        if not r.rule.startswith("/static")
-        and r.endpoint != "static"
-    })
-    return jsonify({
-        "service":   "JobScout API",
-        "version":   "3.1",
-        "endpoints": endpoints,
-        "endpoint_count": len(endpoints),
-        **state.health(),
-    }), 200, {"Access-Control-Allow-Origin": "*"}
-
+# / (self-describing root) extracted to routes/data_routes.py (PR 4/8).
 
 # ─── CORS preflight ───────────────────────────────────────────────
 @app.after_request
