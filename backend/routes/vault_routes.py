@@ -47,6 +47,9 @@ import logging
 import os
 import re
 import secrets
+import threading
+import time
+from collections import deque
 
 from flask import Blueprint, jsonify, request, send_file
 
@@ -84,6 +87,91 @@ MAX_JD_BYTES = 50_000
 ALLOWED_ORIGINS = [
     o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "").split(",") if o.strip()
 ]
+
+# --- /api/vault/parse-filename hardening (Attempt A) ----------------------
+# The parse-filename endpoint is auth-exempt (the onboarding wizard hits it
+# pre-login — see ``_vault_require_auth``) AND it runs a pure-CPU parser.
+# Two abuse vectors we need to close:
+#
+#   1. Megabyte JSON bodies hammered at thousands of req/sec. The 256-char
+#      filename cap *inside* the handler doesn't help because Flask has
+#      already received + parsed the entire body before the handler runs.
+#      We add an early Content-Length / body-size gate
+#      (``PARSE_FILENAME_MAX_BODY_BYTES``, 4 KB) that rejects the request
+#      with 413 before any JSON decoding happens.
+#
+#   2. Even small bodies can starve the single-worker free-tier Render
+#      dyno and the background scraper thread. We add a per-IP token
+#      bucket (sliding window) limited to ``PARSE_FILENAME_RATE_PER_MIN``
+#      requests per ``PARSE_FILENAME_WINDOW_SEC`` window. Returns 429
+#      when exceeded.
+#
+# Process-local is fine for v1 — Render runs a single gunicorn worker on
+# the free tier, so a shared in-process dict is the whole truth. If we
+# ever move to multi-worker, swap this for Redis (e.g. via the existing
+# AutoApply Upstash instance) and the rest of the wiring stays identical.
+PARSE_FILENAME_MAX_BODY_BYTES = 4 * 1024  # 4 KB — filename is 256, leaves headroom
+PARSE_FILENAME_RATE_PER_MIN = 30
+PARSE_FILENAME_WINDOW_SEC = 60.0
+# GC the per-IP deque dict every N accepted requests so a horde of one-shot
+# IPs (e.g. spam-scanner botnets) can't grow it unbounded. Cheap O(n) sweep.
+_RL_GC_EVERY = 256
+_rl_lock = threading.Lock()
+_rl_buckets = {}  # type: dict[str, deque]
+_rl_calls_since_gc = 0
+
+
+def _parse_filename_rate_check(ip, now=None):
+    """Sliding-window token bucket. Returns True if the request is allowed.
+
+    Thread-safe (single lock around all bucket mutations — contention is
+    negligible at our request rates). Uses ``time.monotonic()`` so wall-
+    clock jumps (NTP, daylight savings) don't break the window math.
+
+    Implementation: for each IP we keep a deque of recent request
+    timestamps. On each call we drop entries older than the window, then
+    either append+allow or refuse. The deque is bounded above by
+    PARSE_FILENAME_RATE_PER_MIN entries per IP at any instant.
+    """
+    global _rl_calls_since_gc
+    if now is None:
+        now = time.monotonic()
+    cutoff = now - PARSE_FILENAME_WINDOW_SEC
+    with _rl_lock:
+        bucket = _rl_buckets.get(ip)
+        if bucket is None:
+            bucket = deque()
+            _rl_buckets[ip] = bucket
+        # Drop expired entries from the left (deque is FIFO by timestamp).
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if len(bucket) >= PARSE_FILENAME_RATE_PER_MIN:
+            return False
+        bucket.append(now)
+        # Periodic GC of empty / fully-expired buckets so an ever-growing
+        # IP set doesn't leak memory. Cheap sweep every _RL_GC_EVERY
+        # accepted calls.
+        _rl_calls_since_gc += 1
+        if _rl_calls_since_gc >= _RL_GC_EVERY:
+            _rl_calls_since_gc = 0
+            stale = [
+                k for k, v in _rl_buckets.items()
+                if not v or v[-1] < cutoff
+            ]
+            for k in stale:
+                b = _rl_buckets.get(k)
+                if b is not None and (not b or b[-1] < cutoff):
+                    del _rl_buckets[k]
+        return True
+
+
+def _reset_parse_filename_rate_limiter():
+    """Test-only helper: wipe the per-IP buckets so tests don't interfere."""
+    global _rl_calls_since_gc
+    with _rl_lock:
+        _rl_buckets.clear()
+        _rl_calls_since_gc = 0
+
 
 # Emit startup advisories exactly once so operators notice misconfigured envs.
 if not API_SECRET:
@@ -604,9 +692,61 @@ def vault_parse_filename():
 
     Auth: explicitly allowed through in ``_vault_require_auth`` so the
     wizard can preview parser output BEFORE the user has logged in.
+
+    Hardening (parse-filename DoS pair, Attempt A):
+    1. Content-Length cap (4 KB) — rejects megabyte JSON bodies before
+       any decoding (413). The 256-char filename cap inside the handler
+       can't help because Flask has to receive + parse the whole body
+       first.
+    2. Per-IP token bucket (30 req / 60 s) — returns 429 when exceeded.
+       Auth-exempt + pure CPU on a single-worker free dyno means an
+       unbounded loop here would starve the scraper thread.
+    3. ``parse_resume_filename`` wrapped in try/except — the parser is
+       regex-heavy; we don't want a malformed input (catastrophic
+       backtracking, encoding edge case, IndexError) to surface as a
+       500 with a traceback leaking internal paths.
     """
     if request.method == "OPTIONS":
         return "", 200
+
+    # (1) Body-size cap. Content-Length first (cheap, no body read), then
+    # fall back to measuring the raw bytes for chunked / no-CL requests.
+    # 413 = Payload Too Large.
+    cl = request.content_length
+    if cl is not None and cl > PARSE_FILENAME_MAX_BODY_BYTES:
+        return jsonify({
+            "error": f"request body too large (max {PARSE_FILENAME_MAX_BODY_BYTES} bytes)"
+        }), 413
+    # Defensive read for clients that omit Content-Length (HTTP/1.1 allows
+    # chunked transfer encoding). cache=True so the subsequent get_json()
+    # reads from the same buffer — no double-read.
+    raw_body = request.get_data(cache=True)
+    if len(raw_body) > PARSE_FILENAME_MAX_BODY_BYTES:
+        return jsonify({
+            "error": f"request body too large (max {PARSE_FILENAME_MAX_BODY_BYTES} bytes)"
+        }), 413
+
+    # (2) Rate limit. ``request.remote_addr`` is the direct peer; on Render
+    # the load balancer sets X-Forwarded-For but we deliberately key on the
+    # direct peer here since XFF can be spoofed by clients that talk to the
+    # dyno over a private network only Render can reach. Worst case: a
+    # single LB IP shares the bucket across users, making the limit
+    # effectively per-LB-IP — still enough to keep the scraper alive.
+    client_ip = request.remote_addr or "unknown"
+    if not _parse_filename_rate_check(client_ip):
+        log.warning(
+            "parse-filename rate-limited %s (>%d req in %.0fs)",
+            client_ip,
+            PARSE_FILENAME_RATE_PER_MIN,
+            PARSE_FILENAME_WINDOW_SEC,
+        )
+        return jsonify({
+            "error": (
+                f"rate limit exceeded "
+                f"({PARSE_FILENAME_RATE_PER_MIN} requests per "
+                f"{int(PARSE_FILENAME_WINDOW_SEC)} seconds)"
+            )
+        }), 429
 
     data = request.get_json(silent=True) or {}
     fn = (data.get("filename") or "").strip()
@@ -619,7 +759,21 @@ def vault_parse_filename():
         return jsonify({"error": "filename too long (max 256 chars)"}), 400
 
     from storage.resume_vault import parse_resume_filename
-    return jsonify(parse_resume_filename(fn)), 200
+    # (3) Wrap the parser. parse_resume_filename runs several regexes and
+    # touches the filename's bytes (decode, splits). Log the failure
+    # server-side and return a generic 400 so we don't surface tracebacks
+    # or internal paths to unauthenticated callers.
+    try:
+        result = parse_resume_filename(fn)
+    except Exception as e:  # noqa: BLE001 — defensive boundary for untrusted input
+        log.warning(
+            "parse_resume_filename(%r) raised %s: %s",
+            fn[:80],
+            type(e).__name__,
+            e,
+        )
+        return jsonify({"error": "could not parse filename"}), 400
+    return jsonify(result), 200
 
 
 @vault_bp.after_request
