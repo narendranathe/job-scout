@@ -100,6 +100,10 @@ app.register_blueprint(application_bp)
 # Five routes: GET/POST /api/resume/versions, /upload, /compare, /<key> GET+DELETE.
 from routes.resume_version_routes import resume_version_bp
 app.register_blueprint(resume_version_bp)
+# Public roster endpoints (PRD #89 Slice 1) — power the onboarding wizard
+# pickers. /api/role-taxonomy, /api/companies-roster, /api/locations-roster.
+from routes.roster_routes import roster_bp
+app.register_blueprint(roster_bp)
 
 
 # State + state singleton are imported above from core.state (PR 2/8).

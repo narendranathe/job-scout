@@ -106,7 +106,8 @@ def init_profile_tables(db_path: str = DB_PATH):
     """Create user_profile table if it doesn't exist.
 
     Idempotent migration: also adds the ``default_resume_version`` column to
-    rows from older DBs that pre-date the job-fit chip feature (Issue #39).
+    rows from older DBs that pre-date the job-fit chip feature (Issue #39),
+    and the five onboarding-wizard columns added by PRD #89 Slice 1.
     CREATE TABLE handles fresh installs; ALTER TABLE handles in-place
     upgrades. The ALTER is wrapped in try/except because SQLite has no
     IF NOT EXISTS for ADD COLUMN — the second app boot will raise
@@ -123,6 +124,11 @@ def init_profile_tables(db_path: str = DB_PATH):
             preferred_locations TEXT DEFAULT '[]',
             dream_companies TEXT DEFAULT '[]',
             dream_role_keywords TEXT DEFAULT '[]',
+            tracked_companies TEXT DEFAULT '[]',
+            min_total_comp INTEGER DEFAULT 0,
+            show_unsalaried INTEGER DEFAULT 1,
+            onboarded_at TEXT,
+            skip_pin_acknowledged INTEGER DEFAULT 0,
             default_resume_version TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -130,22 +136,27 @@ def init_profile_tables(db_path: str = DB_PATH):
         INSERT OR IGNORE INTO user_profile (id, created_at, updated_at)
         VALUES (1, datetime('now'), datetime('now'));
     """)
-    # In-place migration for existing DBs that pre-date this column. Rows get
-    # NULL, which the GET endpoint surfaces as ``null`` so the dashboard
-    # knows "no default → no chip".
+    # In-place migrations for existing DBs that pre-date each column. Rows
+    # get the DEFAULT, so reads remain backwards-compatible.
     #
     # Narrow except: SQLite only signals "column already exists" via
     # OperationalError with a specific message. Anything else (locked DB,
     # permission denied, disk full) should bubble — silently swallowing
     # those would mask real failures behind a "tables ready" log line.
-    try:
-        conn.execute(
-            "ALTER TABLE user_profile ADD COLUMN default_resume_version TEXT"
-        )
-        conn.commit()
-    except sqlite3.OperationalError as e:
-        if "duplicate column" not in str(e).lower():
-            raise
+    _MIGRATIONS = [
+        ("default_resume_version", "TEXT"),
+        ("tracked_companies", "TEXT DEFAULT '[]'"),
+        ("min_total_comp", "INTEGER DEFAULT 0"),
+        ("show_unsalaried", "INTEGER DEFAULT 1"),
+        ("onboarded_at", "TEXT"),
+        ("skip_pin_acknowledged", "INTEGER DEFAULT 0"),
+    ]
+    for col, decl in _MIGRATIONS:
+        try:
+            conn.execute(f"ALTER TABLE user_profile ADD COLUMN {col} {decl}")
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
     conn.commit()
     conn.close()
     log.info("Profile tables ready")
@@ -154,21 +165,33 @@ def init_profile_tables(db_path: str = DB_PATH):
 # ─── Public API ──────────────────────────────────────────────────
 
 def get_profile(db_path: str = DB_PATH) -> dict:
-    """Return profile dict (PIN hash excluded)."""
+    """Return profile dict (PIN hash excluded).
+
+    Surfaces ``has_pin: bool`` so the wizard / login screen know whether a
+    PIN exists without ever exposing the hash. Per-list JSON columns are
+    deserialised so callers receive native Python lists.
+    """
     conn = get_conn(db_path)
     row = conn.execute("SELECT * FROM user_profile WHERE id = 1").fetchone()
     conn.close()
     if not row:
         return {}
     p = dict(row)
+    # has_pin is the only PIN signal callers need; the hash itself never
+    # leaves the DB.
+    p["has_pin"] = bool(p.get("pin_hash"))
     p.pop("pin_hash", None)
     for field in ["extracted_skills", "custom_skills", "preferred_locations",
-                  "dream_companies", "dream_role_keywords"]:
+                  "dream_companies", "dream_role_keywords", "tracked_companies"]:
         if isinstance(p.get(field), str):
             try:
                 p[field] = json.loads(p[field])
             except Exception:
                 p[field] = []
+    # Coerce numeric/bool columns from SQLite ints to native shapes.
+    p["min_total_comp"] = int(p.get("min_total_comp") or 0)
+    p["show_unsalaried"] = bool(p.get("show_unsalaried", 1))
+    p["skip_pin_acknowledged"] = bool(p.get("skip_pin_acknowledged", 0))
     return p
 
 
@@ -187,12 +210,27 @@ def update_profile(updates: dict, db_path: str = DB_PATH):
     table before persisting — pointing the default at a non-existent key
     would mean the dashboard fires job-fit calls that 404 forever.
     Passing ``None`` or empty string clears the default (no chip on cards).
+
+    Onboarding-wizard fields (added in PRD #89 Slice 1):
+
+    * ``tracked_companies`` — list[str] of company names the user wants
+      surfaced in alerts even if they're not yet in ``config/companies.py``
+    * ``min_total_comp`` — int; the salary floor for the Jobs filter
+    * ``show_unsalaried`` — bool; whether jobs with no salary listed appear
+    * ``onboarded_at`` — ISO-8601 timestamp the wizard sets on completion
+    * ``skip_pin_acknowledged`` — bool; user accepted the no-PIN warning
     """
-    ALLOWED = [
+    LIST_FIELDS = {
         "custom_skills", "preferred_locations",
         "dream_companies", "dream_role_keywords",
+        "tracked_companies",
+    }
+    BOOL_FIELDS = {"show_unsalaried", "skip_pin_acknowledged"}
+    INT_FIELDS = {"min_total_comp"}
+    TEXT_FIELDS = {"onboarded_at"}
+    ALLOWED = LIST_FIELDS | BOOL_FIELDS | INT_FIELDS | TEXT_FIELDS | {
         "default_resume_version",
-    ]
+    }
     conn = get_conn(db_path)
     now = datetime.now(timezone.utc).isoformat()
     sets, values = [], []
@@ -223,6 +261,26 @@ def update_profile(updates: dict, db_path: str = DB_PATH):
                     )
                 values.append(val)
             sets.append(f"{key} = ?")
+        elif key in BOOL_FIELDS:
+            # Accept truthy/falsy in any form (JSON bool, 0/1, "true"/"false").
+            sets.append(f"{key} = ?")
+            values.append(1 if _coerce_bool(val) else 0)
+        elif key in INT_FIELDS:
+            try:
+                ival = int(val) if val not in (None, "") else 0
+            except (TypeError, ValueError):
+                conn.close()
+                raise ProfileValidationError(
+                    f"{key} must be an integer, got {val!r}"
+                )
+            if ival < 0:
+                conn.close()
+                raise ProfileValidationError(f"{key} must be >= 0")
+            sets.append(f"{key} = ?")
+            values.append(ival)
+        elif key in TEXT_FIELDS:
+            sets.append(f"{key} = ?")
+            values.append(val if val is None else str(val))
         else:
             sets.append(f"{key} = ?")
             values.append(json.dumps(val) if isinstance(val, list) else val)
@@ -235,6 +293,17 @@ def update_profile(updates: dict, db_path: str = DB_PATH):
         )
         conn.commit()
     conn.close()
+
+
+def _coerce_bool(val) -> bool:
+    """Permissive bool coercion for JSON / SQLite int / string inputs."""
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return val != 0
+    if isinstance(val, str):
+        return val.strip().lower() in ("1", "true", "yes", "on", "y")
+    return bool(val)
 
 
 def verify_pin(pin: str, db_path: str = DB_PATH) -> bool:
