@@ -22,7 +22,7 @@
 
 A production-grade, zero-cost **end-to-end job hunt automation platform** for Data Engineers and ML Engineers. The system covers the full lifecycle:
 
-1. **Discover** — Scrape 147 company career pages across 6 ATS platforms every 5 minutes
+1. **Discover** — Scrape 153 company career pages across 6 ATS platforms every 5 minutes
 2. **Score** — Rate every job against your resume using multi-signal relevance + TF-IDF scoring
 3. **Match** — Find the best resume (from 95+ tailored PDFs) for each specific job description
 4. **Alert** — Instant Discord/Telegram notifications when dream roles appear
@@ -41,7 +41,7 @@ A production-grade, zero-cost **end-to-end job hunt automation platform** for Da
 ┌─────────────────────────────────────────┬──────────────────────┐
 │               Layer                     │        Status        │
 ├─────────────────────────────────────────┼──────────────────────┤
-│ Scraping 147 companies (6 ATS)          │ ✅ Live              │
+│ Scraping 153 companies (6 ATS)          │ ✅ Live              │
 │ Hourly GitHub Actions cron              │ ✅ Running           │
 │ Flask API + all base endpoints          │ ✅ Live on Render    │
 │ Resume vault backend (9 endpoints)      │ ✅ Live + auth-gated │
@@ -104,7 +104,7 @@ and the default-resume selector. Search App.jsx for `jobFitByJob`,
 │                  RENDER (FREE TIER)                   │
 │  Flask (server.py — 847 lines) + Background Thread    │
 │  ├── Every 5 min:  Tier 0+1 (58 dream companies)     │
-│  ├── Every 60 min: All tiers (full 147-company sweep) │
+│  ├── Every 60 min: All tiers (full 153-company sweep) │
 │  ├── Night skip:   12am–5:30am CST (06:00–11:30 UTC) │
 │  ├── Dream alerts: Discord + Telegram on new match    │
 │  └── SQLite DB (WAL mode):                            │
@@ -161,7 +161,7 @@ job-scout/
 │   │   ├── ashby.py               # ~11 companies
 │   │   ├── smartrecruiters.py     # ~4 companies
 │   │   ├── bamboohr.py            # ~3 companies
-│   │   └── workday.py             # ~7 finance/enterprise companies (POST API)
+│   │   └── workday.py             # ~15 finance/enterprise companies (POST API)
 │   ├── core/
 │   │   └── relevance.py           # Multi-signal scoring engine (0–1.0)
 │   ├── storage/
@@ -325,7 +325,7 @@ Every yielded dict must contain: `external_id`, `title`, `company`, `location`, 
 | `ashby.py` | Ashby | `GET api.ashbyhq.com/posting-api/job-board/{slug}` | ~11 |
 | `smartrecruiters.py` | SmartRecruiters | `GET api.smartrecruiters.com/v1/companies/{slug}/postings` | ~4 |
 | `bamboohr.py` | BambooHR | `GET {slug}.bamboohr.com/careers/list` | ~3 |
-| `workday.py` | Workday | `POST {host}/wday/cxs/{slug}/{board}/jobs` | ~7 |
+| `workday.py` | Workday | `POST {host}/wday/cxs/{slug}/{board}/jobs` | ~15 |
 
 ### Tier system (companies.py — 147 total companies across 4 tiers)
 - **Tier 0 (28 companies):** Top-of-mind dream companies — scraped every cycle alongside Tier 1
@@ -570,20 +570,25 @@ React 18 + Vite + Recharts. Single-file component.
 
 1. App.jsx is 3882 lines — should split into per-tab modules (**urgent** — well past sustainable size)
 2. server.py is 847 lines — monolithic
-3. pdfplumber (server.py) vs pypdf (vault) — two PDF libraries, should standardize
-4. Workday coverage only 7 companies
-5. AutoApply end-to-end loop never validated on a real ATS page
-6. Work history not in a queryable database yet
-7. No portal form field mapping per ATS (each has different DOM)
+3. AutoApply end-to-end loop never validated on a real ATS page
+4. Work history not in a queryable database yet
+5. No portal form field mapping per ATS (each has different DOM)
 
 Resolved (no longer debt):
 - ~~Vault has no dashboard UI~~ — full tab + best-match + chip + upload + compare all wired
-- ~~No pytest suite~~ — 17 test files, 210 passing tests covering vault hardening,
+- ~~No pytest suite~~ — 17 test files, 219 passing tests covering vault hardening,
   relevance, scrape orchestrator, applications API, admin routes, profile manager,
-  the new JD-payload cap (#41), and the unified DELETE behavior (#44)
+  the new JD-payload cap (#41), the unified DELETE behavior (#44),
+  the pypdf consolidation (#58), and Workday URL-triple validation (#59)
 - ~~Untracked resume files at repo root~~ — `resume.md` was always tracked;
   `resume-projects.md`, `resume_narendranath.tex`, `resume-personal.md` are
   gitignored on purpose (private content, never intended to commit)
+- ~~pdfplumber + pypdf coexistence~~ — pdfplumber retired; pypdf is the single
+  PDF library, with a regression test (`test_pdfplumber_no_longer_imported_anywhere`)
+  pinning the decision
+- ~~Workday coverage only 9 companies~~ — bumped to 15 (Adobe, Cisco, Mastercard,
+  Charles Schwab, BNY Mellon, State Street added). Plus 3 new test guards
+  (URL-triple completeness, valid wd_instance subdomain, no duplicate names).
 
 ---
 
@@ -692,8 +697,7 @@ Done (kept for history):
 
 Open (priority order):
 1. **Split App.jsx into per-tab modules** — biggest tech-debt item; 3882 LOC in one file
-2. Design work history PostgreSQL schema (AutoApply prerequisite)
-3. Wire up `floatingPanel.ts` in the AutoApply Chrome extension
-4. Standardize on one PDF library (pypdf preferred — already in vault)
+2. **Split server.py into route modules** — 847 LOC monolith; routes are easy to extract per Blueprint
+3. Design work history PostgreSQL schema (AutoApply prerequisite)
+4. Wire up `floatingPanel.ts` in the AutoApply Chrome extension
 5. Validate end-to-end AutoApply loop on a real ATS page
-6. Bump Workday scraper coverage from 7 → ~15 companies (most enterprises use Workday)

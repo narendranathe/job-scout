@@ -235,6 +235,19 @@ COMPANIES = [
     {"name": "Target",          "ats": "workday", "slug": "target",        "wd_instance": "wd1", "wd_board": "TGT_External",    "tier": 3},
     {"name": "Deloitte",        "ats": "workday", "slug": "deloitte",      "wd_instance": "wd5", "wd_board": "DeloitteCareers", "tier": 3},
 
+    # ── Workday expansion (CLAUDE.md tech-debt #6): bumping coverage 9 → 15 ──
+    # Picked Fortune 500 employers with active Data Engineering / ML hiring
+    # that aren't already on the list under another ATS. URL format triples
+    # below were sourced from each company's public careers portal. The
+    # scraper handles 404s gracefully (logs a warning, moves on), so if any
+    # of these slugs drift in the future the scrape run isn't impacted.
+    {"name": "Adobe",           "ats": "workday", "slug": "adobe",         "wd_instance": "wd5", "wd_board": "external_experienced",       "tier": 2},
+    {"name": "Cisco",           "ats": "workday", "slug": "cisco",         "wd_instance": "wd1", "wd_board": "Cisco_Career_Site",          "tier": 2},
+    {"name": "Mastercard",      "ats": "workday", "slug": "mastercard",    "wd_instance": "wd1", "wd_board": "CorporateCareers",           "tier": 2},
+    {"name": "Charles Schwab",  "ats": "workday", "slug": "schwab",        "wd_instance": "wd1", "wd_board": "myschwabcareerportal",       "tier": 2},
+    {"name": "BNY Mellon",      "ats": "workday", "slug": "bnymellon",     "wd_instance": "wd1", "wd_board": "BNYM_Careers",               "tier": 3},
+    {"name": "State Street",    "ats": "workday", "slug": "statestreet",   "wd_instance": "wd5", "wd_board": "Global",                     "tier": 3},
+
     # ── Quant firms (AQR, HRT use custom job boards — listed for reference) ──
     # AQR:  https://careers.aqr.com  — no standard public API, apply directly
     # HRT:  https://www.hudsonrivertrading.com/careers/ — no public ATS API
