@@ -92,18 +92,59 @@ def parse_resume_filename(filename: str) -> dict:
     ext = Path(filename).suffix.lower()
 
     # Normalize: remove common prefixes
+    # ─── Strip the leading name prefix ───────────────────
+    # Longest-prefix-wins. Entries that *don't* end in an underscore
+    # also match the "glued" form (NarendranathGS, NarenDE), but only
+    # when there's content after them — otherwise ``Naren.pdf`` would
+    # collapse to "unknown".
+    # ``used_naren_prefix`` flags the Naren-family forms: when a Naren
+    # prefix matches, the next token is treated as a role abbreviation
+    # (role-first pattern), e.g. ``Naren_DE_affirm`` → role=DE,
+    # company=Affirm; ``NarenML.pdf`` → role-only template.
+    _NAME_PREFIXES = sorted(
+        [
+            ("Narendranath_Edara_", False),
+            ("Edara_Narendranath_", False),
+            ("Edara_NarendraNath_", False),
+            ("EdaraNarendranath", False),
+            ("NarendranathEdara", False),
+            ("ENarendranath_", False),
+            ("ENarendranath", False),
+            ("NarendranathE_", False),
+            ("Narendranath_", False),
+            ("NarendraNath_", False),
+            ("Narendranath", False),    # glued: NarendranathGS, NarendranathE
+            ("Narendra_", False),
+            ("Narendra", False),         # glued: NarendraN
+            ("Naren_", True),            # role-first: Naren_DE_affirm
+            ("Naren", True),             # role-first glued: NarenDE, NarenML
+            ("Resume_", False),
+        ],
+        key=lambda p: -len(p[0]),
+    )
+
     clean = stem
-    used_naren_prefix = False  # Naren_ has role-first pattern
-    for prefix in ["Narendranath_Edara_", "Narendranath_", "NarendranathE_",
-                    "NarenML_", "Narendra_", "Resume_"]:
-        if clean.startswith(prefix):
-            clean = clean[len(prefix):]
-            break
-    else:
-        # Check Naren_ separately (role-first: Naren_DE_affirm)
-        if clean.startswith("Naren_"):
-            clean = clean[len("Naren_"):]
-            used_naren_prefix = True
+    used_naren_prefix = False
+    for prefix, is_naren in _NAME_PREFIXES:
+        if not clean.startswith(prefix):
+            continue
+        rest = clean[len(prefix):]
+        # Glued (no-trailing-underscore) prefixes only fire when the
+        # remainder *looks like a tag*, not a continuation of the name.
+        # Two guards:
+        #   1. must have content after the prefix; and
+        #   2. that content must start with an uppercase letter or
+        #      digit — so ``NarendranathGS`` strips ("GS" starts upper),
+        #      but ``Narendra`` matched against ``Narendranath`` (rest
+        #      = "nath") and ``Narendranath`` matched against
+        #      ``Narendranath Edara_…`` (rest = " Edara…") do not.
+        if not prefix.endswith("_"):
+            stripped = rest.lstrip("_-")
+            if not stripped or not stripped[0].isalnum() or not stripped[0].isupper() and not stripped[0].isdigit():
+                continue
+        clean = rest.lstrip("_-")
+        used_naren_prefix = is_naren
+        break
 
     # Split on underscores
     parts = [p.strip() for p in clean.split("_") if p.strip()]
@@ -150,15 +191,32 @@ def parse_resume_filename(filename: str) -> dict:
                 multi_word_hit = True
 
     if not company_done:
-        # Naren_ prefix: first part is role if it's a known role abbreviation
-        if used_naren_prefix and len(parts) >= 2 and parts[0].lower() in ROLE_ALIASES:
-            role_parts = [parts[0]]
-            company_parts = [parts[1]]
-            i = 2
-            company_done = True
-            # Remaining parts go to role
-            role_parts.extend(parts[i:])
-            i = len(parts)
+        # Naren-family prefix: first part is a role abbreviation.
+        if used_naren_prefix and parts[0].lower() in ROLE_ALIASES:
+            if len(parts) == 1:
+                # Role-only template — Naren_DE.pdf, NarenML.pdf, etc.
+                # There's no company tag in the filename, so the file
+                # represents the generic version of that role. Tag the
+                # company as "Standard" so all role templates land in a
+                # single predictable bucket in the vault.
+                # multi_word_hit short-circuits the alias / title-case
+                # pass below so the literal string "Standard" is kept.
+                company_parts = ["Standard"]
+                role_parts = [parts[0]]
+                i = 1
+                company_done = True
+                multi_word_hit = True
+            else:
+                # Existing role-first form: Naren_DE_affirm → role=DE,
+                # company=Affirm. Anything after position 1 trails into
+                # the role (Naren_DE_Cap_One could in principle yield
+                # role=DE, company=Cap_One; that's an edge case).
+                role_parts = [parts[0]]
+                company_parts = [parts[1]]
+                i = 2
+                company_done = True
+                role_parts.extend(parts[i:])
+                i = len(parts)
         else:
             company_parts = [parts[0]]
             i = 1
@@ -169,13 +227,16 @@ def parse_resume_filename(filename: str) -> dict:
         role_parts.extend(parts[i:])
 
     # ─── Peel off trailing JobID (AutoApply grammar) ─────
-    # AutoApply tags can end in ``_{JobID}`` (e.g. ``..._DE_JOB123``).
-    # Only treat the LAST role token as a JobID when there are at least
-    # two role tokens — otherwise a single-token alphanumeric role
-    # (e.g. ``..._R2D2``) would lose its only segment. Conservative
-    # ``is_job_id`` requires uppercase + at least one digit.
+    # AutoApply tags can end in ``_{JobID}`` (e.g. ``..._DE_JOB123``)
+    # and Workday-saved files end in ``_YYYYMMDD``. Both should land in
+    # ``job_id`` rather than being mis-tagged as the role.
+    # ``is_job_id`` is conservative — requires uppercase + a digit (so
+    # role tokens like DE, SWE, AI never match) or all-digits length≥3.
+    # That conservativeness is what lets us peel off even a single-token
+    # role_parts (e.g. ``Narendranath_MS_240`` → company=Morgan Stanley,
+    # role=None, job_id=240).
     job_id = None
-    if len(role_parts) >= 2 and is_job_id(role_parts[-1]):
+    if role_parts and is_job_id(role_parts[-1]):
         job_id = role_parts[-1]
         role_parts = role_parts[:-1]
 

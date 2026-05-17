@@ -26,11 +26,19 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 import time
 from pathlib import Path
 
 import requests
+
+# Recommended exclude regex for the bulk of "noise" files in
+# C:\Users\naren\OneDrive\Desktop\Resume Easy. Surfaced via --help; not
+# applied by default so this stays a generic tool.
+RECOMMENDED_EXCLUDE = (
+    r"(?i)^(?:jayanth|lankipalli|naru_kiran|sai_maruthi|siva\s+chandan)"
+)
 
 # Make ``storage.resume_vault`` importable when run as a script.
 _HERE = Path(__file__).resolve().parent
@@ -140,6 +148,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--limit", type=int, default=0, help="Stop after N successful uploads.")
     p.add_argument("--timeout", type=float, default=60.0, help="Per-request timeout (seconds).")
+    p.add_argument(
+        "--exclude",
+        default="",
+        help=(
+            "Regex matched (case-insensitive, via .search) against each "
+            "filename; matches are skipped. Recommended for the "
+            "Resume Easy folder: "
+            + RECOMMENDED_EXCLUDE
+        ),
+    )
     args = p.parse_args(argv)
 
     if not args.api_url:
@@ -155,6 +173,14 @@ def main(argv: list[str] | None = None) -> int:
     exts = list(DEFAULT_EXTENSIONS)
     if args.include_docx:
         exts.append(".docx")
+
+    exclude_re = None
+    if args.exclude:
+        try:
+            exclude_re = re.compile(args.exclude)
+        except re.error as e:
+            print(f"ERROR: bad --exclude regex: {e}", file=sys.stderr)
+            return 2
 
     candidates = sorted(
         f for f in src.rglob("*")
@@ -173,9 +199,15 @@ def main(argv: list[str] | None = None) -> int:
     skipped_existing = 0
     skipped_oversize = 0
     skipped_unparseable = 0
+    skipped_excluded = 0
     failed: list[tuple[str, str]] = []
 
     for pdf_path in candidates:
+        if exclude_re and exclude_re.search(pdf_path.name):
+            if args.dry_run:
+                print(f"  - {pdf_path.name}: skip (--exclude match)")
+            skipped_excluded += 1
+            continue
         meta = parse_resume_filename(pdf_path.name)
         company = _truncate(meta.get("company"), MAX_FIELD_LEN)
         role = _truncate(meta.get("role"), MAX_FIELD_LEN)
@@ -227,6 +259,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  skipped (existing): {skipped_existing}")
     print(f"  skipped (oversize): {skipped_oversize}")
     print(f"  skipped (parse):    {skipped_unparseable}")
+    print(f"  skipped (exclude):  {skipped_excluded}")
     print(f"  failed:             {len(failed)}")
     for name, msg in failed:
         print(f"    - {name}: {msg}")
