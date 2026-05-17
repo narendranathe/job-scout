@@ -16,16 +16,17 @@ import { ScrapeProgressBar } from "./components/ScrapeProgressBar.jsx";
 import { SetupPanel } from "./components/SetupPanel.jsx";
 // Vault tab row (memoized, PR 6/N).
 import { VaultRow } from "./components/VaultRow.jsx";
+// Shared job constants + helpers (PR 7/N — prep for JobCard extraction).
+import {
+  ATS_META,
+  ROLE_CATS,
+  stopProp,
+  EMPTY_OBJ,
+  EMPTY_ARR,
+  jobFitTone as _jobFitTone,
+} from "./lib/jobConstants.js";
 
-const ATS_META = {
-  greenhouse:      {l:"Greenhouse",    c:"#3D8B6E",i:"🌿"},
-  lever:           {l:"Lever",         c:"#6B5B8D",i:"⚡"},
-  ashby:           {l:"Ashby",         c:"#C0776E",i:"💎"},
-  smartrecruiters: {l:"SmartRecr.",    c:"#5B7B8D",i:"🎯"},
-  bamboohr:        {l:"BambooHR",      c:"#73B761",i:"🎋"},
-  workday:         {l:"Workday",       c:"#E86339",i:"💼"},
-  unknown:         {l:"Other",         c:"#7A7A7A",i:"📄"},
-};
+// ATS_META imported from ./lib/jobConstants.js (top of file).
 
 /* ═══ Dream-company set + company aliases ═══ */
 const DREAM_COMPANIES_SET = new Set([
@@ -60,15 +61,7 @@ const RESUME_VERSIONS = ["_DE","_data","_SWE","_SE","_AE","_AI","_ML","standard"
 
 
 /* ═══ Role categories ═══ */
-const ROLE_CATS = [
-  {id:"de",  label:"Data Engineer",   kw:["data engineer","etl engineer","data pipeline","data infrastructure","big data","analytics platform"]},
-  {id:"ml",  label:"ML / AI",         kw:["ml engineer","machine learning","ai engineer","ai platform","mlops","llm","generative ai"]},
-  {id:"ae",  label:"Analytics Eng",   kw:["analytics engineer","business intelligence","bi engineer","bi developer"]},
-  {id:"ds",  label:"Data Scientist",  kw:["data scientist","research scientist","applied scientist"]},
-  {id:"pe",  label:"Platform / Infra",kw:["platform engineer","infrastructure engineer","cloud engineer","devops","sre","site reliability"]},
-  {id:"swe", label:"Software Eng",    kw:["software engineer","backend engineer","full stack","fullstack"]},
-  {id:"da",  label:"Data Architect",  kw:["data architect","solutions architect"]},
-];
+// ROLE_CATS imported from ./lib/jobConstants.js (top of file).
 function catOf(title) {
   const t = (title||"").toLowerCase();
   for (const c of ROLE_CATS) if (c.kw.some(k => t.includes(k))) return c.id;
@@ -413,28 +406,7 @@ const JC_STYLES = Object.freeze({
   vdGrid: {display:"flex",flexDirection:"column",gap:4},
 });
 
-function stopProp(e) { e.stopPropagation(); }
-
-// Shared stable empty-object/array references for JobCards with no
-// expanded rows / no company history. Sharing identity across cards
-// keeps React.memo's shallow === happy.
-const EMPTY_OBJ = Object.freeze({});
-const EMPTY_ARR = Object.freeze([]);
-
-// Default-resume job-fit chip color scale (Issue #39 part A). ≥75% green,
-// 50–75% yellow, <50% red. Returns plain hex strings derived from `pct` +
-// the active theme so React.memo doesn't have to track new object
-// identities each render.
-//
-// R2: also returns a `label` ("Strong"/"Moderate"/"Weak") and `icon`
-// (colored circle emoji) so the chip carries non-color signals — WCAG
-// 1.4.1 (use of color) requires that meaning isn't conveyed by color
-// alone. Screen readers and color-blind users see the same information.
-function _jobFitTone(pct, t) {
-  if (pct >= 75) return { fg: t.ok, bg: `${t.ok}18`, bd: `${t.ok}40`, label: "Strong",   icon: "🟢" };
-  if (pct >= 50) return { fg: t.wm, bg: `${t.wm}18`, bd: `${t.wm}40`, label: "Moderate", icon: "🟡" };
-  return            { fg: t.er, bg: `${t.er}18`, bd: `${t.er}40`, label: "Weak",     icon: "🔴" };
-}
+// stopProp, EMPTY_OBJ, EMPTY_ARR, _jobFitTone imported from ./lib/jobConstants.js (top).
 
 function _JobCard({
   j,
