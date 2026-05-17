@@ -34,6 +34,9 @@ import {
 // Pill + JobCard extracted (PR 8/N).
 import { Pill } from "./components/Pill.jsx";
 import { JobCard } from "./components/JobCard.jsx";
+// Small presentational components (PR 9/N).
+import { Chips } from "./components/Chips.jsx";
+import { MRow, Chk } from "./components/MRow.jsx";
 
 // ATS_META imported from ./lib/jobConstants.js (top of file).
 
@@ -318,55 +321,7 @@ function useApplications() {
 // Pill imported from ./components/Pill.jsx (top).
 
 /* ═══ Chips filter component ═══ */
-function Chips({options,selected,onChange,t,label,pinned}) {
-  const sorted = useMemo(() => {
-    if (!pinned?.length) return options;
-    const ps = new Set(pinned);
-    return [...options.filter(o=>ps.has(o.id)), ...options.filter(o=>!ps.has(o.id))];
-  }, [options, pinned]);
-
-  return (
-    <div style={{display:"flex",flexDirection:"column",gap:7}}>
-      {label && <span style={{fontSize:12,color:t.txM,fontWeight:700,textTransform:"uppercase",letterSpacing:".06em"}}>{label}</span>}
-      <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-        {sorted.map(o => {
-          const on = selected.includes(o.id);
-          const isPinned = pinned?.includes(o.id);
-          return (
-            <button key={o.id} onClick={()=>onChange(on?selected.filter(s=>s!==o.id):[...selected,o.id])}
-              style={{padding:"7px 14px",borderRadius:8,border:`1.5px solid ${on?t.ac:isPinned?t.wm+"60":t.bd}`,
-                background:on?t.acL:isPinned?t.wmL+"40":"transparent",
-                color:on?t.ac:t.txS,fontSize:13,fontWeight:on?700:isPinned?600:400,
-                cursor:"pointer",fontFamily:"inherit",transition:"all .15s"}}>
-              {isPinned&&!on?"★ ":""}{o.label}{o.count!=null?` (${o.count})`:""}
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-/* ═══ Monitor helpers ═══ */
-function MRow({l,v,c,t}) {
-  return (
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 0",borderBottom:`1px solid ${t.bd}`}}>
-      <span style={{fontSize:15,color:t.txM,fontWeight:500}}>{l}</span>
-      <span style={{fontSize:15,fontWeight:600,color:c}}>{v}</span>
-    </div>
-  );
-}
-function Chk({done,label,detail,t}) {
-  return (
-    <div style={{display:"flex",alignItems:"flex-start",gap:12}}>
-      <span style={{fontSize:18,marginTop:1}}>{done?"✅":"⬜"}</span>
-      <div>
-        <div style={{fontSize:15,fontWeight:600,color:done?t.ok:t.txM}}>{label}</div>
-        <div style={{fontSize:13,color:t.txM,marginTop:3}}>{detail}</div>
-      </div>
-    </div>
-  );
-}
+// Chips, MRow, Chk imported from ./components/* (PR 9/N).
 
 // JC_STYLES + JobCard extracted to ./lib/jobConstants.js + ./components/JobCard.jsx (PR 8/N).
 
