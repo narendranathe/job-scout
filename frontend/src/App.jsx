@@ -6,6 +6,8 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pi
 import { DEFAULT_RENDER_URL, STATIC_URL, RENDER_API, apiToken, authHeaders } from "./lib/api.js";
 // Theme tokens (light + dark palettes) extracted to lib/theme.js (PR 2/N).
 import { TH } from "./lib/theme.js";
+// Display formatting helpers extracted to lib/format.js (PR 3/N).
+import { fmtSal, timeAgo } from "./lib/format.js";
 
 const ATS_META = {
   greenhouse:      {l:"Greenhouse",    c:"#3D8B6E",i:"🌿"},
@@ -584,14 +586,7 @@ function useApplications() {
 }
 
 /* ═══ Helpers ═══ */
-const fmtSal = n => n ? `$${(n/1000).toFixed(0)}K` : "—";
-const timeAgo = iso => {
-  if (!iso) return "";
-  const mins = Math.floor((Date.now()-new Date(iso).getTime())/60000);
-  if (mins<1) return "just now"; if (mins<60) return `${mins}m ago`;
-  if (mins<1440) return `${Math.floor(mins/60)}h ago`;
-  return `${Math.floor(mins/1440)}d ago`;
-};
+// fmtSal + timeAgo imported from ./lib/format.js (top of file).
 const Pill = ({ch,c,t,big}) => (
   <span style={{display:"inline-block",fontSize:big?14:13,fontWeight:600,padding:big?"5px 12px":"4px 10px",borderRadius:6,background:`${c||t.ac}14`,color:c||t.ac,whiteSpace:"nowrap"}}>{ch}</span>
 );
