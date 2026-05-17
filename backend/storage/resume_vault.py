@@ -55,34 +55,15 @@ def _ensure_vault():
 #  NAMING CONVENTION PARSER
 # ═══════════════════════════════════════════════════════════════════
 
-# Company alias map (your filenames → canonical names)
-COMPANY_ALIASES = {
-    "gs": "Goldman Sachs", "gsjc": "Goldman Sachs",
-    "jpmc": "JPMorgan Chase", "jpmorgan": "JPMorgan Chase",
-    "bofa": "Bank of America", "bankofamerica": "Bank of America",
-    "ms": "Morgan Stanley", "morganstanley": "Morgan Stanley",
-    "aexp": "American Express", "americanexpress": "American Express",
-    "capitalone": "Capital One", "capital_one": "Capital One",
-    "wellsfargo": "Wells Fargo",
-    "meta": "Meta", "facebook": "Meta",
-    "disney": "Disney", "walt_disney": "Disney",
-    "sf": "Salesforce", "salesforce": "Salesforce",
-    "qt": "Quantitative Trading",
-    "sams": "Sam's Club",
-    "at&t": "AT&T", "att": "AT&T",
-    "ibm": "IBM", "ea": "Electronic Arts",
-    "cvs": "CVS Health",
-}
-
-# Role alias map (filename suffixes → canonical role names)
-ROLE_ALIASES = {
-    "de": "Data Engineer", "data": "Data Engineer",
-    "ml": "ML Engineer", "ai": "AI Engineer",
-    "sde": "Software Engineer", "se": "Software Engineer", "be": "Backend Engineer",
-    "ds": "Data Scientist", "dq": "Data Quality",
-    "ae": "Analytics Engineer",
-    "quant": "Quant Strategist", "aiq": "AI Quant",
-}
+# Canonical alias source. The dicts live in company_rules.py so they can
+# be edited without touching parser logic, and so the AutoApply repo's
+# canonical maps and JobScout's legacy maps stay merged in one place.
+from storage.company_rules import (
+    COMPANY_ALIASES,
+    ROLE_ALIASES,
+    MULTI_WORD_COMPANIES,
+    is_job_id,
+)
 
 
 def parse_resume_filename(filename: str) -> dict:
@@ -111,18 +92,59 @@ def parse_resume_filename(filename: str) -> dict:
     ext = Path(filename).suffix.lower()
 
     # Normalize: remove common prefixes
+    # ─── Strip the leading name prefix ───────────────────
+    # Longest-prefix-wins. Entries that *don't* end in an underscore
+    # also match the "glued" form (NarendranathGS, NarenDE), but only
+    # when there's content after them — otherwise ``Naren.pdf`` would
+    # collapse to "unknown".
+    # ``used_naren_prefix`` flags the Naren-family forms: when a Naren
+    # prefix matches, the next token is treated as a role abbreviation
+    # (role-first pattern), e.g. ``Naren_DE_affirm`` → role=DE,
+    # company=Affirm; ``NarenML.pdf`` → role-only template.
+    _NAME_PREFIXES = sorted(
+        [
+            ("Narendranath_Edara_", False),
+            ("Edara_Narendranath_", False),
+            ("Edara_NarendraNath_", False),
+            ("EdaraNarendranath", False),
+            ("NarendranathEdara", False),
+            ("ENarendranath_", False),
+            ("ENarendranath", False),
+            ("NarendranathE_", False),
+            ("Narendranath_", False),
+            ("NarendraNath_", False),
+            ("Narendranath", False),    # glued: NarendranathGS, NarendranathE
+            ("Narendra_", False),
+            ("Narendra", False),         # glued: NarendraN
+            ("Naren_", True),            # role-first: Naren_DE_affirm
+            ("Naren", True),             # role-first glued: NarenDE, NarenML
+            ("Resume_", False),
+        ],
+        key=lambda p: -len(p[0]),
+    )
+
     clean = stem
-    used_naren_prefix = False  # Naren_ has role-first pattern
-    for prefix in ["Narendranath_Edara_", "Narendranath_", "NarendranathE_",
-                    "NarenML_", "Narendra_", "Resume_"]:
-        if clean.startswith(prefix):
-            clean = clean[len(prefix):]
-            break
-    else:
-        # Check Naren_ separately (role-first: Naren_DE_affirm)
-        if clean.startswith("Naren_"):
-            clean = clean[len("Naren_"):]
-            used_naren_prefix = True
+    used_naren_prefix = False
+    for prefix, is_naren in _NAME_PREFIXES:
+        if not clean.startswith(prefix):
+            continue
+        rest = clean[len(prefix):]
+        # Glued (no-trailing-underscore) prefixes only fire when the
+        # remainder *looks like a tag*, not a continuation of the name.
+        # Two guards:
+        #   1. must have content after the prefix; and
+        #   2. that content must start with an uppercase letter or
+        #      digit — so ``NarendranathGS`` strips ("GS" starts upper),
+        #      but ``Narendra`` matched against ``Narendranath`` (rest
+        #      = "nath") and ``Narendranath`` matched against
+        #      ``Narendranath Edara_…`` (rest = " Edara…") do not.
+        if not prefix.endswith("_"):
+            stripped = rest.lstrip("_-")
+            if not stripped or not stripped[0].isalnum() or not stripped[0].isupper() and not stripped[0].isdigit():
+                continue
+        clean = rest.lstrip("_-")
+        used_naren_prefix = is_naren
+        break
 
     # Split on underscores
     parts = [p.strip() for p in clean.split("_") if p.strip()]
@@ -133,41 +155,68 @@ def parse_resume_filename(filename: str) -> dict:
         parts = ["unknown"]
 
     # ─── Multi-word company detection ────────────────────
-    # Known multi-word companies that appear as consecutive parts
-    MULTI_WORD = {
-        ("goldman", "sachs"): "Goldman Sachs",
-        ("capital", "one"): "Capital One",
-        ("bank", "of", "america"): "Bank of America",
-        ("morgan", "stanley"): "Morgan Stanley",
-        ("american", "express"): "American Express",
-        ("wells", "fargo"): "Wells Fargo",
-        ("walt", "disney"): "Disney",
-        ("goldman", "sachs", "ai"): None,  # don't merge 3-word, let role pick up "ai"
-    }
-
+    # Canonical table lives in company_rules.MULTI_WORD_COMPANIES.
     company_parts = []
     role_parts = []
     company_done = False
+    # ``multi_word_hit`` is True when the company name came from the
+    # canonical multi-word table — in that case the value is already
+    # the final display name and the alias / title-case pass below must
+    # not re-touch it (else "JPMorgan Chase" becomes "Jpmorgan Chase").
+    multi_word_hit = False
     i = 0
 
-    # Check for 2-word company match at start
-    if len(parts) >= 2:
+    # Check for 3-word and 2-word company match at start; longest first
+    # so ("jp","morgan","chase") wins over ("jp","morgan").
+    if not company_done and len(parts) >= 3:
+        three = (parts[0].lower(), parts[1].lower(), parts[2].lower())
+        if three in MULTI_WORD_COMPANIES:
+            merged = MULTI_WORD_COMPANIES[three]
+            if merged is not None:
+                company_parts = [merged]
+                i = 3
+                company_done = True
+                multi_word_hit = True
+            # When merged is None (e.g. ("goldman","sachs","ai")) we
+            # deliberately fall through so the 2-word match below picks
+            # up the company and the trailing word becomes the role.
+    if not company_done and len(parts) >= 2:
         two = (parts[0].lower(), parts[1].lower())
-        if two in MULTI_WORD:
-            company_parts = [MULTI_WORD[two]]
-            i = 2
-            company_done = True
+        if two in MULTI_WORD_COMPANIES:
+            merged = MULTI_WORD_COMPANIES[two]
+            if merged is not None:
+                company_parts = [merged]
+                i = 2
+                company_done = True
+                multi_word_hit = True
 
     if not company_done:
-        # Naren_ prefix: first part is role if it's a known role abbreviation
-        if used_naren_prefix and len(parts) >= 2 and parts[0].lower() in ROLE_ALIASES:
-            role_parts = [parts[0]]
-            company_parts = [parts[1]]
-            i = 2
-            company_done = True
-            # Remaining parts go to role
-            role_parts.extend(parts[i:])
-            i = len(parts)
+        # Naren-family prefix: first part is a role abbreviation.
+        if used_naren_prefix and parts[0].lower() in ROLE_ALIASES:
+            if len(parts) == 1:
+                # Role-only template — Naren_DE.pdf, NarenML.pdf, etc.
+                # There's no company tag in the filename, so the file
+                # represents the generic version of that role. Tag the
+                # company as "Standard" so all role templates land in a
+                # single predictable bucket in the vault.
+                # multi_word_hit short-circuits the alias / title-case
+                # pass below so the literal string "Standard" is kept.
+                company_parts = ["Standard"]
+                role_parts = [parts[0]]
+                i = 1
+                company_done = True
+                multi_word_hit = True
+            else:
+                # Existing role-first form: Naren_DE_affirm → role=DE,
+                # company=Affirm. Anything after position 1 trails into
+                # the role (Naren_DE_Cap_One could in principle yield
+                # role=DE, company=Cap_One; that's an edge case).
+                role_parts = [parts[0]]
+                company_parts = [parts[1]]
+                i = 2
+                company_done = True
+                role_parts.extend(parts[i:])
+                i = len(parts)
         else:
             company_parts = [parts[0]]
             i = 1
@@ -177,13 +226,32 @@ def parse_resume_filename(filename: str) -> dict:
     if i < len(parts):
         role_parts.extend(parts[i:])
 
+    # ─── Peel off trailing JobID (AutoApply grammar) ─────
+    # AutoApply tags can end in ``_{JobID}`` (e.g. ``..._DE_JOB123``)
+    # and Workday-saved files end in ``_YYYYMMDD``. Both should land in
+    # ``job_id`` rather than being mis-tagged as the role.
+    # ``is_job_id`` is conservative — requires uppercase + a digit (so
+    # role tokens like DE, SWE, AI never match) or all-digits length≥3.
+    # That conservativeness is what lets us peel off even a single-token
+    # role_parts (e.g. ``Narendranath_MS_240`` → company=Morgan Stanley,
+    # role=None, job_id=240).
+    job_id = None
+    if role_parts and is_job_id(role_parts[-1]):
+        job_id = role_parts[-1]
+        role_parts = role_parts[:-1]
+
     # ─── Resolve aliases ─────────────────────────────────
     company_raw = "_".join(company_parts)
     role_raw = "_".join(role_parts) if role_parts else None
 
-    # Company alias (check both original and lowered)
+    # Company alias (check both original and lowered). When the
+    # multi-word table already produced a canonical name, use it
+    # verbatim — title-casing would mangle mixed-case names like
+    # "JPMorgan Chase".
     company = company_raw
-    if company_raw.lower() in COMPANY_ALIASES:
+    if multi_word_hit:
+        company = company_parts[0]
+    elif company_raw.lower() in COMPANY_ALIASES:
         company = COMPANY_ALIASES[company_raw.lower()]
     elif len(company_parts) == 1:
         company = COMPANY_ALIASES.get(company_parts[0].lower(), company_raw.replace("_", " ").title())
@@ -212,6 +280,7 @@ def parse_resume_filename(filename: str) -> dict:
         "version_key": version_key,
         "display_name": display_name,
         "extension": ext,
+        "job_id": job_id,
     }
 
 
@@ -355,6 +424,7 @@ def save_pdf_to_vault(
     role: str = None,
     original_filename: str = None,
     db_path: str = None,
+    submitted_at: str = None,
 ) -> dict:
     """
     Save a PDF to the local vault + extract text + register in DB.
@@ -425,6 +495,19 @@ def save_pdf_to_vault(
     with open(text_path, "w", encoding="utf-8") as f:
         f.write(text)
 
+    # Stamp the filesystem mtime to the original submission date when
+    # the caller supplied one. ``list_vault`` returns ``modified_at``
+    # straight from ``stat().st_mtime``, so this is what the dashboard
+    # surfaces as the resume's date. Done after both writes (PDF + text)
+    # so the order of writes can't perturb the timestamp.
+    if submitted_at:
+        try:
+            ts = datetime.fromisoformat(submitted_at.replace("Z", "+00:00")).timestamp()
+            os.utime(vault_path, (ts, ts))
+            os.utime(text_path, (ts, ts))
+        except (ValueError, OSError) as e:
+            log.warning("Failed to apply submitted_at=%r: %s", submitted_at, e)
+
     # Extract skills
     from storage.profile_manager import extract_skills_from_resume
     skills = extract_skills_from_resume(text)
@@ -442,6 +525,7 @@ def save_pdf_to_vault(
             target_roles=[role] if role else [],
             target_companies=[company],
             notes=f"Uploaded from: {original_filename or fname}",
+            submitted_at=submitted_at,
         )
         conn.commit()
         conn.close()

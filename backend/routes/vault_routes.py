@@ -196,6 +196,7 @@ def vault_upload():
         company = request.form.get("company", "").strip()
         role = request.form.get("role", "").strip() or None
         filename = pdf_file.filename
+        submitted_at = request.form.get("submitted_at", "").strip() or None
     else:
         data = request.get_json(force=True)
         b64 = data.get("pdf_base64", "")
@@ -208,9 +209,28 @@ def vault_upload():
         company = data.get("company", "").strip()
         role = data.get("role", "").strip() or None
         filename = data.get("filename", "")
+        submitted_at = (data.get("submitted_at") or "").strip() or None
 
     if not company:
         return jsonify({"error": "company is required"}), 400
+
+    # Validate submitted_at: must be ISO 8601, year >= 2000, not in the
+    # future (allow 1 day of clock skew). list_vault() returns this as
+    # modified_at; bad values would pollute the dashboard's sort order.
+    if submitted_at is not None:
+        from datetime import datetime, timezone, timedelta
+        try:
+            dt = datetime.fromisoformat(submitted_at.replace("Z", "+00:00"))
+        except ValueError:
+            return jsonify({"error": f"submitted_at must be ISO 8601 (got {submitted_at!r})"}), 400
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        if dt > now + timedelta(days=1):
+            return jsonify({"error": f"submitted_at is in the future: {submitted_at}"}), 400
+        if dt < datetime(2000, 1, 1, tzinfo=timezone.utc):
+            return jsonify({"error": f"submitted_at is before 2000: {submitted_at}"}), 400
+        submitted_at = dt.isoformat()
 
     # Issue #35: length cap before the path is built. canonical_filename also
     # sanitizes, but capping at the route layer gives a clearer error and
@@ -240,6 +260,7 @@ def vault_upload():
             role=role,
             original_filename=filename,
             db_path=DB_PATH,
+            submitted_at=submitted_at,
         )
     except ValueError as e:
         # canonical_filename rejects fully-sanitized-to-empty names, and
