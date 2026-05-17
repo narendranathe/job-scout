@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback, useRef } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef, memo } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, AreaChart, Area } from "recharts";
 
 /* ═══ Theme ═══════════════════════════════════════════════════════════ */
@@ -509,6 +509,375 @@ function Chk({done,label,detail,t}) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+   JobCard — memoized job-list row
+   ───────────────────────────────────────────────────────────────────
+   Extracted from the inline `fj.map(j => ...)` body inside App() so a
+   state change scoped to a single card (e.g. best-match result, status
+   toggle, expand) only re-renders that card. Receives only the slice of
+   state it actually uses; `app` is `apps[j.external_id]` (or undefined),
+   not the whole `apps` map. Stable-style objects are hoisted to module
+   scope where possible; the rest are recomputed only when `t` changes.
+
+   Equality: default `React.memo` shallow `===` is sufficient because the
+   parent passes through memoized objects (bm, app, vdMap) and stable
+   callback refs (useCallback).
+   ═══════════════════════════════════════════════════════════════════ */
+const JC_STYLES = {
+  topRow: {padding:"16px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:12},
+  titleRow: {display:"flex",alignItems:"center",gap:14,flex:1,minWidth:0},
+  titleInner: {flex:1,minWidth:0},
+  titleLine: {display:"flex",alignItems:"center",gap:8,marginBottom:5,flexWrap:"wrap"},
+  metaRow: {display:"flex",gap:12,fontSize:14,flexWrap:"wrap",alignItems:"center"},
+  scoreCluster: {display:"flex",alignItems:"center",gap:10,flexShrink:0},
+  platinum: {
+    background:'linear-gradient(135deg, #b8860b, #ffd700)',
+    color:'#1a1a1a',fontSize:'10px',fontWeight:'700',padding:'2px 6px',
+    borderRadius:'4px',marginLeft:'6px',letterSpacing:'0.5px',textTransform:'uppercase',
+  },
+  appliedBtn: {
+    background:'rgba(59,130,246,0.15)', color:'#3b82f6',
+    border:'1px solid rgba(59,130,246,0.3)', borderRadius:'4px',
+    padding:'3px 8px', fontSize:'11px', cursor:'pointer', marginLeft:'6px',
+  },
+  skillsRow: {display:"flex",gap:6,flexWrap:"wrap",margin:"14px 0 10px"},
+  actionsRow: {display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginTop:10},
+  statusBtnsRow: {display:"flex",gap:6,flexWrap:"wrap"},
+  rkBar: {flex:1,height:8,borderRadius:5,overflow:"hidden"},
+  vdGrid: {display:"flex",flexDirection:"column",gap:4},
+};
+
+function stopProp(e) { e.stopPropagation(); }
+
+// Shared stable empty-object/array references for JobCards with no
+// expanded rows / no company history. Sharing identity across cards
+// keeps React.memo's shallow === happy.
+const EMPTY_OBJ = Object.freeze({});
+const EMPTY_ARR = Object.freeze([]);
+
+function _JobCard({
+  j,
+  t,
+  open,
+  app,
+  coHistory,
+  bm,
+  vdMap,
+  expandedRows,
+  onToggleOpen,
+  onSave,
+  onRemove,
+  onMarkApplied,
+  onFetchBestMatch,
+  onToggleVersionRow,
+}) {
+  const sc = j.relevance_score || 0;
+  const ats = ATS_META[j.ats] || ATS_META.unknown;
+  const catLbl = ROLE_CATS.find(r => r.id === j._cat)?.label || "Other";
+  const isApplied = j.application_status === 'applied';
+
+  const cardStyle = {
+    background:t.cd,borderRadius:12,border:`1px solid ${t.bd}`,
+    overflow:"hidden",cursor:"pointer",transition:"all .2s",
+    boxShadow:open?t.sh:t.shS,opacity:isApplied?0.45:1,
+  };
+  const handleCardClick = () => onToggleOpen(j.external_id);
+
+  return (
+    <div onClick={handleCardClick} style={cardStyle}>
+      <div className="job-card-top" style={JC_STYLES.topRow}>
+        <div style={JC_STYLES.titleRow}>
+          <LogoImg name={j.company} size={40} t={t}/>
+          <div style={JC_STYLES.titleInner}>
+            <div style={JC_STYLES.titleLine}>
+              <span style={{fontSize:17,fontWeight:700,color:t.tx,fontFamily:"'Playfair Display',serif"}}>{j.title}</span>
+              {isApplied && <Pill ch={ST_LABEL.applied} c={ST_COLOR.applied} t={t}/>}
+              <Pill ch={catLbl} c={t.bl} t={t}/>
+              <Pill ch={`${ats.i} ${ats.l}`} c={ats.c} t={t}/>
+            </div>
+            <div className="job-meta" style={{...JC_STYLES.metaRow, color:t.txS}}>
+              <span style={{fontWeight:700}}>{j.company}</span>
+              {isPlatinum(j) && <span style={JC_STYLES.platinum}>PLATINUM</span>}
+              <span>{j._loc.display||"—"}</span>
+              {j._loc.state && <span style={{color:t.bl,fontWeight:600}}>📍 {j._loc.state}</span>}
+              {j._loc.isRemote && <span style={{color:t.ok,fontWeight:700}}>🏠 Remote</span>}
+              {j.salary_max>0 && <span style={{color:t.wm,fontWeight:700}}>{fmtSal(j.salary_min)}–{fmtSal(j.salary_max)}</span>}
+              {j.posted_at && <span style={{color:t.txM}}>{timeAgo(j.posted_at)}</span>}
+              {j.sponsorship && <span title="JD mentions visa sponsorship" style={{color:t.vi,fontWeight:700}}>🛂</span>}
+              {(j.rare_skill_hits||[]).length>0 && <span title={`Rare skills: ${j.rare_skill_hits.join(", ")}`} style={{color:t.vi,fontWeight:700}}>🎯 {j.rare_skill_hits.length}</span>}
+            </div>
+          </div>
+        </div>
+        <div style={JC_STYLES.scoreCluster}>
+          <div style={{width:52,height:52,borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",background:t.sBg(sc)}}>
+            <span style={{fontSize:20,fontWeight:800,color:t.sTx(sc),fontFamily:"'Playfair Display',serif"}}>{(sc*100).toFixed(0)}</span>
+          </div>
+          <span style={{fontSize:18,color:t.txM,transform:open?"rotate(180deg)":"",transition:"transform .2s"}}>▾</span>
+        </div>
+      </div>
+      {open && (
+        <div style={{padding:"0 20px 18px",borderTop:`1px solid ${t.bd}`}}>
+          <div style={JC_STYLES.skillsRow}>
+            {(j.matched_skills||[]).map(s => <Pill key={s} ch={s} t={t} big/>)}
+            {(j.sponsorship||likelySponsor(j)) && <Pill ch="🛂 Likely H1B" c={t.vi} t={t} big/>}
+          </div>
+          {j.description && (
+            <p style={{fontSize:15,color:t.txS,lineHeight:1.85,maxHeight:160,overflow:"hidden",margin:"10px 0"}}>
+              {j.description.slice(0,700)}...
+            </p>
+          )}
+          {coHistory && coHistory.length > 0 && (
+            <div style={{margin:"12px 0",padding:"12px 16px",borderRadius:10,background:`${t.wm}10`,border:`1px solid ${t.wm}30`}}>
+              <div style={{fontSize:12,fontWeight:700,color:t.wm,textTransform:"uppercase",letterSpacing:".06em",marginBottom:8}}>
+                📋 Your history at {j.company}
+              </div>
+              {coHistory.map((a, i) => (
+                <div key={i} style={{display:"flex",gap:10,alignItems:"center",padding:"5px 0",borderBottom:i<coHistory.length-1?`1px solid ${t.bd}`:"none",flexWrap:"wrap",fontSize:13}}>
+                  <span style={{color:t.txS,flex:1,minWidth:120}}>{a.title}</span>
+                  {a.applied_at && <span style={{color:t.txM}}>{timeAgo(a.applied_at)}</span>}
+                  {a.resume_version && <span style={{color:t.ac,fontWeight:600}}>📄 {a.resume_version}</span>}
+                  <span style={{fontWeight:700,color:ST_COLOR[a.status]||t.txM,padding:"2px 8px",borderRadius:5,background:`${ST_COLOR[a.status]||t.txM}18`,fontSize:12}}>
+                    {a.status.charAt(0).toUpperCase()+a.status.slice(1)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={JC_STYLES.actionsRow}>
+            <a href={j.url} target="_blank" rel="noopener noreferrer" onClick={stopProp}
+              style={{display:"inline-block",padding:"11px 24px",borderRadius:9,background:t.gP,color:"#fff",fontSize:15,fontWeight:700,textDecoration:"none",boxShadow:`0 3px 12px ${t.ac}30`}}>
+              Apply →
+            </a>
+            <button
+              onClick={e => { e.stopPropagation(); onMarkApplied(j); }}
+              style={JC_STYLES.appliedBtn}
+            >
+              ✓ Applied
+            </button>
+            {(() => {
+              const loading = bm?.loading;
+              return (
+                <button
+                  type="button"
+                  onClick={e => { e.stopPropagation(); if (!loading) onFetchBestMatch(j); }}
+                  disabled={loading || !j.external_id}
+                  style={{padding:"9px 14px",borderRadius:8,border:`1.5px solid ${t.vi}`,
+                    background:loading?`${t.vi}10`:`${t.vi}18`,color:t.vi,
+                    fontSize:13,fontWeight:700,cursor:loading?"wait":"pointer",fontFamily:"inherit",
+                    transition:"all .15s",whiteSpace:"nowrap",opacity:loading?0.7:1,minHeight:36}}>
+                  {loading?"Matching…":(bm?.data?"↻ Refresh Match":"📄 Find Best Resume")}
+                </button>
+              );
+            })()}
+            <div style={JC_STYLES.statusBtnsRow}>
+              {Object.keys(ST_LABEL).map(st => {
+                const isCur = app?.status === st;
+                const c = ST_COLOR[st];
+                return (
+                  <button key={st} onClick={e => { e.stopPropagation(); if (isCur) onRemove(j.external_id); else onSave(j, st); }}
+                    style={{padding:"9px 13px",borderRadius:8,border:`1.5px solid ${isCur?c:t.bd}`,
+                      background:isCur?`${c}18`:"transparent",color:isCur?c:t.txM,
+                      fontSize:13,fontWeight:isCur?700:500,cursor:"pointer",fontFamily:"inherit",
+                      transition:"all .15s",whiteSpace:"nowrap"}}>
+                    {ST_LABEL[st]}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          {bm && !bm.loading && (() => {
+            if (bm.error) {
+              return (
+                <div onClick={stopProp} style={{marginTop:12,padding:"10px 14px",borderRadius:8,background:`${t.wm}10`,border:`1px solid ${t.wm}30`,color:t.wm,fontSize:13}}>
+                  Resume match failed: {bm.error}
+                </div>
+              );
+            }
+            if (!bm.data || !bm.data.rankings || bm.data.rankings.length === 0) {
+              return (
+                <div onClick={stopProp} style={{marginTop:12,padding:"10px 14px",borderRadius:8,background:`${t.bd}30`,border:`1px solid ${t.bd}`,color:t.txM,fontSize:13}}>
+                  No resume versions found in vault.
+                </div>
+              );
+            }
+            return (
+              <div onClick={stopProp}
+                style={{marginTop:14,padding:"14px 16px",borderRadius:10,background:`${t.vi}08`,border:`1px solid ${t.vi}40`}}>
+                <div style={{fontSize:12,fontWeight:700,color:t.vi,textTransform:"uppercase",letterSpacing:".06em",marginBottom:10}}>
+                  📄 Top {bm.data.rankings.length} resume matches · {bm.data.count} in vault
+                </div>
+                <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                  {bm.data.rankings.map((rk, idx) => {
+                    const isRowOpen = !!expandedRows[rk.version_key];
+                    const vd = vdMap[rk.version_key];
+                    const pct = Math.round((rk.combined_score||0)*100);
+                    const skillPct = rk.skill_match_pct||0;
+                    const matchedCount = Array.isArray(rk.matched_skills)?rk.matched_skills.length:0;
+                    return (
+                      <div key={rk.version_key}
+                        style={{padding:"10px 12px",borderRadius:8,background:t.cd,border:`1px solid ${t.bd}`}}>
+                        <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+                          <span style={{fontSize:12,fontWeight:800,color:t.txM,minWidth:24}}>#{idx+1}</span>
+                          <span style={{fontSize:14,fontWeight:700,color:t.tx,flex:1,minWidth:140,wordBreak:"break-word"}}>
+                            {rk.display_name || rk.version_key}
+                          </span>
+                          <div style={{display:"flex",alignItems:"center",gap:8,minWidth:160,flex:"0 1 220px"}}>
+                            <div style={{...JC_STYLES.rkBar, background:`${t.bd}80`}}>
+                              <div style={{width:`${Math.max(0,Math.min(100,pct))}%`,height:"100%",background:t.vi,transition:"width .25s"}}/>
+                            </div>
+                            <span style={{fontSize:13,fontWeight:800,color:t.vi,minWidth:38,textAlign:"right"}}>{pct}%</span>
+                          </div>
+                          <span title={`${matchedCount} matched skills · ${skillPct}% skill overlap`} style={{fontSize:12,color:t.txM,fontWeight:600}}>
+                            🎯 {matchedCount} · {skillPct}%
+                          </span>
+                          <button
+                            type="button"
+                            aria-expanded={isRowOpen}
+                            aria-label={`${isRowOpen?"Hide":"View"} details for ${rk.display_name || rk.version_key}`}
+                            onClick={() => onToggleVersionRow(j.external_id, rk.version_key)}
+                            style={{padding:"8px 12px",borderRadius:6,border:`1px solid ${t.vi}50`,background:isRowOpen?`${t.vi}20`:"transparent",color:t.vi,fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",minHeight:32}}>
+                            {isRowOpen?"Hide ▴":"View ▾"}
+                          </button>
+                        </div>
+                        {isRowOpen && (
+                          <div style={{marginTop:10,padding:"10px 12px",borderRadius:6,background:`${t.bd}30`,fontSize:12,color:t.txS,lineHeight:1.7}}>
+                            {vd?.loading && <span style={{color:t.txM}}>Loading version details…</span>}
+                            {vd?.error && <span style={{color:t.wm}}>Failed: {vd.error}</span>}
+                            {vd?.data && (
+                              <div style={JC_STYLES.vdGrid}>
+                                <div><span style={{color:t.txM,fontWeight:700}}>Key:</span> {vd.data.version_key}</div>
+                                {vd.data.display_name && <div><span style={{color:t.txM,fontWeight:700}}>Name:</span> {vd.data.display_name}</div>}
+                                {Array.isArray(vd.data.target_companies) && vd.data.target_companies.length>0 && (
+                                  <div><span style={{color:t.txM,fontWeight:700}}>Companies:</span> {vd.data.target_companies.join(", ")}</div>
+                                )}
+                                {Array.isArray(vd.data.target_roles) && vd.data.target_roles.length>0 && (
+                                  <div><span style={{color:t.txM,fontWeight:700}}>Roles:</span> {vd.data.target_roles.join(", ")}</div>
+                                )}
+                                {vd.data.created_at && <div><span style={{color:t.txM,fontWeight:700}}>Created:</span> {vd.data.created_at}</div>}
+                                {vd.data.updated_at && <div><span style={{color:t.txM,fontWeight:700}}>Updated:</span> {vd.data.updated_at}</div>}
+                                {vd.data.notes && <div><span style={{color:t.txM,fontWeight:700}}>Notes:</span> {vd.data.notes}</div>}
+                                {Array.isArray(vd.data.extracted_skills) && vd.data.extracted_skills.length>0 && (
+                                  <div style={{marginTop:4}}>
+                                    <span style={{color:t.txM,fontWeight:700}}>Skills ({vd.data.extracted_skills.length}):</span>{" "}
+                                    {vd.data.extracted_skills.slice(0,18).join(", ")}
+                                    {vd.data.extracted_skills.length>18?"…":""}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const JobCard = memo(_JobCard);
+
+/* ═══════════════════════════════════════════════════════════════════
+   VaultRow — memoized vault file row
+   ───────────────────────────────────────────────────────────────────
+   Same idea as JobCard: extracted from filteredFiles.map so toggling
+   one row's open state doesn't re-render every other row.
+   ═══════════════════════════════════════════════════════════════════ */
+function _VaultRow({ f, t, isOpen, det, btnSecondary, btnDanger, labelStyle, onToggle, onDelete }) {
+  const sizeLabel = typeof f.size_kb === "number"
+    ? (f.size_kb >= 1024 ? `${(f.size_kb/1024).toFixed(1)} MB` : `${f.size_kb} KB`)
+    : null;
+  return (
+    <div style={{background:t.bgS,borderRadius:10,border:`1px solid ${t.bd}`,overflow:"hidden"}}>
+      <div style={{padding:"12px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}} className="vault-row">
+        <div style={{flex:1,minWidth:200}}>
+          <div style={{fontSize:14,fontWeight:700,color:t.tx}}>
+            {f.company || "—"}{f.role ? ` · ${f.role}` : ""}
+          </div>
+          <div style={{fontSize:12,color:t.txM,marginTop:3,wordBreak:"break-word"}}>
+            <span style={{fontFamily:"monospace",color:t.ac}}>{f.version_key}</span>
+            {f.filename && <span> · {f.filename}</span>}
+            {sizeLabel && <span> · {sizeLabel}</span>}
+          </div>
+        </div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          <button type="button" style={btnSecondary}
+            aria-expanded={isOpen}
+            aria-label={`${isOpen?"Hide":"View"} details for ${f.version_key}`}
+            onClick={() => onToggle(f.version_key, isOpen)}>
+            {isOpen ? "Hide" : "View Details"}
+          </button>
+          <button type="button" style={btnDanger}
+            aria-label={`Delete vault version ${f.version_key}`}
+            onClick={() => onDelete(f.version_key)}>
+            Delete
+          </button>
+        </div>
+      </div>
+      {isOpen && (
+        <div style={{padding:"14px 16px",borderTop:`1px solid ${t.bd}`,background:t.cd}}>
+          {!det || det.__loading ? (
+            <div style={{color:t.txM,fontStyle:"italic",fontSize:13}}>Loading details...</div>
+          ) : det.error ? (
+            <div style={{color:t.er,fontSize:13}}>❌ {det.error}</div>
+          ) : (
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:12}}>
+              <div>
+                <div style={labelStyle}>Display Name</div>
+                <div style={{fontSize:14,color:t.tx}}>{det.display_name || "—"}</div>
+              </div>
+              <div>
+                <div style={labelStyle}>Target Companies</div>
+                <div style={{fontSize:14,color:t.tx}}>
+                  {(det.target_companies || []).join(", ") || "—"}
+                </div>
+              </div>
+              <div>
+                <div style={labelStyle}>Target Roles</div>
+                <div style={{fontSize:14,color:t.tx}}>
+                  {(det.target_roles || []).join(", ") || "—"}
+                </div>
+              </div>
+              <div style={{gridColumn:"1 / -1"}}>
+                <div style={labelStyle}>Extracted Skills ({(det.extracted_skills || []).length})</div>
+                <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                  {(det.extracted_skills || []).slice(0,40).map(s => (
+                    <span key={s} style={{fontSize:12,padding:"3px 9px",borderRadius:6,background:t.acL,color:t.ac,border:`1px solid ${t.ac}30`}}>{s}</span>
+                  ))}
+                  {(det.extracted_skills || []).length === 0 && <span style={{color:t.txM,fontSize:13,fontStyle:"italic"}}>none</span>}
+                </div>
+              </div>
+              {det.notes && (
+                <div style={{gridColumn:"1 / -1"}}>
+                  <div style={labelStyle}>Notes</div>
+                  <div style={{fontSize:13,color:t.txS}}>{det.notes}</div>
+                </div>
+              )}
+              <div>
+                <div style={labelStyle}>Resume Length</div>
+                <div style={{fontSize:14,color:t.tx}}>{(det.resume_text || "").length.toLocaleString()} chars</div>
+              </div>
+              {det.updated_at && (
+                <div>
+                  <div style={labelStyle}>Updated</div>
+                  <div style={{fontSize:14,color:t.tx}}>{timeAgo(det.updated_at)}</div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const VaultRow = memo(_VaultRow);
+
+/* ═══════════════════════════════════════════════════════════════════
    MAIN DASHBOARD
    ═══════════════════════════════════════════════════════════════════ */
 export default function App() {
@@ -580,6 +949,26 @@ export default function App() {
       setVersionDetails(prev => ({...prev, [versionKey]: {loading:false, error:e.message||"Failed", data:null}}));
     }
   }, []);
+
+  // Stable callback passed into <JobCard/>. Toggling card N's "open" only
+  // mutates the single `xJ` string, which we then compare per-card via
+  // `open === (xJ === j.external_id)` so unaffected cards skip re-render.
+  const toggleCardOpen = useCallback((extId) => {
+    setXJ(prev => prev === extId ? null : extId);
+  }, []);
+
+  // Per-card "Find Best Resume → version row View ▾" toggle. Mutates only
+  // the `[extId]:[versionKey]:bool` slice so other cards' expanded state
+  // is untouched.
+  const toggleVersionRow = useCallback((extId, versionKey) => {
+    const rowKey = `${extId}:${versionKey}`;
+    let wasOpen = false;
+    setExpandedVersionRow(prev => {
+      wasOpen = !!prev[rowKey];
+      return {...prev, [rowKey]: !wasOpen};
+    });
+    if (!wasOpen) fetchVersionDetails(versionKey);
+  }, [fetchVersionDetails]);
 
   // Filters
   const [q,sQ]             = useState("");
@@ -969,6 +1358,40 @@ export default function App() {
 
   useEffect(() => { fetchApplications(); }, [fetchApplications]);
 
+  // Stable "✓ Applied" callback for <JobCard/>. POSTs to the pipeline API
+  // and merges the response into the applications list. Takes the job at
+  // call time so memoized JobCards don't capture stale closures.
+  const markApplied = useCallback(async (job) => {
+    const base = RENDER_API;
+    if (!base) return;
+    try {
+      const resp = await fetch(`${base}/api/applications`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          external_id: job.external_id,
+          title: job.title,
+          company: job.company,
+          url: job.url || '',
+          status: 'applied',
+          relevance_score: job.relevance_score || 0,
+          salary_min: job.salary_min || 0,
+          salary_max: job.salary_max || 0,
+          location: job.location || '',
+        }),
+      });
+      if (resp.ok) {
+        const newApp = await resp.json();
+        setApplications(prev => {
+          const filtered = prev.filter(a => a.external_id !== job.external_id);
+          return [...filtered, newApp];
+        });
+      }
+    } catch (err) {
+      console.warn('Mark applied failed:', err);
+    }
+  }, []);
+
   const fetchResumeVersions = useCallback(async () => {
     if (!RENDER_API) return;
     try {
@@ -1058,9 +1481,18 @@ export default function App() {
     if (tab === "vault" && RENDER_API && !vaultStats && !vaultLoading) fetchVault();
   }, [tab, fetchVault, vaultStats, vaultLoading]);
 
-  const fetchVaultVersionDetails = async (vk) => {
-    if (!RENDER_API || vaultDetails[vk]) return;
-    setVaultDetails(prev => ({...prev, [vk]: {__loading:true}}));
+  // useCallback-wrapped so <VaultRow/> memoization isn't busted by a new
+  // function identity on every parent render. Uses the functional
+  // setVaultDetails form for the "already loaded?" short-circuit so we
+  // don't need vaultDetails in the deps array.
+  const fetchVaultVersionDetails = useCallback(async (vk) => {
+    if (!RENDER_API) return;
+    let skip = false;
+    setVaultDetails(prev => {
+      if (prev[vk]) { skip = true; return prev; }
+      return {...prev, [vk]: {__loading:true}};
+    });
+    if (skip) return;
     try {
       const r = await fetch(`${RENDER_API}/api/vault/version/${encodeURIComponent(vk)}`, {signal: AbortSignal.timeout(8000)});
       if (r.ok) {
@@ -1074,9 +1506,9 @@ export default function App() {
     } catch (e) {
       setVaultDetails(prev => ({...prev, [vk]: {error: e.message || "Failed to load details"}}));
     }
-  };
+  }, []);
 
-  const deleteVaultVersion = async (vk) => {
+  const deleteVaultVersion = useCallback(async (vk) => {
     if (!RENDER_API) return;
     if (!window.confirm(`Delete vault version "${vk}"?\n\nNote: this removes the database record only. The PDF file on disk remains; it will reappear next refresh unless removed server-side.`)) return;
     try {
@@ -1092,7 +1524,20 @@ export default function App() {
     } catch (e) {
       setVaultError(`Delete failed: ${e.message || "network error"}`);
     }
-  };
+  }, []);
+
+  // Stable toggle for <VaultRow/>: opens the row, closes any other, fires
+  // details fetch on first open. Passing this single callback (instead of
+  // a fresh arrow per row) is what lets React.memo skip re-rendering rows
+  // unrelated to the click.
+  const toggleVaultRow = useCallback((versionKey, isOpen) => {
+    if (isOpen) {
+      setVaultExpanded(null);
+    } else {
+      setVaultExpanded(versionKey);
+      fetchVaultVersionDetails(versionKey);
+    }
+  }, [fetchVaultVersionDetails]);
 
   const compareVaultVersions = async () => {
     if (!RENDER_API || !vaultCmpA || !vaultCmpB || vaultCmpA === vaultCmpB) return;
@@ -1205,6 +1650,25 @@ export default function App() {
     });
     return m;
   }, [apps]);
+
+  // Group expanded "View ▾" rows by job external_id so each <JobCard/>
+  // can receive only its own slice. Without this every card would see
+  // the full map and React.memo's shallow `===` would break whenever any
+  // other card toggled a sub-row. Cards with zero expanded rows share the
+  // single EMPTY_OBJ identity to stay referentially stable across renders.
+  const expandedByJob = useMemo(() => {
+    const m = {};
+    for (const k of Object.keys(expandedVersionRow)) {
+      if (!expandedVersionRow[k]) continue;
+      const i = k.indexOf(":");
+      if (i < 0) continue;
+      const extId = k.slice(0, i);
+      const vk = k.slice(i + 1);
+      if (!m[extId]) m[extId] = {};
+      m[extId][vk] = true;
+    }
+    return m;
+  }, [expandedVersionRow]);
 
   // Build filter option lists
   const opts = useMemo(() => {
@@ -1493,268 +1957,27 @@ export default function App() {
           {/* Job cards */}
           <div style={{display:"flex",flexDirection:"column",gap:10}}>
             {fj.slice(0,60).map(j => {
-              const sc=j.relevance_score||0, open=xJ===j.external_id;
-              const ats=ATS_META[j.ats]||ATS_META.unknown;
-              const catLbl=ROLE_CATS.find(r=>r.id===j._cat)?.label||"Other";
-              const isApplied = j.application_status === 'applied';
+              const coKey = (j.company || "").toLowerCase();
+              const coHistAll = companyApps[coKey];
+              const coHistory = coHistAll ? coHistAll.filter(a => a.status !== "saved") : EMPTY_ARR;
               return (
-                <div key={j.external_id} onClick={()=>setXJ(open?null:j.external_id)}
-                  style={{background:t.cd,borderRadius:12,border:`1px solid ${t.bd}`,overflow:"hidden",cursor:"pointer",transition:"all .2s",boxShadow:open?t.sh:t.shS,opacity:isApplied?0.45:1}}>
-                  <div className="job-card-top" style={{padding:"16px 20px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:12}}>
-                    <div style={{display:"flex",alignItems:"center",gap:14,flex:1,minWidth:0}}>
-                      <LogoImg name={j.company} size={40} t={t}/>
-                      <div style={{flex:1,minWidth:0}}>
-                        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:5,flexWrap:"wrap"}}>
-                          <span style={{fontSize:17,fontWeight:700,color:t.tx,fontFamily:"'Playfair Display',serif"}}>{j.title}</span>
-                          {isApplied && <Pill ch={ST_LABEL.applied} c={ST_COLOR.applied} t={t}/>}
-                          <Pill ch={catLbl} c={t.bl} t={t}/>
-                          <Pill ch={`${ats.i} ${ats.l}`} c={ats.c} t={t}/>
-                        </div>
-                        <div className="job-meta" style={{display:"flex",gap:12,fontSize:14,color:t.txS,flexWrap:"wrap",alignItems:"center"}}>
-                          <span style={{fontWeight:700}}>{j.company}</span>
-                          {isPlatinum(j) && (
-                            <span style={{
-                              background:'linear-gradient(135deg, #b8860b, #ffd700)',
-                              color:'#1a1a1a',
-                              fontSize:'10px',
-                              fontWeight:'700',
-                              padding:'2px 6px',
-                              borderRadius:'4px',
-                              marginLeft:'6px',
-                              letterSpacing:'0.5px',
-                              textTransform:'uppercase',
-                            }}>
-                              PLATINUM
-                            </span>
-                          )}
-                          <span>{j._loc.display||"—"}</span>
-                          {j._loc.state && <span style={{color:t.bl,fontWeight:600}}>📍 {j._loc.state}</span>}
-                          {j._loc.isRemote && <span style={{color:t.ok,fontWeight:700}}>🏠 Remote</span>}
-                          {j.salary_max>0 && <span style={{color:t.wm,fontWeight:700}}>{fmtSal(j.salary_min)}–{fmtSal(j.salary_max)}</span>}
-                          {j.posted_at && <span style={{color:t.txM}}>{timeAgo(j.posted_at)}</span>}
-                          {j.sponsorship && <span title="JD mentions visa sponsorship" style={{color:t.vi,fontWeight:700}}>🛂</span>}
-                          {(j.rare_skill_hits||[]).length>0 && <span title={`Rare skills: ${j.rare_skill_hits.join(", ")}`} style={{color:t.vi,fontWeight:700}}>🎯 {j.rare_skill_hits.length}</span>}
-                        </div>
-                      </div>
-                    </div>
-                    <div style={{display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
-                      <div style={{width:52,height:52,borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",background:t.sBg(sc)}}>
-                        <span style={{fontSize:20,fontWeight:800,color:t.sTx(sc),fontFamily:"'Playfair Display',serif"}}>{(sc*100).toFixed(0)}</span>
-                      </div>
-                      <span style={{fontSize:18,color:t.txM,transform:open?"rotate(180deg)":"",transition:"transform .2s"}}>▾</span>
-                    </div>
-                  </div>
-                  {open && (
-                    <div style={{padding:"0 20px 18px",borderTop:`1px solid ${t.bd}`}}>
-                      <div style={{display:"flex",gap:6,flexWrap:"wrap",margin:"14px 0 10px"}}>
-                        {(j.matched_skills||[]).map(s=><Pill key={s} ch={s} t={t} big/>)}
-                        {(j.sponsorship||likelySponsor(j)) && <Pill ch="🛂 Likely H1B" c={t.vi} t={t} big/>}
-                      </div>
-                      {j.description && (
-                        <p style={{fontSize:15,color:t.txS,lineHeight:1.85,maxHeight:160,overflow:"hidden",margin:"10px 0"}}>
-                          {j.description.slice(0,700)}...
-                        </p>
-                      )}
-                      {/* Application History for this company */}
-                      {(() => {
-                        const coKey = (j.company || "").toLowerCase();
-                        const coHistory = (companyApps[coKey] || []).filter(a => a.status !== "saved");
-                        if (!coHistory.length) return null;
-                        return (
-                          <div style={{margin:"12px 0",padding:"12px 16px",borderRadius:10,background:`${t.wm}10`,border:`1px solid ${t.wm}30`}}>
-                            <div style={{fontSize:12,fontWeight:700,color:t.wm,textTransform:"uppercase",letterSpacing:".06em",marginBottom:8}}>
-                              📋 Your history at {j.company}
-                            </div>
-                            {coHistory.map((a,i) => (
-                              <div key={i} style={{display:"flex",gap:10,alignItems:"center",padding:"5px 0",borderBottom:i<coHistory.length-1?`1px solid ${t.bd}`:"none",flexWrap:"wrap",fontSize:13}}>
-                                <span style={{color:t.txS,flex:1,minWidth:120}}>{a.title}</span>
-                                {a.applied_at && <span style={{color:t.txM}}>{timeAgo(a.applied_at)}</span>}
-                                {a.resume_version && <span style={{color:t.ac,fontWeight:600}}>📄 {a.resume_version}</span>}
-                                <span style={{fontWeight:700,color:ST_COLOR[a.status]||t.txM,padding:"2px 8px",borderRadius:5,background:`${ST_COLOR[a.status]||t.txM}18`,fontSize:12}}>
-                                  {a.status.charAt(0).toUpperCase()+a.status.slice(1)}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        );
-                      })()}
-                      <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginTop:10}}>
-                        <a href={j.url} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()}
-                          style={{display:"inline-block",padding:"11px 24px",borderRadius:9,background:t.gP,color:"#fff",fontSize:15,fontWeight:700,textDecoration:"none",boxShadow:`0 3px 12px ${t.ac}30`}}>
-                          Apply →
-                        </a>
-                        <button
-                          onClick={async (e) => {
-                            e.stopPropagation();
-                            const base = RENDER_API;
-                            if (!base) return;
-                            try {
-                              const resp = await fetch(`${base}/api/applications`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                  external_id: j.external_id,
-                                  title: j.title,
-                                  company: j.company,
-                                  url: j.url || '',
-                                  status: 'applied',
-                                  relevance_score: j.relevance_score || 0,
-                                  salary_min: j.salary_min || 0,
-                                  salary_max: j.salary_max || 0,
-                                  location: j.location || '',
-                                }),
-                              });
-                              if (resp.ok) {
-                                const newApp = await resp.json();
-                                setApplications(prev => {
-                                  const filtered = prev.filter(a => a.external_id !== j.external_id);
-                                  return [...filtered, newApp];
-                                });
-                              }
-                            } catch (err) {
-                              console.warn('Mark applied failed:', err);
-                            }
-                          }}
-                          style={{
-                            background: 'rgba(59,130,246,0.15)', color: '#3b82f6',
-                            border: '1px solid rgba(59,130,246,0.3)', borderRadius: '4px',
-                            padding: '3px 8px', fontSize: '11px', cursor: 'pointer',
-                            marginLeft: '6px',
-                          }}
-                        >
-                          ✓ Applied
-                        </button>
-                        {(() => {
-                          const bm = bestMatchByJob[j.external_id];
-                          const loading = bm?.loading;
-                          return (
-                            <button
-                              type="button"
-                              onClick={e => { e.stopPropagation(); if (!loading) fetchBestMatch(j); }}
-                              disabled={loading || !j.external_id}
-                              style={{padding:"9px 14px",borderRadius:8,border:`1.5px solid ${t.vi}`,
-                                background:loading?`${t.vi}10`:`${t.vi}18`,color:t.vi,
-                                fontSize:13,fontWeight:700,cursor:loading?"wait":"pointer",fontFamily:"inherit",
-                                transition:"all .15s",whiteSpace:"nowrap",opacity:loading?0.7:1,minHeight:36}}>
-                              {loading?"Matching…":(bm?.data?"↻ Refresh Match":"📄 Find Best Resume")}
-                            </button>
-                          );
-                        })()}
-                        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-                          {Object.keys(ST_LABEL).map(st => {
-                            const cur = apps[j.external_id];
-                            const isCur = cur?.status === st;
-                            const c = ST_COLOR[st];
-                            return (
-                              <button key={st} onClick={e=>{e.stopPropagation();isCur?removeApp(j.external_id):saveApp(j,st);}}
-                                style={{padding:"9px 13px",borderRadius:8,border:`1.5px solid ${isCur?c:t.bd}`,
-                                  background:isCur?`${c}18`:"transparent",color:isCur?c:t.txM,
-                                  fontSize:13,fontWeight:isCur?700:500,cursor:"pointer",fontFamily:"inherit",
-                                  transition:"all .15s",whiteSpace:"nowrap"}}>
-                                {ST_LABEL[st]}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                      {(() => {
-                        const bm = bestMatchByJob[j.external_id];
-                        if (!bm || bm.loading) return null;
-                        if (bm.error) {
-                          return (
-                            <div onClick={e=>e.stopPropagation()} style={{marginTop:12,padding:"10px 14px",borderRadius:8,background:`${t.wm}10`,border:`1px solid ${t.wm}30`,color:t.wm,fontSize:13}}>
-                              Resume match failed: {bm.error}
-                            </div>
-                          );
-                        }
-                        if (!bm.data || !bm.data.rankings || bm.data.rankings.length === 0) {
-                          return (
-                            <div onClick={e=>e.stopPropagation()} style={{marginTop:12,padding:"10px 14px",borderRadius:8,background:`${t.bd}30`,border:`1px solid ${t.bd}`,color:t.txM,fontSize:13}}>
-                              No resume versions found in vault.
-                            </div>
-                          );
-                        }
-                        return (
-                          <div onClick={e=>e.stopPropagation()}
-                            style={{marginTop:14,padding:"14px 16px",borderRadius:10,background:`${t.vi}08`,border:`1px solid ${t.vi}40`}}>
-                            <div style={{fontSize:12,fontWeight:700,color:t.vi,textTransform:"uppercase",letterSpacing:".06em",marginBottom:10}}>
-                              📄 Top {bm.data.rankings.length} resume matches · {bm.data.count} in vault
-                            </div>
-                            <div style={{display:"flex",flexDirection:"column",gap:8}}>
-                              {bm.data.rankings.map((rk, idx) => {
-                                const rowKey = `${j.external_id}:${rk.version_key}`;
-                                const isRowOpen = !!expandedVersionRow[rowKey];
-                                const vd = versionDetails[rk.version_key];
-                                const pct = Math.round((rk.combined_score||0)*100);
-                                const skillPct = rk.skill_match_pct||0;
-                                const matchedCount = Array.isArray(rk.matched_skills)?rk.matched_skills.length:0;
-                                return (
-                                  <div key={rk.version_key}
-                                    style={{padding:"10px 12px",borderRadius:8,background:t.cd,border:`1px solid ${t.bd}`}}>
-                                    <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-                                      <span style={{fontSize:12,fontWeight:800,color:t.txM,minWidth:24}}>#{idx+1}</span>
-                                      <span style={{fontSize:14,fontWeight:700,color:t.tx,flex:1,minWidth:140,wordBreak:"break-word"}}>
-                                        {rk.display_name || rk.version_key}
-                                      </span>
-                                      <div style={{display:"flex",alignItems:"center",gap:8,minWidth:160,flex:"0 1 220px"}}>
-                                        <div style={{flex:1,height:8,background:`${t.bd}80`,borderRadius:5,overflow:"hidden"}}>
-                                          <div style={{width:`${Math.max(0,Math.min(100,pct))}%`,height:"100%",background:t.vi,transition:"width .25s"}}/>
-                                        </div>
-                                        <span style={{fontSize:13,fontWeight:800,color:t.vi,minWidth:38,textAlign:"right"}}>{pct}%</span>
-                                      </div>
-                                      <span title={`${matchedCount} matched skills · ${skillPct}% skill overlap`} style={{fontSize:12,color:t.txM,fontWeight:600}}>
-                                        🎯 {matchedCount} · {skillPct}%
-                                      </span>
-                                      <button
-                                        type="button"
-                                        aria-expanded={isRowOpen}
-                                        aria-label={`${isRowOpen?"Hide":"View"} details for ${rk.display_name || rk.version_key}`}
-                                        onClick={() => {
-                                          setExpandedVersionRow(prev => ({...prev, [rowKey]: !prev[rowKey]}));
-                                          if (!isRowOpen) fetchVersionDetails(rk.version_key);
-                                        }}
-                                        style={{padding:"8px 12px",borderRadius:6,border:`1px solid ${t.vi}50`,background:isRowOpen?`${t.vi}20`:"transparent",color:t.vi,fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",minHeight:32}}>
-                                        {isRowOpen?"Hide ▴":"View ▾"}
-                                      </button>
-                                    </div>
-                                    {isRowOpen && (
-                                      <div style={{marginTop:10,padding:"10px 12px",borderRadius:6,background:`${t.bd}30`,fontSize:12,color:t.txS,lineHeight:1.7}}>
-                                        {vd?.loading && <span style={{color:t.txM}}>Loading version details…</span>}
-                                        {vd?.error && <span style={{color:t.wm}}>Failed: {vd.error}</span>}
-                                        {vd?.data && (
-                                          <div style={{display:"flex",flexDirection:"column",gap:4}}>
-                                            <div><span style={{color:t.txM,fontWeight:700}}>Key:</span> {vd.data.version_key}</div>
-                                            {vd.data.display_name && <div><span style={{color:t.txM,fontWeight:700}}>Name:</span> {vd.data.display_name}</div>}
-                                            {Array.isArray(vd.data.target_companies) && vd.data.target_companies.length>0 && (
-                                              <div><span style={{color:t.txM,fontWeight:700}}>Companies:</span> {vd.data.target_companies.join(", ")}</div>
-                                            )}
-                                            {Array.isArray(vd.data.target_roles) && vd.data.target_roles.length>0 && (
-                                              <div><span style={{color:t.txM,fontWeight:700}}>Roles:</span> {vd.data.target_roles.join(", ")}</div>
-                                            )}
-                                            {vd.data.created_at && <div><span style={{color:t.txM,fontWeight:700}}>Created:</span> {vd.data.created_at}</div>}
-                                            {vd.data.updated_at && <div><span style={{color:t.txM,fontWeight:700}}>Updated:</span> {vd.data.updated_at}</div>}
-                                            {vd.data.notes && <div><span style={{color:t.txM,fontWeight:700}}>Notes:</span> {vd.data.notes}</div>}
-                                            {Array.isArray(vd.data.extracted_skills) && vd.data.extracted_skills.length>0 && (
-                                              <div style={{marginTop:4}}>
-                                                <span style={{color:t.txM,fontWeight:700}}>Skills ({vd.data.extracted_skills.length}):</span>{" "}
-                                                {vd.data.extracted_skills.slice(0,18).join(", ")}
-                                                {vd.data.extracted_skills.length>18?"…":""}
-                                              </div>
-                                            )}
-                                          </div>
-                                        )}
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  )}
-                </div>
+                <JobCard
+                  key={j.external_id}
+                  j={j}
+                  t={t}
+                  open={xJ === j.external_id}
+                  app={apps[j.external_id]}
+                  coHistory={coHistory}
+                  bm={bestMatchByJob[j.external_id]}
+                  vdMap={versionDetails}
+                  expandedRows={expandedByJob[j.external_id] || EMPTY_OBJ}
+                  onToggleOpen={toggleCardOpen}
+                  onSave={saveApp}
+                  onRemove={removeApp}
+                  onMarkApplied={markApplied}
+                  onFetchBestMatch={fetchBestMatch}
+                  onToggleVersionRow={toggleVersionRow}
+                />
               );
             })}
             {fj.length>60 && (
@@ -2488,98 +2711,20 @@ export default function App() {
                   </div>
                 ) : (
                   <div style={{display:"flex",flexDirection:"column",gap:8}}>
-                    {filteredFiles.map(f => {
-                      const isOpen = vaultExpanded === f.version_key;
-                      const det = vaultDetails[f.version_key];
-                      const sizeLabel = typeof f.size_kb === "number"
-                        ? (f.size_kb >= 1024 ? `${(f.size_kb/1024).toFixed(1)} MB` : `${f.size_kb} KB`)
-                        : null;
-                      return (
-                        <div key={f.filename || f.version_key} style={{background:t.bgS,borderRadius:10,border:`1px solid ${t.bd}`,overflow:"hidden"}}>
-                          <div style={{padding:"12px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}} className="vault-row">
-                            <div style={{flex:1,minWidth:200}}>
-                              <div style={{fontSize:14,fontWeight:700,color:t.tx}}>
-                                {f.company || "—"}{f.role ? ` · ${f.role}` : ""}
-                              </div>
-                              <div style={{fontSize:12,color:t.txM,marginTop:3,wordBreak:"break-word"}}>
-                                <span style={{fontFamily:"monospace",color:t.ac}}>{f.version_key}</span>
-                                {f.filename && <span> · {f.filename}</span>}
-                                {sizeLabel && <span> · {sizeLabel}</span>}
-                              </div>
-                            </div>
-                            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                              <button type="button" style={btnSecondary}
-                                aria-expanded={isOpen}
-                                aria-label={`${isOpen?"Hide":"View"} details for ${f.version_key}`}
-                                onClick={() => {
-                                  if (isOpen) { setVaultExpanded(null); }
-                                  else { setVaultExpanded(f.version_key); fetchVaultVersionDetails(f.version_key); }
-                                }}>
-                                {isOpen ? "Hide" : "View Details"}
-                              </button>
-                              <button type="button" style={btnDanger}
-                                aria-label={`Delete vault version ${f.version_key}`}
-                                onClick={() => deleteVaultVersion(f.version_key)}>
-                                Delete
-                              </button>
-                            </div>
-                          </div>
-                          {isOpen && (
-                            <div style={{padding:"14px 16px",borderTop:`1px solid ${t.bd}`,background:t.cd}}>
-                              {!det || det.__loading ? (
-                                <div style={{color:t.txM,fontStyle:"italic",fontSize:13}}>Loading details...</div>
-                              ) : det.error ? (
-                                <div style={{color:t.er,fontSize:13}}>❌ {det.error}</div>
-                              ) : (
-                                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:12}}>
-                                  <div>
-                                    <div style={labelStyle}>Display Name</div>
-                                    <div style={{fontSize:14,color:t.tx}}>{det.display_name || "—"}</div>
-                                  </div>
-                                  <div>
-                                    <div style={labelStyle}>Target Companies</div>
-                                    <div style={{fontSize:14,color:t.tx}}>
-                                      {(det.target_companies || []).join(", ") || "—"}
-                                    </div>
-                                  </div>
-                                  <div>
-                                    <div style={labelStyle}>Target Roles</div>
-                                    <div style={{fontSize:14,color:t.tx}}>
-                                      {(det.target_roles || []).join(", ") || "—"}
-                                    </div>
-                                  </div>
-                                  <div style={{gridColumn:"1 / -1"}}>
-                                    <div style={labelStyle}>Extracted Skills ({(det.extracted_skills || []).length})</div>
-                                    <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-                                      {(det.extracted_skills || []).slice(0,40).map(s => (
-                                        <span key={s} style={{fontSize:12,padding:"3px 9px",borderRadius:6,background:t.acL,color:t.ac,border:`1px solid ${t.ac}30`}}>{s}</span>
-                                      ))}
-                                      {(det.extracted_skills || []).length === 0 && <span style={{color:t.txM,fontSize:13,fontStyle:"italic"}}>none</span>}
-                                    </div>
-                                  </div>
-                                  {det.notes && (
-                                    <div style={{gridColumn:"1 / -1"}}>
-                                      <div style={labelStyle}>Notes</div>
-                                      <div style={{fontSize:13,color:t.txS}}>{det.notes}</div>
-                                    </div>
-                                  )}
-                                  <div>
-                                    <div style={labelStyle}>Resume Length</div>
-                                    <div style={{fontSize:14,color:t.tx}}>{(det.resume_text || "").length.toLocaleString()} chars</div>
-                                  </div>
-                                  {det.updated_at && (
-                                    <div>
-                                      <div style={labelStyle}>Updated</div>
-                                      <div style={{fontSize:14,color:t.tx}}>{timeAgo(det.updated_at)}</div>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                    {filteredFiles.map(f => (
+                      <VaultRow
+                        key={f.filename || f.version_key}
+                        f={f}
+                        t={t}
+                        isOpen={vaultExpanded === f.version_key}
+                        det={vaultDetails[f.version_key]}
+                        btnSecondary={btnSecondary}
+                        btnDanger={btnDanger}
+                        labelStyle={labelStyle}
+                        onToggle={toggleVaultRow}
+                        onDelete={deleteVaultVersion}
+                      />
+                    ))}
                   </div>
                 )}
               </div>
