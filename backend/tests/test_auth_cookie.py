@@ -271,3 +271,169 @@ def test_cookie_signed_with_session_secret_key(monkeypatch):
     payload = read_session(cookie_a)
     assert payload is not None
     assert "csrf" in payload
+
+
+# ─── Production-mode fallback-key guard (multi-worker safety) ──────────────
+#
+# Regression test for the bug where ``_FALLBACK_KEY = secrets.token_hex(32)``
+# at import time meant every forked gunicorn worker got a DIFFERENT signing
+# key. Users would log in on worker A, then 401 on the next request that
+# happened to land on worker B. The fix is a hard-fail at import time when
+# the environment looks like production but no signing key is configured.
+
+
+def _reset_auth_module():
+    """Drop routes._auth from sys.modules so the next import re-evaluates
+    the module-level production guard. Needed because the guard runs once
+    at import time and pytest doesn't otherwise re-import on every test."""
+    import sys
+    sys.modules.pop("routes._auth", None)
+
+
+def test_production_without_signing_key_refuses_to_import(monkeypatch):
+    """RENDER=1 + no SESSION_SECRET_KEY + no API_SECRET → MissingSigningKeyError."""
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.delenv("SESSION_SECRET_KEY", raising=False)
+    monkeypatch.delenv("API_SECRET", raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("PYTEST_VERSION", raising=False)
+    # Pretend we're not under pytest by hiding the module + clobbering _.
+    monkeypatch.setenv("_", "/usr/bin/python3")
+    import sys
+    saved_pytest = sys.modules.pop("pytest", None)
+    _reset_auth_module()
+    try:
+        with pytest.raises(Exception) as excinfo:
+            import routes._auth  # noqa: F401
+        # Either our explicit MissingSigningKeyError or any RuntimeError
+        # subclass — the important thing is import fails.
+        assert "SESSION_SECRET_KEY" in str(excinfo.value) or "signing" in str(excinfo.value).lower()
+    finally:
+        if saved_pytest is not None:
+            sys.modules["pytest"] = saved_pytest
+        _reset_auth_module()
+
+
+def test_production_with_session_secret_key_imports_cleanly(monkeypatch):
+    """SESSION_SECRET_KEY set → production guard does not fire."""
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setenv("SESSION_SECRET_KEY", "real-key-here")
+    monkeypatch.delenv("API_SECRET", raising=False)
+    _reset_auth_module()
+    try:
+        import routes._auth as auth_mod
+        # And the signing key resolver returns the env value, not the fallback.
+        assert auth_mod._signing_key() == "real-key-here"
+    finally:
+        _reset_auth_module()
+
+
+def test_production_with_api_secret_imports_cleanly(monkeypatch):
+    """API_SECRET alone (no SESSION_SECRET_KEY) is also acceptable."""
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.delenv("SESSION_SECRET_KEY", raising=False)
+    monkeypatch.setenv("API_SECRET", "bearer-token-xyz")
+    _reset_auth_module()
+    try:
+        import routes._auth as auth_mod
+        assert auth_mod._signing_key() == "bearer-token-xyz"
+    finally:
+        _reset_auth_module()
+
+
+def test_web_concurrency_ge_2_triggers_production_check(monkeypatch):
+    """gunicorn --workers 2+ (via WEB_CONCURRENCY) is a production signal."""
+    monkeypatch.delenv("RENDER", raising=False)
+    monkeypatch.delenv("FLASK_ENV", raising=False)
+    monkeypatch.delenv("JOBSCOUT_ENV", raising=False)
+    monkeypatch.delenv("SESSION_SECRET_KEY", raising=False)
+    monkeypatch.delenv("API_SECRET", raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("PYTEST_VERSION", raising=False)
+    monkeypatch.setenv("_", "/usr/bin/python3")
+    monkeypatch.setenv("WEB_CONCURRENCY", "4")
+    import sys
+    saved_pytest = sys.modules.pop("pytest", None)
+    _reset_auth_module()
+    try:
+        with pytest.raises(Exception) as excinfo:
+            import routes._auth  # noqa: F401
+        assert "WEB_CONCURRENCY" in str(excinfo.value) or "worker" in str(excinfo.value).lower()
+    finally:
+        if saved_pytest is not None:
+            sys.modules["pytest"] = saved_pytest
+        _reset_auth_module()
+
+
+def test_web_concurrency_1_does_not_trigger_guard(monkeypatch):
+    """WEB_CONCURRENCY=1 is the safe single-worker case — fallback OK."""
+    monkeypatch.delenv("RENDER", raising=False)
+    monkeypatch.delenv("FLASK_ENV", raising=False)
+    monkeypatch.delenv("JOBSCOUT_ENV", raising=False)
+    monkeypatch.delenv("SESSION_SECRET_KEY", raising=False)
+    monkeypatch.delenv("API_SECRET", raising=False)
+    monkeypatch.setenv("WEB_CONCURRENCY", "1")
+    _reset_auth_module()
+    try:
+        import routes._auth as auth_mod
+        # Should import without raising; fallback key is in use.
+        assert auth_mod._signing_key() == auth_mod._FALLBACK_KEY
+    finally:
+        _reset_auth_module()
+
+
+def test_dev_mode_no_env_vars_still_works(monkeypatch):
+    """The whole point: local dev with zero env vars must keep working."""
+    monkeypatch.delenv("RENDER", raising=False)
+    monkeypatch.delenv("FLASK_ENV", raising=False)
+    monkeypatch.delenv("JOBSCOUT_ENV", raising=False)
+    monkeypatch.delenv("WEB_CONCURRENCY", raising=False)
+    monkeypatch.delenv("GUNICORN_CMD_ARGS", raising=False)
+    monkeypatch.delenv("SESSION_SECRET_KEY", raising=False)
+    monkeypatch.delenv("API_SECRET", raising=False)
+    _reset_auth_module()
+    try:
+        import routes._auth as auth_mod
+        # Round-trip a session under the fallback key.
+        cookie, csrf = auth_mod.issue_session()
+        payload = auth_mod.read_session(cookie)
+        assert payload is not None
+        assert payload["csrf"] == csrf
+    finally:
+        _reset_auth_module()
+
+
+def test_override_env_var_lets_production_use_fallback(monkeypatch):
+    """JOBSCOUT_ALLOW_FALLBACK_KEY=1 is the documented escape hatch."""
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.delenv("SESSION_SECRET_KEY", raising=False)
+    monkeypatch.delenv("API_SECRET", raising=False)
+    monkeypatch.setenv("JOBSCOUT_ALLOW_FALLBACK_KEY", "1")
+    _reset_auth_module()
+    try:
+        import routes._auth as auth_mod
+        # Import succeeds; fallback in use.
+        assert auth_mod._signing_key() == auth_mod._FALLBACK_KEY
+    finally:
+        _reset_auth_module()
+
+
+def test_flask_env_production_triggers_guard(monkeypatch):
+    """FLASK_ENV=production without a key → refuses to import."""
+    monkeypatch.delenv("RENDER", raising=False)
+    monkeypatch.setenv("FLASK_ENV", "production")
+    monkeypatch.delenv("SESSION_SECRET_KEY", raising=False)
+    monkeypatch.delenv("API_SECRET", raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("PYTEST_VERSION", raising=False)
+    monkeypatch.setenv("_", "/usr/bin/python3")
+    import sys
+    saved_pytest = sys.modules.pop("pytest", None)
+    _reset_auth_module()
+    try:
+        with pytest.raises(Exception):
+            import routes._auth  # noqa: F401
+    finally:
+        if saved_pytest is not None:
+            sys.modules["pytest"] = saved_pytest
+        _reset_auth_module()

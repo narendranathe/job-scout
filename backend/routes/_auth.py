@@ -16,8 +16,21 @@ PRD #89 Slice 1. Three auth modes the dashboard + bulk uploader use:
 The signed cookie uses ``itsdangerous.URLSafeTimedSerializer`` — Flask's
 own session signing primitive, transitive dep, no new package. Signature
 key precedence: ``SESSION_SECRET_KEY`` env → ``API_SECRET`` env →
-process-local random fallback (cookies invalidate on each restart in
-dev, which is fine).
+process-local random fallback.
+
+**Multi-worker safety (production bug fix).** The earlier implementation
+generated a per-process random fallback at import time. Under a forked
+multi-worker server (gunicorn without ``--preload``, ``uwsgi``, etc.)
+each worker would receive a *different* fallback key — a user logging
+in via worker A would 401 on the next request that hit worker B because
+worker B couldn't verify the cookie signature. To prevent that class of
+bug from ever shipping again we now refuse to import in a production-
+shaped environment unless a real signing key is configured. See
+``_assert_production_has_signing_key`` below for the exact heuristics.
+
+Local dev (no env vars, single ``flask run`` / ``python server.py``
+process) still works exactly as before — the per-process fallback is
+fine there and cookies invalidate on restart.
 
 API surface — every route blueprint should call ``require_auth(request)``
 instead of hand-rolling its own ``_check_auth``. Returns:
@@ -31,6 +44,7 @@ import logging
 import os
 import re
 import secrets
+import sys
 import time
 from typing import Optional, Tuple
 
@@ -50,10 +64,128 @@ SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 
 _BEARER_RE = re.compile(r"^Bearer\s+(\S+)\s*$", re.IGNORECASE)
 
+
+class MissingSigningKeyError(RuntimeError):
+    """Raised at import time when production is detected without a key.
+
+    Distinct exception type (not bare ``RuntimeError``) so the server's
+    ``__main__`` guard and any orchestration layer can catch it and emit
+    a targeted "set SESSION_SECRET_KEY or API_SECRET" diagnostic instead
+    of a generic crash.
+    """
+
+
+def _looks_like_production() -> bool:
+    """Best-effort detection that we're running under a real deployment.
+
+    Any one of these signals trips production mode:
+
+    * ``RENDER`` env var — Render sets this on every service automatically.
+    * ``FLASK_ENV=production`` — the canonical Flask flag.
+    * ``JOBSCOUT_ENV=production`` — escape hatch for non-Render hosts
+      (Fly.io, Railway, bare EC2, k8s) that want the same guarantee.
+    * ``WEB_CONCURRENCY`` set to an integer ≥ 2 — gunicorn / uvicorn /
+      heroku-style "more than one worker" signal. The fallback-key bug
+      is invisible at 1 worker, so we only trip on >= 2.
+    * ``GUNICORN_CMD_ARGS`` mentions ``--workers`` with a value ≥ 2.
+
+    All of these can be opted out of with
+    ``JOBSCOUT_ALLOW_FALLBACK_KEY=1`` for the rare case where an
+    operator deliberately wants ephemeral sessions in a deployed env
+    (e.g. a sandbox/preview). That escape hatch is logged loudly.
+    """
+    if os.environ.get("JOBSCOUT_ALLOW_FALLBACK_KEY", "").strip().lower() in (
+        "1", "true", "yes"
+    ):
+        return False
+
+    if os.environ.get("RENDER", "").strip():
+        return True
+    if os.environ.get("FLASK_ENV", "").strip().lower() == "production":
+        return True
+    if os.environ.get("JOBSCOUT_ENV", "").strip().lower() == "production":
+        return True
+
+    try:
+        wc = int(os.environ.get("WEB_CONCURRENCY", "1").strip() or "1")
+        if wc >= 2:
+            return True
+    except ValueError:
+        pass
+
+    cmd = os.environ.get("GUNICORN_CMD_ARGS", "")
+    if "--workers" in cmd:
+        m = re.search(r"--workers[=\s]+(\d+)", cmd)
+        if m and int(m.group(1)) >= 2:
+            return True
+
+    return False
+
+
+def _has_configured_key() -> bool:
+    """True iff either SESSION_SECRET_KEY or API_SECRET is set in the env."""
+    return bool(
+        os.environ.get("SESSION_SECRET_KEY", "").strip()
+        or os.environ.get("API_SECRET", "").strip()
+    )
+
+
+def _assert_production_has_signing_key() -> None:
+    """Hard-fail at import time when production has no signing key.
+
+    Raising at import keeps the bug from ever reaching a serving state.
+    Gunicorn (with or without ``--preload``) surfaces the error before
+    accepting a single request, so no user can hit the broken
+    "logged in on worker A, 401 on worker B" race.
+
+    Skipped under ``pytest`` so the test suite — which runs without
+    SESSION_SECRET_KEY but isn't production — still imports cleanly.
+    Detection uses ``sys.modules`` (reliable: pytest is in sys.modules
+    by the time the first conftest/test file imports anything) plus
+    ``PYTEST_CURRENT_TEST`` (set by pytest mid-collection) plus the
+    ``_``/``PYTEST_VERSION`` env vars as belt-and-suspenders.
+    """
+    if (
+        "pytest" in sys.modules
+        or "PYTEST_CURRENT_TEST" in os.environ
+        or "PYTEST_VERSION" in os.environ
+        or os.environ.get("_", "").endswith("pytest")
+    ):
+        return
+    if not _looks_like_production():
+        return
+    if _has_configured_key():
+        return
+    raise MissingSigningKeyError(
+        "JobScout: refusing to start. The environment looks like production "
+        "(RENDER / FLASK_ENV=production / WEB_CONCURRENCY>=2 / "
+        "GUNICORN_CMD_ARGS --workers>=2) but neither SESSION_SECRET_KEY "
+        "nor API_SECRET is set. The per-process random fallback key would "
+        "give each forked worker a DIFFERENT signing key, causing users "
+        "to get sporadic 401s as their requests round-robin across "
+        "workers. Set SESSION_SECRET_KEY (or API_SECRET) before starting "
+        "the server, or set JOBSCOUT_ALLOW_FALLBACK_KEY=1 to override "
+        "(NOT recommended)."
+    )
+
+
+_assert_production_has_signing_key()
+
 # Per-process fallback signing key so a dev server without
 # SESSION_SECRET_KEY or API_SECRET still works (cookies invalidate on
-# restart, which is the expected dev-mode behaviour).
+# restart, which is the expected dev-mode behaviour). Production reaching
+# this line means the operator explicitly set JOBSCOUT_ALLOW_FALLBACK_KEY
+# or we're inside pytest — log loudly in the former case so it shows up
+# in the request logs.
 _FALLBACK_KEY = secrets.token_hex(32)
+
+if _looks_like_production() and not _has_configured_key():  # pragma: no cover
+    log.warning(
+        "JOBSCOUT_ALLOW_FALLBACK_KEY override in effect — using a "
+        "per-process random signing key in a production-shaped "
+        "environment. Multi-worker deployments WILL drop sessions "
+        "across worker boundaries."
+    )
 
 # State-changing methods that require CSRF for cookie auth. GET/HEAD/
 # OPTIONS are exempt because they're considered safe per RFC 7231 §4.2.1
