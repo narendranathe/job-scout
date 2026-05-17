@@ -769,15 +769,24 @@ function _JobCard({
                               <button
                                 type="button"
                                 aria-label={`Download PDF for ${rk.display_name || rk.version_key}`}
+                                aria-busy={dlLoading}
                                 title={dlError || `Download ${fallbackName}`}
                                 disabled={dlLoading}
                                 onClick={() => { if (!dlLoading) onDownloadResumePdf(rk.version_key, fallbackName); }}
                                 style={{padding:"8px 12px",borderRadius:6,border:`1px solid ${dlError?t.wm:t.ok}60`,background:dlError?`${t.wm}15`:`${t.ok}15`,color:dlError?t.wm:t.ok,fontSize:12,fontWeight:700,cursor:dlLoading?"wait":"pointer",fontFamily:"inherit",minHeight:32,opacity:dlLoading?0.7:1,whiteSpace:"nowrap"}}>
-                                {dlLoading?"…":(dlError?"⚠ Retry":"📥 PDF")}
+                                {dlLoading?"Downloading…":(dlError?"⚠ Retry":"📥 PDF")}
                               </button>
                             );
                           })()}
                         </div>
+                        {pdfState[rk.version_key]?.error && (
+                          <div
+                            role="alert"
+                            aria-live="polite"
+                            style={{marginTop:6,fontSize:11,color:t.wm,fontWeight:600,lineHeight:1.4,wordBreak:"break-word"}}>
+                            ⚠ {pdfState[rk.version_key].error}
+                          </div>
+                        )}
                         {isRowOpen && (
                           <div style={{marginTop:10,padding:"10px 12px",borderRadius:6,background:`${t.bd}30`,fontSize:12,color:t.txS,lineHeight:1.7}}>
                             {vd?.loading && <span style={{color:t.txM}}>Loading version details…</span>}
