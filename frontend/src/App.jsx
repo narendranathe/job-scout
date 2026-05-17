@@ -13,6 +13,12 @@ import { LogoImg, CO_DOMAINS, guessDomain } from "./components/LogoImg.jsx";
 import { ScrapeProgressBar } from "./components/ScrapeProgressBar.jsx";
 // First-run setup panel (PR 5/N).
 import { SetupPanel } from "./components/SetupPanel.jsx";
+// Onboarding wizard (PRD #89 Slice 2). Full-page first-run flow that
+// detects a fresh install via /api/profile + /api/vault/stats and
+// blocks the dashboard until the user completes it (or skips into
+// read-only preview mode, which Slice 4 will enforce).
+import { OnboardingWizard } from "./tabs/OnboardingWizard.jsx";
+import { detectOnboardingState } from "./lib/wizard.js";
 // Vault tab row (memoized, PR 6/N).
 import { VaultRow } from "./components/VaultRow.jsx";
 // Shared job constants + helpers (PR 7/N + PR 8/N).
@@ -347,6 +353,34 @@ export default function App() {
   // Setup panel: shows blocking when no Render URL is configured;
   // user can also re-open from the header ⚙️ button to edit.
   const [setupOpen, setSetupOpen] = useState(() => !RENDER_API);
+
+  // ── Onboarding wizard gate (PRD #89 Slice 2) ─────────────────────
+  // First-run detection runs once on mount once Render is configured.
+  // Possible states:
+  //   "loading" — probe in flight
+  //   "first-run" — show wizard (blocking)
+  //   "force"    — ?force=1 / /setup path → show wizard
+  //   "onboarded" / "unknown" — render dashboard normally
+  // The wizard's onComplete callback flips this to "onboarded" without
+  // re-probing, so a successful completion doesn't bounce the user.
+  const [onboardingState, setOnboardingState] = useState(
+    RENDER_API ? "loading" : "unknown"
+  );
+  useEffect(() => {
+    if (!RENDER_API) {
+      setOnboardingState("unknown");
+      return;
+    }
+    let cancelled = false;
+    detectOnboardingState().then((s) => {
+      if (!cancelled) setOnboardingState(s);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const wizardActive =
+    onboardingState === "first-run" || onboardingState === "force";
 
   // Best-match vault integration on job cards
   const [bestMatchByJob, setBestMatchByJob] = useState({});
@@ -1658,6 +1692,40 @@ export default function App() {
       </nav>
       {setupOpen && (
         <SetupPanel mode={RENDER_API ? "settings" : "blocking"} onClose={() => setSetupOpen(false)} t={t} />
+      )}
+      {wizardActive && (
+        <OnboardingWizard
+          mode={mode}
+          onComplete={() => {
+            // Wizard's interim commit succeeded — strip ?force=1 from
+            // the URL so a reload doesn't bounce back into the wizard.
+            setOnboardingState("onboarded");
+            if (typeof window !== "undefined") {
+              const u = new URL(window.location.href);
+              u.searchParams.delete("force");
+              if (u.pathname.replace(/\/+$/, "") === "/setup") {
+                u.pathname = "/";
+              }
+              window.history.replaceState({}, "", u.toString());
+            }
+            // Refetch profile so the rest of the dashboard sees the new
+            // tracked_companies / dream_role_keywords / etc.
+            refetch?.();
+          }}
+          onSkip={() => {
+            // Preview mode — Slice 4 will gate writes behind a modal.
+            // For Slice 2, just drop the wizard and let the user browse.
+            setOnboardingState("onboarded");
+            if (typeof window !== "undefined") {
+              const u = new URL(window.location.href);
+              u.searchParams.delete("force");
+              if (u.pathname.replace(/\/+$/, "") === "/setup") {
+                u.pathname = "/";
+              }
+              window.history.replaceState({}, "", u.toString());
+            }
+          }}
+        />
       )}
 
       <div className="page-pad">
