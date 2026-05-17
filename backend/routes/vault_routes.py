@@ -134,8 +134,17 @@ def _vault_require_auth():
     them without the Authorization header during CORS preflight, so a 401
     here would break the dashboard before the real request ever leaves
     the browser.
+
+    /api/vault/parse-filename is also allowed through — it's a read-only
+    pure-function echo (no DB hits, no PII, microsecond cost) so the
+    wizard can preview the parser's output before the user has a session.
+    Adding it to the auth gate would force a chicken-and-egg flow: log
+    in → upload a resume → log in stays valid; but the wizard hasn't
+    logged in yet at the point it shows the dropzone preview.
     """
     if request.method == "OPTIONS":
+        return None
+    if request.path == "/api/vault/parse-filename":
         return None
     # Local import so a circular dependency between routes._auth and
     # routes.vault_routes can't accidentally creep in via top-level imports.
@@ -582,6 +591,35 @@ def vault_version_pdf(version_key):
         as_attachment=True,
         download_name=pdf_filename,
     )
+
+
+@vault_bp.route("/api/vault/parse-filename", methods=["POST", "OPTIONS"])
+def vault_parse_filename():
+    """Echo of ``parse_resume_filename`` for the wizard's drag-drop preview.
+
+    PRD #89 Slice 3. The wizard reads a dropped PDF's name as text and
+    sends it here to get back ``{company, role, version_key, …}``
+    without having to re-implement the parser in JavaScript. Pure
+    function, no DB write, no PII, ~microseconds.
+
+    Auth: explicitly allowed through in ``_vault_require_auth`` so the
+    wizard can preview parser output BEFORE the user has logged in.
+    """
+    if request.method == "OPTIONS":
+        return "", 200
+
+    data = request.get_json(silent=True) or {}
+    fn = (data.get("filename") or "").strip()
+    if not fn:
+        return jsonify({"error": "filename required"}), 400
+    # Reasonable cap — modern filesystems allow 255 bytes, but a 256
+    # tolerance covers UTF-8 + accidental whitespace without spending
+    # CPU on absurd inputs.
+    if len(fn) > 256:
+        return jsonify({"error": "filename too long (max 256 chars)"}), 400
+
+    from storage.resume_vault import parse_resume_filename
+    return jsonify(parse_resume_filename(fn)), 200
 
 
 @vault_bp.after_request
