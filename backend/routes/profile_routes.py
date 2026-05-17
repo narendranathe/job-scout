@@ -244,7 +244,12 @@ def api_login():
         # attacker mint a 30-day session cookie + CSRF on a fresh
         # install before the owner has run the wizard.
         if not has_pin(_config.DB_PATH):
-            return jsonify({"error": "pin_not_set"}), 403, {
+            # 412 Precondition Failed is semantically more accurate than
+            # 403 here: it's not that the caller lacks permission, it's
+            # that the prerequisite resource (the PIN) doesn't exist yet.
+            # The dashboard's frontend reads this status to redirect to
+            # /setup, so the precise code matters for the contract.
+            return jsonify({"error": "pin_not_set"}), 412, {
                 "Access-Control-Allow-Origin": "*"
             }
         pin = (request.get_json(silent=True) or {}).get("pin", "")

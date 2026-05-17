@@ -98,7 +98,7 @@ def test_login_when_no_pin_set_is_refused(client):
     the bootstrap by calling /api/set-pin first, then /api/login.
     """
     resp = client.post("/api/login", json={"pin": ""})
-    assert resp.status_code == 403
+    assert resp.status_code == 412
     body = resp.get_json()
     assert body["error"] == "pin_not_set"
     # Critically, NO cookie is issued — the response must not let the
@@ -114,7 +114,7 @@ def test_login_when_no_pin_set_rejects_any_pin_value(client):
     """
     for guess in ("0000", "1234", "anything", "x" * 64):
         resp = client.post("/api/login", json={"pin": guess})
-        assert resp.status_code == 403, f"PIN guess {guess!r} unexpectedly accepted"
+        assert resp.status_code == 412, f"PIN guess {guess!r} accepted (expected 412)"
         assert "jobscout_session=" not in resp.headers.get("Set-Cookie", "")
 
 
@@ -546,3 +546,30 @@ def test_default_key_dir_created_with_restrictive_perms(tmp_path, monkeypatch):
     parent = custom.parent
     mode = parent.stat().st_mode & 0o777
     assert mode == 0o700, f"key dir perms = {oct(mode)} (expected 0o700)"
+
+
+def test_wizard_bootstrap_path_works_under_pin_gated_deploy(client):
+    """Positive test: the wizard's documented bootstrap sequence on a
+    pin-gated deploy must succeed end-to-end. Critic flagged that the
+    pre-PIN-refusal change had no positive coverage — only refusal
+    coverage — so an over-tight gate could break the wizard silently.
+
+    Bootstrap: Bearer (API_SECRET) -> POST /api/set-pin -> POST /api/login
+    -> session cookie + CSRF token returned.
+    """
+    # Step 1: Bearer-auth POST /api/set-pin (the wizard's PinSetup
+    # calls this with the user's chosen PIN).
+    set_resp = client.post(
+        "/api/set-pin",
+        json={"pin": "9876"},
+        headers={"Authorization": f"Bearer {SECRET}"},
+    )
+    assert set_resp.status_code == 200, set_resp.get_data(as_text=True)
+
+    # Step 2: POST /api/login with the just-set PIN. Now should mint
+    # a real session cookie (no longer pre-PIN-refusal territory).
+    login_resp = client.post("/api/login", json={"pin": "9876"})
+    assert login_resp.status_code == 200, login_resp.get_data(as_text=True)
+    body = login_resp.get_json()
+    assert "csrf_token" in body
+    assert "jobscout_session=" in login_resp.headers.get("Set-Cookie", "")
