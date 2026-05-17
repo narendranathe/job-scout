@@ -65,25 +65,15 @@ COMPANY_ALIASES: dict[str, str] = {
 # Keys are lowercase. AutoApply's substring-match table is inverted here:
 # we key on the canonical abbreviation (DE, MLE, …) and on legacy long
 # forms (data, ml, …) so both legacy and AutoApply filenames parse.
-ROLE_ALIASES: dict[str, str] = {
-    # JobScout legacy
-    "de": "Data Engineer", "data": "Data Engineer",
-    "ml": "ML Engineer", "ai": "AI Engineer",
-    "sde": "Software Engineer", "se": "Software Engineer",
-    "be": "Backend Engineer",
-    "ds": "Data Scientist", "dq": "Data Quality",
-    "ae": "Analytics Engineer",
-    "quant": "Quant Strategist", "aiq": "AI Quant",
-    # AutoApply canonical abbrevs
-    "swe": "Software Engineer",
-    "mle": "ML Engineer",
-    "da": "Data Analyst",
-    "pe": "Platform Engineer",
-    "pm": "Product Manager",
-    "sa": "Solutions Architect",
-    "sre": "Site Reliability Engineer",
-    "as": "Applied Scientist",
-}
+#
+# Derived from ``config/role_taxonomy.ROLES`` so the wizard's
+# /api/role-taxonomy picker and the filename parser stay in lock-step
+# (PRD #89 Slice 1). Adding a role/abbrev there flows here automatically;
+# the regression test in tests/test_role_taxonomy.py pins the resulting
+# dict so a taxonomy edit can't silently break filename parsing.
+from config.role_taxonomy import alias_map as _role_alias_map
+
+ROLE_ALIASES: dict[str, str] = _role_alias_map()
 
 # ── Multi-word companies that appear as consecutive filename tokens ──────
 # Tuple of lowercased parts → canonical display name. ``None`` means

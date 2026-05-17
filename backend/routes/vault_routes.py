@@ -99,19 +99,18 @@ if not ALLOWED_ORIGINS:
 
 
 def _check_auth() -> bool:
-    """Bearer-token gate. Returns True when the request is allowed.
+    """Bearer-token gate (legacy probe).
 
-    Mirrors the helper in routes/admin_routes.py and server._check_api_secret:
-    if API_SECRET is unset we accept everything (dev mode); otherwise the
-    request must carry ``Authorization: Bearer <API_SECRET>``.
+    Kept as a public attribute because several tests monkeypatch it.
+    Returns True when the request carries a valid Bearer token or when
+    API_SECRET is unset. Session-cookie auth is handled by the unified
+    ``routes._auth.require_auth`` called from ``_vault_require_auth``.
 
     Hardening (Round 2):
     - Token extracted via case-insensitive regex (RFC 7235 says the scheme
       is case-insensitive). ``Authorization: bearer foo`` is now valid.
     - Comparison uses ``secrets.compare_digest`` to defeat timing
-      side-channel leaks. A naïve ``==`` returns as soon as the first
-      mismatched byte is found, which over many requests reveals the
-      secret one byte at a time.
+      side-channel leaks.
     """
     if not API_SECRET:
         return True
@@ -124,26 +123,37 @@ def _check_auth() -> bool:
 
 @vault_bp.before_request
 def _vault_require_auth():
-    """Gate every vault endpoint behind the Bearer-token check.
+    """Gate every vault endpoint behind the unified auth check.
+
+    Accepts EITHER the Bearer token (existing bulk_upload_to_render.py
+    workflow) OR a session cookie + CSRF header (PRD #89 Slice 1 — wizard
+    + dashboard browser sessions). The exact rules live in
+    ``routes._auth.require_auth``.
 
     OPTIONS requests are allowed through unconditionally — browsers send
     them without the Authorization header during CORS preflight, so a 401
-    here would break the dashboard before the real request ever leaves the
-    browser. The actual POST/GET/DELETE that follows still hits this hook.
+    here would break the dashboard before the real request ever leaves
+    the browser.
     """
     if request.method == "OPTIONS":
         return None
-    if not _check_auth():
-        # Log the failure so operators can detect brute-force attempts.
-        # Deliberately DO NOT log the offending token — that would shovel
-        # near-miss guesses into log aggregators, defeating the secret.
-        log.warning(
-            "vault auth rejected from %s for %s",
-            request.remote_addr,
-            request.path,
-        )
-        return jsonify({"error": "unauthorized"}), 401
-    return None
+    # Local import so a circular dependency between routes._auth and
+    # routes.vault_routes can't accidentally creep in via top-level imports.
+    from routes._auth import require_auth
+    deny = require_auth(request)
+    if deny is None:
+        return None
+    body, status = deny
+    # Log the failure so operators can detect brute-force attempts.
+    # Deliberately DO NOT log the offending token — that would shovel
+    # near-miss guesses into log aggregators, defeating the secret.
+    log.warning(
+        "vault auth rejected (%s) from %s for %s",
+        body.get("error", "unauthorized"),
+        request.remote_addr,
+        request.path,
+    )
+    return jsonify(body), status
 
 _TOP_N_CAP = 50
 

@@ -3,3 +3,8 @@ flask>=3.0.0
 gunicorn>=21.2.0
 pypdf>=4.0.0
 playwright>=1.40.0
+# itsdangerous is a transitive dep of Flask, but pinned here explicitly
+# because the onboarding wizard's session cookie signing relies on it
+# (routes/_auth.py). Pinning means a future Flask release that drops
+# the transitive dep won't break login.
+itsdangerous>=2.0.0
