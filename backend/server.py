@@ -743,11 +743,19 @@ def api_set_pin():
 
 @app.route("/")
 def index():
+    # Auto-discover routes from app.url_map so this list never drifts when
+    # new blueprints are registered. Filter out static/internal Flask
+    # routes and keep the output stable across deploys (sorted).
+    endpoints = sorted({
+        r.rule for r in app.url_map.iter_rules()
+        if not r.rule.startswith("/static")
+        and r.endpoint != "static"
+    })
     return jsonify({
         "service":   "JobScout API",
-        "version":   "3.0",
-        "endpoints": ["/api/data", "/api/health", "/api/stats", "/api/scrape",
-                      "/api/profile", "/api/resume", "/api/verify-pin", "/ping"],
+        "version":   "3.1",
+        "endpoints": endpoints,
+        "endpoint_count": len(endpoints),
         **state.health(),
     }), 200, {"Access-Control-Allow-Origin": "*"}
 
