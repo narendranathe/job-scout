@@ -286,3 +286,65 @@ def test_best_match_missing_jd_still_400(client):
     resp = client.post("/api/vault/best-match", json={"top_n": 5})
     assert resp.status_code == 400
     assert "job_description" in resp.get_json()["error"]
+
+
+# --- Issue #41: job_description payload cap ---------------------------
+# Both /api/vault/best-match and /api/vault/job-fit gate on MAX_JD_BYTES
+# to stop DoS-via-megabyte-JD against the free-tier Render dyno.
+
+
+def test_best_match_jd_at_cap_accepted(client):
+    """Exactly MAX_JD_BYTES should PASS — boundary is inclusive at the limit."""
+    from routes.vault_routes import MAX_JD_BYTES
+    jd = "x " * (MAX_JD_BYTES // 2)  # ~MAX_JD_BYTES chars, well-formed tokens
+    jd = jd[:MAX_JD_BYTES]            # trim to exact cap
+    assert len(jd) == MAX_JD_BYTES
+    resp = client.post("/api/vault/best-match", json={"job_description": jd})
+    assert resp.status_code == 200
+
+
+def test_best_match_jd_one_over_cap_rejected(client):
+    """One byte over MAX_JD_BYTES → 413 Payload Too Large."""
+    from routes.vault_routes import MAX_JD_BYTES
+    jd = "x" * (MAX_JD_BYTES + 1)
+    resp = client.post("/api/vault/best-match", json={"job_description": jd})
+    assert resp.status_code == 413
+    body = resp.get_json()
+    assert "too long" in body["error"]
+    assert str(MAX_JD_BYTES) in body["error"]
+
+
+def test_best_match_jd_massive_rejected_without_compute(client, monkeypatch):
+    """A 5MB JD must be rejected BEFORE find_best_resume_for_job is called.
+    If the cap fires lazily we'd still pay tokenization + TF-IDF cost,
+    which is the whole point of #41."""
+    import storage.resume_vault as rv
+    call_count = {"n": 0}
+
+    def boom(*args, **kwargs):
+        call_count["n"] += 1
+        return []
+    monkeypatch.setattr(rv, "find_best_resume_for_job", boom)
+
+    jd = "x" * 5_000_000  # 5MB
+    resp = client.post("/api/vault/best-match", json={"job_description": jd})
+    assert resp.status_code == 413
+    assert call_count["n"] == 0, "expected JD cap to fire before any TF-IDF work"
+
+
+def test_job_fit_jd_one_over_cap_rejected(client, monkeypatch):
+    """Same cap on /api/vault/job-fit. compare_resume_to_job must not run."""
+    import storage.resume_vault as rv
+    call_count = {"n": 0}
+
+    def boom(*args, **kwargs):
+        call_count["n"] += 1
+        return {}
+    monkeypatch.setattr(rv, "compare_resume_to_job", boom)
+
+    from routes.vault_routes import MAX_JD_BYTES
+    jd = "x" * (MAX_JD_BYTES + 1)
+    resp = client.post("/api/vault/job-fit",
+                       json={"version_key": "any_key", "job_description": jd})
+    assert resp.status_code == 413
+    assert call_count["n"] == 0
