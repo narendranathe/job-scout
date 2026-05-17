@@ -11,7 +11,7 @@
 - **Name:** JobScout — Personal Job Discovery Platform
 - **Repo:** https://github.com/narendranathe/job-scout
 - **Owner:** Narendranath Edara (narendranathe)
-- **Current version:** 3.2 (vault backend live + in-app setup panel; vault UI in progress)
+- **Current version:** 3.2 (full vault loop live: scrape → score → best-match → download → track)
 - **Languages:** Python ~49% / JavaScript ~50% / YAML ~1%
 - **Total cost:** $0/month (Render free + GitHub Actions free + GitHub Pages free)
 - **Live jobs tracked:** 500+ (grows continuously as Render scrapes)
@@ -44,16 +44,20 @@ A production-grade, zero-cost **end-to-end job hunt automation platform** for Da
 │ Scraping 147 companies (6 ATS)          │ ✅ Live              │
 │ Hourly GitHub Actions cron              │ ✅ Running           │
 │ Flask API + all base endpoints          │ ✅ Live on Render    │
-│ Resume vault backend (9 endpoints)      │ ✅ Built, registered │
+│ Resume vault backend (9 endpoints)      │ ✅ Live + auth-gated │
 │ 95 PDFs + 73 texts in local vault       │ ✅ Imported          │
-│ Application tracker (6 tabs)            │ ✅ Built             │
+│ Application tracker + Pipeline kanban   │ ✅ Built (9 tabs)    │
 │ Discord + Telegram alerts               │ ✅ Live              │
-├─────────────────────────────────────────┼──────────────────────┤
-│ Vault UI in dashboard                   │ ❌ Not built         │
-│ Best-match on job cards                 │ ❌ Not wired         │
-│ Job-fit score chips on cards            │ ❌ Not built         │
-│ Resume upload UI                        │ ❌ Not built         │
-│ Resume recommendation flow              │ ❌ Not built         │
+│ Vault UI in dashboard                   │ ✅ Built             │
+│ Best-match on job cards                 │ ✅ Wired             │
+│ Resume-Match % chip on every card       │ ✅ Wired (lazy-fetch)│
+│ Resume upload UI                        │ ✅ Built (10 MB cap) │
+│ Compare two resume versions             │ ✅ Built (TF-IDF)    │
+│ Default-resume selector                 │ ✅ Built             │
+│ PDF download from job card              │ ✅ Built             │
+│ In-app server-setup panel               │ ✅ Built (v3.2)      │
+│ Self-describing root endpoint           │ ✅ Built (v3.2)      │
+│ pytest suite                            │ ✅ 197 tests passing │
 ├─────────────────────────────────────────┼──────────────────────┤
 │ AutoApply: Chrome extension             │ ❌ Designed, not built│
 │ AutoApply: Multi-LLM answer pipeline    │ ❌ Designed, not built│
@@ -61,20 +65,38 @@ A production-grade, zero-cost **end-to-end job hunt automation platform** for Da
 │ AutoApply: Portal form auto-fill        │ ❌ Designed, not built│
 │ AutoApply: Pop-up application tracker   │ ❌ Designed, not built│
 ├─────────────────────────────────────────┼──────────────────────┤
-│ resume.md                               │ ⚠ Modified, uncommit│
-│ resume-projects.md                      │ ⚠ Untracked         │
-│ resume_narendranath.tex                 │ ⚠ Untracked         │
+│ App.jsx split into modules              │ 🔄 Tech debt (3882 LOC)│
+│ server.py split into modules            │ 🔄 Tech debt (847 LOC) │
+│ Standardize on one PDF library          │ 🔄 Tech debt          │
+│ resume.md                               │ ⚠ Modified, uncommit │
+│ resume-projects.md                      │ ⚠ Untracked          │
+│ resume_narendranath.tex                 │ ⚠ Untracked          │
 └─────────────────────────────────────────┴──────────────────────┘
 ```
 
-### The Integration Gap (PRIMARY NEXT STEP)
+### The Real Next Step (AutoApply AI)
 
-The vault backend is fully functional — 9 endpoints running on Render, 95 PDFs indexed — but the React dashboard has **zero UI** for it. The missing pieces:
+The JobScout discovery-and-recommendation loop is **functionally complete**:
+see job → vault picks best resume → click downloads PDF → status tracked.
 
-1. **Best-match on job cards** — clicking a job should call `POST /api/vault/best-match` with that job's description and surface which of the 95 resumes fits best
-2. **Job-fit score display** — show a "Resume Match: 87%" chip on each job card using the vault TF-IDF scorer
-3. **Vault tab / Upload UI** — browse vault files, upload new PDFs, view vault stats, compare two resume versions, manage vault files
-4. **Resume recommendation flow** — full loop: see job → find best resume → one-click to view/download that resume
+The genuinely-missing layer is the apply step itself — the AutoApply AI
+system (designed, partially built in a separate repo). Within this repo
+the remaining work is mostly tech debt:
+
+1. **Split App.jsx (3882 LOC)** into per-tab modules — it's well past
+   sustainable size and slows every future change
+2. **Split server.py (847 LOC)** along the same lines
+3. **Standardize on one PDF library** — pdfplumber (server.py) vs pypdf
+   (vault) — minor footgun
+4. **Commit/clean up the three untracked resume files** at the root
+
+Feature work on the dashboard side is mostly polish at this point.
+The user-visible features that CLAUDE.md previously labeled "not built"
+were all wired up months ago — including the "Resume Match: 87%" chip
+on every card, the best-match button, the vault tab, the compare UI,
+and the default-resume selector. Search App.jsx for `jobFitByJob`,
+`fetchBestMatch`, `setAsDefaultResume`, `VaultRow`, and
+`uploadVaultPdf` to find them.
 
 ---
 
@@ -114,7 +136,7 @@ The vault backend is fully functional — 9 endpoints running on Render, 95 PDFs
 │  ├── Application tracker (localStorage + API sync)    │
 │  ├── Mobile responsive (768px / 480px breakpoints)    │
 │  ├── Dark/light theme toggle                          │
-│  └── ❌ NO vault UI (backend exists, frontend doesn't)│
+│  └── ✅ Full vault UI: tab + chips + best-match + DL│
 └──────────────────────▲───────────────────────────────┘
                        │ fallback (~2 hr fresh)
 ┌──────────────────────┴───────────────────────────────┐
@@ -278,7 +300,7 @@ scrape_runs (
 | GET | `/api/applications/company/<name>` | Full history for a company |
 | GET | `/api/applications/export` | Export all as JSON backup |
 
-### Resume Vault (9 endpoints — ✅ live, frontend UI in progress)
+### Resume Vault (9 endpoints — ✅ live, ✅ wired into dashboard)
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/api/vault/upload` | Upload PDF to vault, extract text, register |
@@ -475,13 +497,13 @@ TELEGRAM_CHAT_ID=987654321
 React 18 + Vite + Recharts. Single-file component.
 
 ### 9 Tabs
-1. **Jobs** — Ranked search, multi-filter, job cards with logos, relevance bars, skills pills, H1B badge, expandable descriptions, "Applied here" badge
+1. **Jobs** — Ranked search, multi-filter, job cards with logos, relevance bars, skills pills, H1B badge, expandable descriptions, "Applied here" badge, **Resume Match % chip** (auto-fetched from default vault resume, color + icon coded), **"📄 Find Best Resume" button** (ranks all vault resumes against the JD, top-N drawer with PDF download), **status pills** that sync to the application tracker
 2. **Rare** — Subset of Jobs filtered to roles requiring rare/in-demand skills (counts surface in the tab label)
 3. **Analytics** — ATS distribution pie, salary range bar, 30-day posting trend
 4. **Companies** — Logo grid with job counts and sample roles
 5. **Trends** — Posting timeline, top companies by volume
 6. **Tracker** — Application status board, resume version manager, localStorage + API sync
-7. **Vault** — Resume library browser, stats, compare two versions, upload new PDFs *(UI in progress — backend live)*
+7. **Vault** — Stats panel, upload form, compare two versions (TF-IDF + skill diff), browse/search/sort all PDFs, set default resume, delete versions — all wired to live `/api/vault/*` endpoints
 8. **Pipeline** — Kanban of applications by stage (Saved → Applied → Phone → Offer → Rejected)
 9. **Monitor** — Server health, pipeline status, manual scrape trigger
 
@@ -548,16 +570,19 @@ React 18 + Vite + Recharts. Single-file component.
 
 ## Technical Debt
 
-1. Vault has no dashboard UI — 8 backend endpoints live, zero frontend
-2. App.jsx is 3882 lines — should split into per-tab modules (urgent — well past sustainable size)
-3. server.py is 847 lines — monolithic
-4. No pytest suite
-5. pdfplumber (server.py) vs pypdf (vault) — two PDF libraries, should standardize
-6. Untracked files: resume.md, resume-projects.md, resume_narendranath.tex
-7. Workday coverage only 7 companies
-8. AutoApply end-to-end loop never validated on a real ATS page
-9. Work history not in a queryable database yet
-10. No portal form field mapping per ATS (each has different DOM)
+1. App.jsx is 3882 lines — should split into per-tab modules (**urgent** — well past sustainable size)
+2. server.py is 847 lines — monolithic
+3. pdfplumber (server.py) vs pypdf (vault) — two PDF libraries, should standardize
+4. Untracked files at repo root: resume.md, resume-projects.md, resume_narendranath.tex
+5. Workday coverage only 7 companies
+6. AutoApply end-to-end loop never validated on a real ATS page
+7. Work history not in a queryable database yet
+8. No portal form field mapping per ATS (each has different DOM)
+
+Resolved (no longer debt):
+- ~~Vault has no dashboard UI~~ — full tab + best-match + chip + upload + compare all wired
+- ~~No pytest suite~~ — 17 test files, 197 passing tests covering vault hardening,
+  relevance, scrape orchestrator, applications API, admin routes, profile manager, etc.
 
 ---
 
@@ -652,11 +677,18 @@ All resumes scored or rendered through JobScout must conform to the STAR + 2-lin
 
 ## Next Steps (priority order)
 
-1. Build vault UI tab in App.jsx
-2. Wire best-match into job cards
-3. Add job-fit chips on cards
-4. Design work history PostgreSQL schema
-5. Wire up floatingPanel.ts in extension
-6. Commit untracked files (resume.md, resume-projects.md, resume_narendranath.tex)
-7. Add pytest suite (relevance engine + TF-IDF at minimum)
-8. Standardize on one PDF library (pypdf preferred)
+Done (kept for history):
+- ~~Build vault UI tab in App.jsx~~ → shipped, full tab with stats / upload / compare / browse
+- ~~Wire best-match into job cards~~ → shipped, "📄 Find Best Resume" button with ranked drawer
+- ~~Add job-fit chips on cards~~ → shipped, lazy-fetched per-card chip with WCAG-compliant
+  color+icon coding (concurrency-capped at 5, 60-card visible slice)
+- ~~Add pytest suite~~ → shipped, 17 test files / 197 passing tests
+
+Open (priority order):
+1. **Split App.jsx into per-tab modules** — biggest tech-debt item; 3882 LOC in one file
+2. Design work history PostgreSQL schema (AutoApply prerequisite)
+3. Wire up `floatingPanel.ts` in the AutoApply Chrome extension
+4. Commit untracked files (resume.md, resume-projects.md, resume_narendranath.tex)
+5. Standardize on one PDF library (pypdf preferred — already in vault)
+6. Validate end-to-end AutoApply loop on a real ATS page
+7. Bump Workday scraper coverage from 7 → ~15 companies (most enterprises use Workday)
