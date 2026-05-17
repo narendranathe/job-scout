@@ -347,13 +347,11 @@ def list_resume_versions(db_path: str = DB_PATH) -> list[dict]:
     return result
 
 
-def delete_resume_version(version_key: str, db_path: str = DB_PATH):
-    """Delete a resume version by key."""
-    conn = get_conn(db_path)
-    conn.execute("DELETE FROM resume_versions WHERE version_key = ?", (version_key,))
-    conn.commit()
-    conn.close()
-    log.info("Resume version '%s' deleted", version_key)
+# Removed (issue #44): `delete_resume_version` only deleted the DB row,
+# orphaning the PDF + text files on disk. The single caller
+# (server.api_delete_resume_version) now routes through
+# storage.resume_vault.delete_vault_version, which removes all three.
+# See PR closing #44 for the consolidation rationale.
 
 
 def get_company_application_history(company_name: str, db_path: str = DB_PATH) -> dict:
