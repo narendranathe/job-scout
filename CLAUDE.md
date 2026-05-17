@@ -68,9 +68,6 @@ A production-grade, zero-cost **end-to-end job hunt automation platform** for Da
 │ App.jsx split into modules              │ 🔄 Tech debt (3882 LOC)│
 │ server.py split into modules            │ 🔄 Tech debt (847 LOC) │
 │ Standardize on one PDF library          │ 🔄 Tech debt          │
-│ resume.md                               │ ⚠ Modified, uncommit │
-│ resume-projects.md                      │ ⚠ Untracked          │
-│ resume_narendranath.tex                 │ ⚠ Untracked          │
 └─────────────────────────────────────────┴──────────────────────┘
 ```
 
@@ -198,10 +195,11 @@ job-scout/
 │   └── keepalive.yml              # Ping Render every 14 min (business hours)
 ├── Dockerfile                     # Render deployment
 ├── render.yaml                    # One-click Render blueprint
-├── resume.md                      # ⚠ Modified locally, not committed
-├── resume-projects.md             # ⚠ Untracked — JobScout as portfolio project
-├── resume_narendranath.tex        # ⚠ Untracked — LaTeX resume
+├── resume.md                      # Resume content (tracked)
 ├── CLAUDE.md                      # This file
+#  Gitignored (private, intentionally):
+#    resume-personal.md, resume-projects.md, resume_narendranath.tex,
+#    resumes/, backend/resume_vault/
 ├── .gitignore
 └── README.md
 ```
@@ -573,16 +571,19 @@ React 18 + Vite + Recharts. Single-file component.
 1. App.jsx is 3882 lines — should split into per-tab modules (**urgent** — well past sustainable size)
 2. server.py is 847 lines — monolithic
 3. pdfplumber (server.py) vs pypdf (vault) — two PDF libraries, should standardize
-4. Untracked files at repo root: resume.md, resume-projects.md, resume_narendranath.tex
-5. Workday coverage only 7 companies
-6. AutoApply end-to-end loop never validated on a real ATS page
-7. Work history not in a queryable database yet
-8. No portal form field mapping per ATS (each has different DOM)
+4. Workday coverage only 7 companies
+5. AutoApply end-to-end loop never validated on a real ATS page
+6. Work history not in a queryable database yet
+7. No portal form field mapping per ATS (each has different DOM)
 
 Resolved (no longer debt):
 - ~~Vault has no dashboard UI~~ — full tab + best-match + chip + upload + compare all wired
-- ~~No pytest suite~~ — 17 test files, 197 passing tests covering vault hardening,
-  relevance, scrape orchestrator, applications API, admin routes, profile manager, etc.
+- ~~No pytest suite~~ — 17 test files, 210 passing tests covering vault hardening,
+  relevance, scrape orchestrator, applications API, admin routes, profile manager,
+  the new JD-payload cap (#41), and the unified DELETE behavior (#44)
+- ~~Untracked resume files at repo root~~ — `resume.md` was always tracked;
+  `resume-projects.md`, `resume_narendranath.tex`, `resume-personal.md` are
+  gitignored on purpose (private content, never intended to commit)
 
 ---
 
@@ -682,13 +683,17 @@ Done (kept for history):
 - ~~Wire best-match into job cards~~ → shipped, "📄 Find Best Resume" button with ranked drawer
 - ~~Add job-fit chips on cards~~ → shipped, lazy-fetched per-card chip with WCAG-compliant
   color+icon coding (concurrency-capped at 5, 60-card visible slice)
-- ~~Add pytest suite~~ → shipped, 17 test files / 197 passing tests
+- ~~Add pytest suite~~ → shipped, 17 test files / 210 passing tests
+- ~~#35 vault upload path traversal~~ → closed; whitelist regex + realpath + 80-char caps
+- ~~#36 PDF magic-byte + 10MB size cap~~ → closed; storage + route layer
+- ~~#39 Default-resume chip + PDF download~~ → closed; both Approach A and Gap 2 shipped
+- ~~#41 Unbounded job_description DoS~~ → closed; 50KB cap on best-match + job-fit
+- ~~#44 DELETE endpoint inconsistency~~ → closed; legacy endpoint now routes through delete_vault_version
 
 Open (priority order):
 1. **Split App.jsx into per-tab modules** — biggest tech-debt item; 3882 LOC in one file
 2. Design work history PostgreSQL schema (AutoApply prerequisite)
 3. Wire up `floatingPanel.ts` in the AutoApply Chrome extension
-4. Commit untracked files (resume.md, resume-projects.md, resume_narendranath.tex)
-5. Standardize on one PDF library (pypdf preferred — already in vault)
-6. Validate end-to-end AutoApply loop on a real ATS page
-7. Bump Workday scraper coverage from 7 → ~15 companies (most enterprises use Workday)
+4. Standardize on one PDF library (pypdf preferred — already in vault)
+5. Validate end-to-end AutoApply loop on a real ATS page
+6. Bump Workday scraper coverage from 7 → ~15 companies (most enterprises use Workday)
