@@ -16,8 +16,17 @@ PRD #89 Slice 1. Three auth modes the dashboard + bulk uploader use:
 The signed cookie uses ``itsdangerous.URLSafeTimedSerializer`` — Flask's
 own session signing primitive, transitive dep, no new package. Signature
 key precedence: ``SESSION_SECRET_KEY`` env → ``API_SECRET`` env →
-process-local random fallback (cookies invalidate on each restart in
-dev, which is fine).
+file-backed shared fallback (multi-worker safe in dev; production hard-
+fails if neither env var is set).
+
+Multi-worker safety: under gunicorn's pre-fork model each forked worker
+imports modules fresh, so a ``secrets.token_hex()`` generated at import
+time would yield a DIFFERENT key per worker. A user logs in on worker 1
+and the next request hits worker 2 → signature check fails → random
+401s under load. The fallback key is therefore persisted to a shared
+file (``SESSION_KEY_FILE`` env, default ``/tmp/jobscout-session-key``)
+written atomically by the first worker and read by the rest, so every
+worker signs and verifies with the same key.
 
 API surface — every route blueprint should call ``require_auth(request)``
 instead of hand-rolling its own ``_check_auth``. Returns:
@@ -31,6 +40,8 @@ import logging
 import os
 import re
 import secrets
+import tempfile
+import threading
 import time
 from typing import Optional, Tuple
 
@@ -50,10 +61,154 @@ SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 
 _BEARER_RE = re.compile(r"^Bearer\s+(\S+)\s*$", re.IGNORECASE)
 
-# Per-process fallback signing key so a dev server without
-# SESSION_SECRET_KEY or API_SECRET still works (cookies invalidate on
-# restart, which is the expected dev-mode behaviour).
-_FALLBACK_KEY = secrets.token_hex(32)
+# Env vars that flag this process as running in production. Any one being
+# truthy means "production" — when neither SESSION_SECRET_KEY nor
+# API_SECRET is set in that mode, we hard-fail rather than silently
+# minting a fallback key (which under multi-worker gunicorn would give
+# every worker its own key and cause random session invalidation).
+_PRODUCTION_ENV_FLAGS = (
+    ("JOBSCOUT_ENV", ("production", "prod")),
+    ("FLASK_ENV", ("production", "prod")),
+    ("RENDER", ("true", "1", "yes")),     # Render sets RENDER=true
+    ("DYNO", None),                        # Heroku sets DYNO=web.1 etc.
+)
+
+# Default location for the shared fallback key. ``/tmp`` is world-writable
+# and survives across forked workers but NOT across machine reboots — fine
+# because cookies invalidating after a reboot is acceptable dev behaviour.
+# Operators can override via SESSION_KEY_FILE to pin a more durable path.
+_DEFAULT_KEY_FILE = os.path.join(tempfile.gettempdir(), "jobscout-session-key")
+
+# Process-local memoisation so we don't re-read the key file on every
+# request. Guarded by a lock so concurrent first-touch from multiple
+# threads doesn't race the file write.
+_FALLBACK_KEY_CACHE: Optional[str] = None
+_FALLBACK_KEY_LOCK = threading.Lock()
+
+
+def _is_production() -> bool:
+    """Truthy when any production-marker env var is set."""
+    for name, truthy_vals in _PRODUCTION_ENV_FLAGS:
+        val = os.environ.get(name, "").strip().lower()
+        if not val:
+            continue
+        if truthy_vals is None:
+            return True  # presence alone is enough (DYNO)
+        if val in truthy_vals:
+            return True
+    return False
+
+
+def _key_file_path() -> str:
+    """Resolve the shared fallback key file path (env-overridable)."""
+    return os.environ.get("SESSION_KEY_FILE", "").strip() or _DEFAULT_KEY_FILE
+
+
+def _load_or_create_fallback_key() -> str:
+    """Read the shared fallback key from disk, generating + persisting it
+    on first call. Multi-worker safe: each worker that races to create
+    the file uses an atomic rename so the last writer wins without
+    leaving a partial file visible to readers, and any worker that finds
+    the file already populated reads the existing key.
+
+    Cached in module state after the first successful read so the file
+    is touched at most once per worker process.
+    """
+    global _FALLBACK_KEY_CACHE
+    if _FALLBACK_KEY_CACHE is not None:
+        return _FALLBACK_KEY_CACHE
+
+    with _FALLBACK_KEY_LOCK:
+        # Re-check after acquiring the lock in case another thread won.
+        if _FALLBACK_KEY_CACHE is not None:
+            return _FALLBACK_KEY_CACHE
+
+        path = _key_file_path()
+
+        # Fast path: file already exists from a previous worker / start.
+        try:
+            with open(path, "r", encoding="ascii") as fh:
+                existing = fh.read().strip()
+            if existing and len(existing) >= 32:
+                _FALLBACK_KEY_CACHE = existing
+                return existing
+        except FileNotFoundError:
+            pass
+        except OSError as e:  # pragma: no cover — defensive
+            log.warning("could not read session key file %s: %s", path, e)
+
+        # Slow path: generate a new key and persist it atomically. We
+        # write to a temp file in the same directory then rename — POSIX
+        # rename is atomic so concurrent workers either see the old file
+        # (none) or the new file (complete), never a half-written one.
+        new_key = secrets.token_hex(32)
+        try:
+            dir_ = os.path.dirname(path) or "."
+            os.makedirs(dir_, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(
+                prefix=".jobscout-session-key.", dir=dir_
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="ascii") as fh:
+                    fh.write(new_key)
+                # Restrict to owner — the key is sensitive.
+                try:
+                    os.chmod(tmp_path, 0o600)
+                except OSError:
+                    pass  # best-effort on non-POSIX
+                os.replace(tmp_path, path)
+            except Exception:
+                # Clean up tmp file if rename failed.
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+
+            # Re-read after rename in case another worker beat us — we
+            # want every worker to converge on the same value.
+            try:
+                with open(path, "r", encoding="ascii") as fh:
+                    final_key = fh.read().strip()
+                if final_key and len(final_key) >= 32:
+                    _FALLBACK_KEY_CACHE = final_key
+                    log.warning(
+                        "auth: using file-backed fallback signing key at %s — "
+                        "set SESSION_SECRET_KEY in production",
+                        path,
+                    )
+                    return final_key
+            except OSError:
+                pass
+        except OSError as e:
+            log.error(
+                "could not persist session key to %s: %s — falling back to "
+                "process-local key (sessions will not survive worker fork)",
+                path, e,
+            )
+
+        # Last-ditch fallback: process-local key. This restores the OLD
+        # broken behaviour, but only if the filesystem is unwritable
+        # (e.g. a read-only container). Logged loudly so operators see it.
+        _FALLBACK_KEY_CACHE = new_key
+        return new_key
+
+
+def _fallback_key() -> str:
+    """Return the fallback signing key, hard-failing in production.
+
+    In production (any of JOBSCOUT_ENV / FLASK_ENV / RENDER / DYNO set),
+    a missing SESSION_SECRET_KEY *and* missing API_SECRET is a config
+    error — silently generating a key would cause random logouts as
+    workers cycle. Raise loudly so the operator sees it at startup.
+    """
+    if _is_production():
+        raise RuntimeError(
+            "auth: refusing to mint a fallback signing key in production. "
+            "Set SESSION_SECRET_KEY (preferred) or API_SECRET in the "
+            "environment so all gunicorn workers share the same key."
+        )
+    return _load_or_create_fallback_key()
 
 # State-changing methods that require CSRF for cookie auth. GET/HEAD/
 # OPTIONS are exempt because they're considered safe per RFC 7231 §4.2.1
@@ -67,12 +222,19 @@ def _signing_key() -> str:
     Read live so pytest fixtures that ``monkeypatch.setenv`` take effect
     without re-importing. The microsecond cost is negligible compared
     to the SQLite + IO work that follows every authenticated request.
+
+    Precedence:
+      1. ``SESSION_SECRET_KEY`` (explicit, recommended for production)
+      2. ``API_SECRET`` (re-used so single-secret deployments still work)
+      3. Shared file-backed fallback (dev only — see ``_fallback_key``)
     """
-    return (
+    explicit = (
         os.environ.get("SESSION_SECRET_KEY", "").strip()
         or os.environ.get("API_SECRET", "").strip()
-        or _FALLBACK_KEY
     )
+    if explicit:
+        return explicit
+    return _fallback_key()
 
 
 def _api_secret() -> str:
