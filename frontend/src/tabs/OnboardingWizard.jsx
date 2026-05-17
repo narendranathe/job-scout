@@ -15,6 +15,7 @@
 import { useEffect, useMemo, useReducer, useState } from "react";
 
 import { TH } from "../lib/theme.js";
+import { RENDER_API, authHeaders } from "../lib/api.js";
 import {
   TOTAL_STEPS,
   STEP_LABELS,
@@ -25,6 +26,13 @@ import {
 } from "../lib/wizard.js";
 import { ChipCloud } from "../components/ChipCloud.jsx";
 import { StepProgress } from "../components/StepProgress.jsx";
+// Slice 3 step components — replace the Step5/6 placeholders that
+// shipped with Slice 2.
+import { PdfDropzone } from "../components/PdfDropzone.jsx";
+import { PinSetup } from "../components/PinSetup.jsx";
+import { BulkUploadHelpCard } from "../components/BulkUploadHelpCard.jsx";
+
+const CSRF_LS_KEY = "jobscout_csrf";
 
 const BG_OVERLAY = "rgba(0,0,0,0.5)";
 
@@ -57,20 +65,44 @@ export function OnboardingWizard({ mode = "light", onComplete, onSkip }) {
   const canAdvanceStep2 =
     state.roles.length > 0 || state.customRoles.length > 0;
 
-  // ── Step-4 interim commit ────────────────────────────────────────
-  // PRD §2.7: at the end of step 4 in this slice, POST the collected
-  // state to /api/profile and onComplete the wizard. Slice 3 inserts
-  // steps 5/6 between step 4 and this commit; the consolidating step 7
-  // re-POSTs with the additional fields then.
-  const advanceFromStep4 = async () => {
+  // ── Step-7 final commit (Slice 3) ───────────────────────────────
+  // Slice 2 committed at the end of step 4; Slice 3 moves the commit
+  // to step 7 so default_resume_version + skip_pin_acknowledged are
+  // included in the same POST. Step 4 now just advances to step 5.
+  const finalCommit = async () => {
     dispatch({ type: "SAVE_START" });
     try {
-      await persistProfile(state, rosters.roles, { includeOnboardedAt: true });
+      await persistProfile(state, rosters.roles, {
+        includeOnboardedAt: true,
+        ...(state.uploadedResumeVersion
+          ? { defaultResumeVersion: state.uploadedResumeVersion }
+          : {}),
+        ...(state.skipPinAcknowledged
+          ? { skipPinAcknowledged: true }
+          : {}),
+      });
       dispatch({ type: "SAVE_OK" });
       onComplete?.();
     } catch (e) {
       dispatch({ type: "SAVE_FAIL", message: String(e?.message || e) });
     }
+  };
+
+  // Read the CSRF token live so step 6's /api/login refresh propagates
+  // without re-rendering the wizard.
+  const getCsrf = () => {
+    if (typeof window === "undefined") return "";
+    try {
+      return window.localStorage.getItem(CSRF_LS_KEY) || "";
+    } catch {
+      return "";
+    }
+  };
+  const setCsrf = (csrf) => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(CSRF_LS_KEY, csrf);
+    } catch {}
   };
 
   // Skip path from Step 1 — sets onboarded_at to the sentinel "preview".
@@ -455,22 +487,81 @@ export function OnboardingWizard({ mode = "light", onComplete, onSkip }) {
           </>
         )}
 
-        {/* ─── Step 5: Resume Vault (Slice 3 fills this in) ─── */}
+        {/* ─── Step 5: Resume Vault (Slice 3) ─── */}
         {state.step === 5 && (
-          <Step5Placeholder
-            t={t}
-            onBack={() => dispatch({ type: "BACK" })}
-            onSkip={() => dispatch({ type: "NEXT" })}
-          />
+          <>
+            <h1 style={heading}>Add a resume</h1>
+            <p style={sub}>
+              Drop a single PDF to set as your default — or skip to the
+              CLI helper below for bulk-uploading a folder.
+            </p>
+            <PdfDropzone
+              t={t}
+              apiBase={RENDER_API}
+              authHeaders={authHeaders}
+              csrfToken={getCsrf()}
+              onUploaded={(result) => {
+                if (result?.version_key) {
+                  dispatch({
+                    type: "SET_UPLOADED_RESUME",
+                    versionKey: result.version_key,
+                  });
+                }
+              }}
+            />
+            <div style={{ marginTop: 24 }}>
+              <BulkUploadHelpCard
+                t={t}
+                apiBase={RENDER_API}
+                apiToken={
+                  typeof window !== "undefined"
+                    ? window.localStorage.getItem("vault_token") || ""
+                    : ""
+                }
+              />
+            </div>
+            <FooterNav
+              t={t}
+              onBack={() => dispatch({ type: "BACK" })}
+              onNext={() => dispatch({ type: "NEXT" })}
+              nextLabel={
+                state.uploadedResumeVersion ? "Continue →" : "Skip for now →"
+              }
+            />
+          </>
         )}
 
-        {/* ─── Step 6: PIN (Slice 3 fills this in) ─── */}
+        {/* ─── Step 6: PIN (Slice 3) ─── */}
         {state.step === 6 && (
-          <Step6Placeholder
-            t={t}
-            onBack={() => dispatch({ type: "BACK" })}
-            onSkip={() => dispatch({ type: "NEXT" })}
-          />
+          <>
+            <h1 style={heading}>Set a PIN</h1>
+            <p style={sub}>
+              Protects your preferences from anyone else who has this
+              dashboard URL. You can change or remove it later from the
+              Monitor tab.
+            </p>
+            <PinSetup
+              t={t}
+              apiBase={RENDER_API}
+              authHeaders={authHeaders}
+              csrfToken={getCsrf()}
+              onPinSet={() => {
+                dispatch({ type: "SET_PIN_SET" });
+                dispatch({ type: "NEXT" });
+              }}
+              onSkip={() => {
+                dispatch({ type: "SET_SKIP_PIN_ACK" });
+                dispatch({ type: "NEXT" });
+              }}
+              onCsrfRefresh={(csrf) => setCsrf(csrf)}
+            />
+            <FooterNav
+              t={t}
+              onBack={() => dispatch({ type: "BACK" })}
+              onNext={() => dispatch({ type: "NEXT" })}
+              nextLabel="Skip step →"
+            />
+          </>
         )}
 
         {/* ─── Step 7: Done ─── */}
@@ -487,7 +578,7 @@ export function OnboardingWizard({ mode = "light", onComplete, onSkip }) {
                 type="button"
                 style={btnPrimary}
                 disabled={state.saving}
-                onClick={advanceFromStep4}
+                onClick={finalCommit}
               >
                 {state.saving ? "Saving…" : "Go to dashboard →"}
               </button>
@@ -497,11 +588,6 @@ export function OnboardingWizard({ mode = "light", onComplete, onSkip }) {
       </div>
     </div>
   );
-
-  // Helper for steps that fall into the "primary commit" path. Step 4
-  // in Slice 2 calls advanceFromStep4 instead of NEXT so we land at the
-  // dashboard. Slice 3 will rewire step 4 to dispatch NEXT and let the
-  // commit run from step 7.
 }
 
 /* ─── Footer nav ─────────────────────────────────────────────────── */
@@ -568,58 +654,3 @@ function FooterNav({ t, onBack, onNext, nextDisabled, nextHint, nextLabel }) {
   );
 }
 
-/* ─── Step 5/6 placeholders (Slice 3 replaces) ──────────────────── */
-
-function Step5Placeholder({ t, onBack, onSkip }) {
-  return (
-    <>
-      <h1
-        style={{
-          fontFamily: "'Playfair Display', serif",
-          fontSize: 28,
-          margin: "8px 0 4px",
-        }}
-      >
-        Add a resume
-      </h1>
-      <p style={{ color: t.txM, fontSize: 14, marginBottom: 20 }}>
-        Drag a PDF here or skip for now. Adding a resume lets JobScout
-        score every job against it. (Slice 3 ships the drag-drop UI;
-        for now, the Vault tab in the dashboard handles uploads.)
-      </p>
-      <FooterNav
-        t={t}
-        onBack={onBack}
-        onNext={onSkip}
-        nextLabel="Skip for now →"
-      />
-    </>
-  );
-}
-
-function Step6Placeholder({ t, onBack, onSkip }) {
-  return (
-    <>
-      <h1
-        style={{
-          fontFamily: "'Playfair Display', serif",
-          fontSize: 28,
-          margin: "8px 0 4px",
-        }}
-      >
-        Set a PIN
-      </h1>
-      <p style={{ color: t.txM, fontSize: 14, marginBottom: 20 }}>
-        Optional — protects who can change your preferences. (Slice 3
-        ships the PIN entry UI; you can set one later from the
-        ⚙️ Settings panel.)
-      </p>
-      <FooterNav
-        t={t}
-        onBack={onBack}
-        onNext={onSkip}
-        nextLabel="Skip for now →"
-      />
-    </>
-  );
-}

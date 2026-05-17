@@ -19,6 +19,9 @@ import { SetupPanel } from "./components/SetupPanel.jsx";
 // read-only preview mode, which Slice 4 will enforce).
 import { OnboardingWizard } from "./tabs/OnboardingWizard.jsx";
 import { detectOnboardingState } from "./lib/wizard.js";
+// Permanent banner shown when the user skipped PIN setup during the
+// wizard (Slice 3). Self-decides whether to render based on profile.
+import { MissingPinBanner } from "./components/MissingPinBanner.jsx";
 // Vault tab row (memoized, PR 6/N).
 import { VaultRow } from "./components/VaultRow.jsx";
 // Shared job constants + helpers (PR 7/N + PR 8/N).
@@ -402,6 +405,10 @@ export default function App() {
   const [defaultResumeVersion, setDefaultResumeVersion] = useState(null);
   const [defaultUpdating, setDefaultUpdating] = useState(false);
   const [defaultMsg, setDefaultMsg] = useState(null);
+  // Full /api/profile response — keep around so MissingPinBanner can
+  // self-decide whether to render (has_pin + skip_pin_acknowledged).
+  // Slice 4 will use this for read-only preview enforcement too.
+  const [profile, setProfile] = useState(null);
   // R2 #2: empty-state hint banner above the Jobs list when no default
   // resume is configured. Persisted dismissal in localStorage so users
   // who've already seen the hint don't get pestered every reload.
@@ -437,6 +444,7 @@ export default function App() {
         const d = await r.json();
         if (cancelled) return;
         setDefaultResumeVersion(d.default_resume_version || null);
+        setProfile(d);
       } catch (_e) { /* offline / 5xx — silently no chip */ }
     })();
     return () => { cancelled = true; };
@@ -1655,6 +1663,8 @@ export default function App() {
   return (
     <div style={{minHeight:"100vh",background:t.bg,fontFamily:"'Source Sans 3',sans-serif",color:t.tx,fontSize:16}}>
 
+      <MissingPinBanner t={t} profile={profile} />
+
       {/* ═══ NAV ═══ */}
       <nav style={{position:"sticky",top:0,zIndex:50,background:t.nav,backdropFilter:"blur(20px)",borderBottom:`1px solid ${t.bd}`}}>
         <div className="nav-wrap" style={{padding:"12px 24px"}}>
@@ -1709,8 +1719,20 @@ export default function App() {
               window.history.replaceState({}, "", u.toString());
             }
             // Refetch profile so the rest of the dashboard sees the new
-            // tracked_companies / dream_role_keywords / etc.
+            // tracked_companies / dream_role_keywords / etc. — and so
+            // MissingPinBanner appears if PIN was skipped.
             refetch?.();
+            if (RENDER_API) {
+              fetch(`${RENDER_API}/api/profile`)
+                .then((r) => (r.ok ? r.json() : null))
+                .then((d) => {
+                  if (d) {
+                    setProfile(d);
+                    setDefaultResumeVersion(d.default_resume_version || null);
+                  }
+                })
+                .catch(() => {});
+            }
           }}
           onSkip={() => {
             // Preview mode — Slice 4 will gate writes behind a modal.
