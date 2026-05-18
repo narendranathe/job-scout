@@ -272,14 +272,50 @@ def api_login():
 
 @profile_bp.route("/api/logout", methods=["POST", "OPTIONS"])
 def api_logout():
-    """Clear the session cookie. Always returns 200 — idempotent.
+    """Clear the session cookie. Idempotent on success.
 
-    No CSRF check: clearing a cookie is not a state-changing operation
-    on server-side data, and refusing logout on a missing token would
-    just trap users in a broken session.
+    CSRF gate: logout DOES require a valid CSRF token (or a Bearer
+    token from an approved origin) — without it, a hostile site could
+    auto-submit ``<form action="/api/logout">`` and silently log out
+    every JobScout user that visits. Annoying-but-not-catastrophic is
+    still a UX denial-of-service we can cheaply prevent. The earlier
+    no-CSRF stance was wrong (per Phase-2 critic, systemic miss B).
+
+    Three valid auth shapes:
+      * Unauthenticated (no cookie, no Bearer) → 200 no-op so a stale
+        client trying to "clean up" doesn't 401-loop. No cookie is
+        cleared because there was nothing to clear.
+      * Cookie + matching ``X-CSRF-Token`` → 200, cookie cleared.
+      * Bearer + (no browser-Origin, OR Origin in allowlist) → 200,
+        cookie cleared (covers ``bulk_upload_to_render.py`` flows
+        that may stash a stale cookie).
     """
     if request.method == "OPTIONS":
         return "", 204
+
+    has_cookie = bool(request.cookies.get("jobscout_session", ""))
+    has_bearer = bool(request.headers.get("Authorization", "").strip())
+
+    # No auth at all → idempotent. Still emit the Set-Cookie clear
+    # header in case the browser has a session cookie that wasn't sent
+    # this request (different cookie-jar, SameSite weirdness) so the
+    # public contract — "after /api/logout, no jobscout_session
+    # cookie remains" — holds even on the no-auth path.
+    if not has_cookie and not has_bearer:
+        return jsonify({"status": "logged_out"}), 200, {
+            "Access-Control-Allow-Origin": "*",
+            **clear_session_cookie_headers(),
+        }
+
+    # Some form of auth present → apply the full gate so the CSRF /
+    # Origin checks run. Failure here returns 403 so the client knows
+    # the request was rejected (cookie / Bearer still valid server-
+    # side).
+    deny = require_auth(request)
+    if deny is not None:
+        body, status = deny
+        return jsonify(body), status, {"Access-Control-Allow-Origin": "*"}
+
     headers = {
         "Access-Control-Allow-Origin": "*",
         **clear_session_cookie_headers(),

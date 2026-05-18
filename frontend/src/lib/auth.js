@@ -80,18 +80,29 @@ export function shouldShowLogin(profile) {
 }
 
 /**
- * Logout: clear local session state and POST /api/logout.
+ * Logout: POST /api/logout (with CSRF) and clear local session state.
  *
- * Tolerates network failure — local state still clears so the user
- * lands on the LoginScreen on the next page load.
+ * Order matters: capture the CSRF token BEFORE clearing local state,
+ * send it with the request, THEN clear. The server-side
+ * ``/api/logout`` route now requires a matching CSRF header for
+ * cookie-authed requests (defence against cross-site form-submit
+ * logout DoS) — clearing first would make our own request 403.
+ *
+ * Tolerates network failure: local state still clears in the
+ * ``finally`` so the user lands on the LoginScreen on next page load.
  */
 export async function logout(apiBase) {
-  clearCsrf();
-  if (!apiBase) return;
+  const csrf = getCsrf();
   try {
+    if (!apiBase) return;
     await fetch(`${apiBase}/api/logout`, {
       method: "POST",
+      headers: csrf ? { "X-CSRF-Token": csrf } : {},
       credentials: "include",
     });
-  } catch (_) {}
+  } catch (_) {
+    /* swallow — local cleanup still runs below */
+  } finally {
+    clearCsrf();
+  }
 }

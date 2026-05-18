@@ -327,6 +327,89 @@ def _bearer_matches(request) -> bool:
     )
 
 
+def _bearer_request_is_safe(request) -> bool:
+    """Guard the "Bearer skips CSRF" path against XSS-via-localStorage.
+
+    Threat: an XSS payload in the dashboard can read
+    ``localStorage["vault_token"]`` and then issue ``Authorization:
+    Bearer ...`` requests. Because Bearer auth bypasses CSRF (the
+    standard design — machine clients have no cookies to protect), an
+    attacker who exfiltrated only the token can mount fully-authorised
+    cross-site writes. The cookie CSRF check is useless here.
+
+    Defence: when a Bearer request also carries a browser-set ``Origin``
+    or ``Sec-Fetch-Site`` header, require the ``Origin`` to be in
+    ``ALLOWED_ORIGINS``. Browsers set ``Origin`` on all cross-origin
+    POST / PUT / PATCH / DELETE (and on same-origin POST too in
+    practice); curl / Python ``requests`` / the ``bulk_upload_to_render``
+    CLI do not, so the legitimate machine-to-machine path is unaffected.
+
+    Rules:
+      * No ``Origin`` AND no ``Sec-Fetch-Site`` → CLI / proxy caller →
+        pass.
+      * ``Origin`` present and matches one of ``ALLOWED_ORIGINS`` →
+        legitimate browser caller (dashboard itself) → pass.
+      * ``Origin`` present and ``ALLOWED_ORIGINS`` unset → dev / single-
+        origin deploy → pass with a one-time WARN log so operators set
+        the allowlist before production.
+      * ``Origin`` present but NOT in the allowlist → likely XSS or
+        cross-site abuse → reject.
+
+    Safe methods (GET / HEAD / OPTIONS) are exempt; they can't be
+    weaponised for state changes anyway.
+    """
+    if request.method not in _STATE_CHANGING_METHODS:
+        return True
+
+    origin = request.headers.get("Origin", "").strip()
+    sec_fetch_site = request.headers.get("Sec-Fetch-Site", "").strip()
+
+    # Pure machine caller — neither header present.
+    if not origin and not sec_fetch_site:
+        return True
+
+    # Browser caller. If the deploy hasn't configured an allowlist,
+    # we degrade to "warn but allow" so dev workflows don't break;
+    # production operators get a loud log line to fix it.
+    allowed = _allowed_origins()
+    if not allowed:
+        if not _bearer_request_is_safe._warned_no_allowlist:  # type: ignore[attr-defined]
+            log.warning(
+                "Bearer request from browser context (Origin=%r) but "
+                "ALLOWED_ORIGINS is unset — set it in production to block "
+                "XSS-via-localStorage Bearer forgery",
+                origin or "<missing>",
+            )
+            _bearer_request_is_safe._warned_no_allowlist = True  # type: ignore[attr-defined]
+        return True
+
+    if origin and origin in allowed:
+        return True
+
+    log.warning(
+        "Bearer request rejected: Origin=%r not in ALLOWED_ORIGINS (browser "
+        "context detected via Origin or Sec-Fetch-Site header)",
+        origin or "<missing>",
+    )
+    return False
+
+
+# Initialise the one-time-warn flag as a function attribute. Cheaper
+# than a module global with a lock — re-entrance is fine, we just
+# don't want to spam the log on every request.
+_bearer_request_is_safe._warned_no_allowlist = False  # type: ignore[attr-defined]
+
+
+def _allowed_origins() -> list[str]:
+    """Resolve ALLOWED_ORIGINS live so operator-changed values take effect
+    without restart (matches the rest of this module's live-env pattern).
+    """
+    raw = os.environ.get("ALLOWED_ORIGINS", "").strip()
+    if not raw:
+        return []
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
+
 def _cookie_matches(request) -> Optional[dict]:
     """Return the decoded session payload when the cookie is valid."""
     return read_session(request.cookies.get(SESSION_COOKIE_NAME, ""))
@@ -358,9 +441,16 @@ def require_auth(request) -> Optional[Tuple[dict, int]]:
     Auth rules:
 
     * Dev mode (``API_SECRET`` unset) → always pass.
-    * Bearer token matches → pass (no CSRF check; non-browser caller).
+    * Bearer token matches:
+        * If the request is a state-changing method AND has a browser-set
+          ``Origin`` / ``Sec-Fetch-Site`` header, the Origin must be in
+          ``ALLOWED_ORIGINS`` (defence against XSS-via-localStorage
+          Bearer forgery — see ``_bearer_request_is_safe``).
+        * Otherwise → pass (machine-to-machine caller, e.g. the bulk
+          uploader).
     * Valid session cookie + (safe method OR matching CSRF header) → pass.
-    * Otherwise → 401 (no auth at all) or 403 (cookie ok, CSRF missing).
+    * Otherwise → 401 (no auth at all) or 403 (cookie ok, CSRF missing,
+      or Bearer from blocked origin).
     """
     # Dev mode bypass — preserves the existing local-dev workflow where
     # nobody sets API_SECRET and every endpoint is open.
@@ -368,6 +458,8 @@ def require_auth(request) -> Optional[Tuple[dict, int]]:
         return None
 
     if _bearer_matches(request):
+        if not _bearer_request_is_safe(request):
+            return ({"error": "origin_not_allowed"}, 403)
         return None
 
     session = _cookie_matches(request)

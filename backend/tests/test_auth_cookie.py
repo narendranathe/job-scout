@@ -573,3 +573,176 @@ def test_wizard_bootstrap_path_works_under_pin_gated_deploy(client):
     body = login_resp.get_json()
     assert "csrf_token" in body
     assert "jobscout_session=" in login_resp.headers.get("Set-Cookie", "")
+
+
+# ─── /api/logout CSRF gate (systemic miss B) ──────────────────────────────
+
+
+def test_logout_with_cookie_and_csrf_clears(client_with_pin):
+    """Authenticated session + matching CSRF → logout succeeds and the
+    server emits a Max-Age=0 Set-Cookie."""
+    _cookie, csrf = _login_and_extract(client_with_pin, "1234")
+    resp = client_with_pin.post(
+        "/api/logout", headers={"X-CSRF-Token": csrf}
+    )
+    assert resp.status_code == 200
+    set_cookie = resp.headers.get("Set-Cookie", "")
+    assert "jobscout_session=" in set_cookie
+    assert "Max-Age=0" in set_cookie
+
+
+def test_logout_with_cookie_no_csrf_returns_403(client_with_pin):
+    """The reason this PR exists: a cross-site `<form action=/api/logout>`
+    will send the cookie but not the CSRF header. Pre-fix this returned
+    200 and the user was silently logged out. Now it MUST 403.
+    """
+    _login_and_extract(client_with_pin, "1234")
+    resp = client_with_pin.post("/api/logout")  # no CSRF header
+    assert resp.status_code == 403
+    assert resp.get_json()["error"] == "csrf_token_invalid"
+
+
+def test_logout_with_cookie_wrong_csrf_returns_403(client_with_pin):
+    """Attacker-supplied / stale CSRF → 403."""
+    _login_and_extract(client_with_pin, "1234")
+    resp = client_with_pin.post(
+        "/api/logout", headers={"X-CSRF-Token": "wrong-token-xxx"}
+    )
+    assert resp.status_code == 403
+
+
+def test_logout_with_bearer_no_browser_origin_clears(client_with_pin):
+    """Bearer-from-CLI (no Origin / Sec-Fetch-Site) → logout works
+    without CSRF. Covers bulk_upload_to_render.py edge cases."""
+    resp = client_with_pin.post(
+        "/api/logout", headers={"Authorization": f"Bearer {SECRET}"}
+    )
+    assert resp.status_code == 200
+    assert "Max-Age=0" in resp.headers.get("Set-Cookie", "")
+
+
+def test_logout_no_auth_at_all_is_idempotent(client_with_pin):
+    """Stale client trying to "clean up" with neither cookie nor Bearer
+    must not 401-loop. Returns 200 + Set-Cookie clear so the contract
+    "no jobscout_session after logout" holds defensively."""
+    # Fresh test client — no cookie jar, no previous login.
+    import server
+    with server.app.test_client() as fresh:
+        resp = fresh.post("/api/logout")
+        assert resp.status_code == 200
+        assert "Max-Age=0" in resp.headers.get("Set-Cookie", "")
+
+
+# ─── Bearer-from-browser Origin guard (systemic miss B) ───────────────────
+
+
+def test_bearer_without_origin_passes(client_with_pin, monkeypatch):
+    """Pure CLI caller (Python requests / curl) → no Origin / Sec-Fetch-
+    Site header → must pass. This is the bulk_upload_to_render.py path."""
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://dashboard.example.com")
+    from io import BytesIO
+    resp = client_with_pin.post(
+        "/api/vault/upload",
+        headers={"Authorization": f"Bearer {SECRET}"},
+        data={
+            "company": "TestCo", "role": "DE",
+            "file": (BytesIO(_MIN_PDF), "test.pdf"),
+        },
+        content_type="multipart/form-data",
+    )
+    # NOT 401 / 403 — the legitimate machine-to-machine path.
+    assert resp.status_code not in {401, 403}
+
+
+def test_bearer_from_allowed_origin_passes(client_with_pin, monkeypatch):
+    """Dashboard's own Bearer request (Origin in allowlist) → pass.
+    Pre-fix this was unconditional; post-fix we explicitly verify the
+    matching-origin branch."""
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://dashboard.example.com")
+    from io import BytesIO
+    resp = client_with_pin.post(
+        "/api/vault/upload",
+        headers={
+            "Authorization": f"Bearer {SECRET}",
+            "Origin": "https://dashboard.example.com",
+        },
+        data={
+            "company": "TestCo", "role": "DE",
+            "file": (BytesIO(_MIN_PDF), "test.pdf"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code not in {401, 403}
+
+
+def test_bearer_from_blocked_origin_returns_403(client_with_pin, monkeypatch):
+    """The core fix: an XSS that read localStorage["vault_token"] and
+    forges a Bearer request from a hostile site will carry the hostile
+    Origin. Reject."""
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://dashboard.example.com")
+    from io import BytesIO
+    resp = client_with_pin.post(
+        "/api/vault/upload",
+        headers={
+            "Authorization": f"Bearer {SECRET}",
+            "Origin": "https://attacker.example.com",
+        },
+        data={
+            "company": "TestCo", "role": "DE",
+            "file": (BytesIO(_MIN_PDF), "test.pdf"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert resp.status_code == 403
+    assert resp.get_json()["error"] == "origin_not_allowed"
+
+
+def test_bearer_from_browser_no_allowlist_warns_but_allows(
+    client_with_pin, monkeypatch, caplog
+):
+    """When ALLOWED_ORIGINS is unset (single-origin dev / pre-prod
+    deploy), the guard degrades to warn-but-allow so existing setups
+    don't break. Operators get a one-time log line to fix it."""
+    monkeypatch.delenv("ALLOWED_ORIGINS", raising=False)
+    # Reset the one-time-warn flag so this test gets a fresh log line.
+    from routes import _auth
+    _auth._bearer_request_is_safe._warned_no_allowlist = False
+
+    from io import BytesIO
+    with caplog.at_level("WARNING"):
+        resp = client_with_pin.post(
+            "/api/vault/upload",
+            headers={
+                "Authorization": f"Bearer {SECRET}",
+                "Origin": "https://anywhere.example.com",
+            },
+            data={
+                "company": "TestCo", "role": "DE",
+                "file": (BytesIO(_MIN_PDF), "test.pdf"),
+            },
+            content_type="multipart/form-data",
+        )
+    # Request goes through.
+    assert resp.status_code not in {401, 403}
+    # Warning emitted.
+    assert any(
+        "ALLOWED_ORIGINS is unset" in r.getMessage() for r in caplog.records
+    ), "expected one-time warn log; got: " + repr([r.getMessage() for r in caplog.records])
+
+
+def test_bearer_safe_method_with_blocked_origin_still_allowed(
+    client_with_pin, monkeypatch
+):
+    """Safe methods (GET / HEAD / OPTIONS) can't be weaponised for state
+    changes; the Origin guard explicitly exempts them so a malicious
+    Origin reading public data still works (and isn't a security issue —
+    the data is public)."""
+    monkeypatch.setenv("ALLOWED_ORIGINS", "https://dashboard.example.com")
+    resp = client_with_pin.get(
+        "/api/vault/list",
+        headers={
+            "Authorization": f"Bearer {SECRET}",
+            "Origin": "https://attacker.example.com",
+        },
+    )
+    assert resp.status_code not in {401, 403}
