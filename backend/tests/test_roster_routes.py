@@ -213,3 +213,73 @@ def test_locations_roster_capped(client, monkeypatch):
 
     data = c.get("/api/locations-roster").get_json()
     assert data["total"] <= 200
+
+
+# ─── Thread-safety regression (#cache lock) ────────────────────────────────
+
+    """Two threads race the same key. Even with a deliberately-slow
+    builder, only ONE invocation should happen — the lock blocks the
+    second thread until the first has populated the cache.
+    """
+    import threading as _threading
+    import time as _time
+    from routes import roster_routes
+
+    roster_routes._cache.clear()
+
+    call_count = {"n": 0}
+    call_lock = _threading.Lock()
+
+    def slow_builder():
+        with call_lock:
+            call_count["n"] += 1
+        _time.sleep(0.05)  # plenty of window for a racing thread to enter
+        return f"val-{call_count['n']}"
+
+    results = {}
+
+    def call(tag):
+        results[tag] = roster_routes._cached("race-key-2", slow_builder)
+
+    t1 = _threading.Thread(target=call, args=("a",))
+    t2 = _threading.Thread(target=call, args=("b",))
+    t1.start()
+    t2.start()
+    t1.join(timeout=2)
+    t2.join(timeout=2)
+
+    assert call_count["n"] == 1, (
+        f"builder was called {call_count['n']} times — the lock didn't "
+        "coalesce the concurrent misses"
+    )
+    # Both threads must see the same value (no torn read).
+    assert results["a"] == results["b"] == "val-1"
+
+
+def test_cache_hit_path_is_thread_safe_under_contention(client):
+    """Many threads hammering a cached key should never raise. Without
+    the lock, dict mutation during iteration (e.g. if any helper ever
+    walks the cache) could ``RuntimeError``. This pins the read path."""
+    import threading as _threading
+    from routes import roster_routes
+
+    roster_routes._cache.clear()
+    # Pre-populate so subsequent calls hit the fast path.
+    roster_routes._cached("hot-key", lambda: "hot-val")
+
+    errors = []
+
+    def hammer():
+        try:
+            for _ in range(50):
+                assert roster_routes._cached("hot-key", lambda: "should-not-call") == "hot-val"
+        except Exception as e:  # pragma: no cover — the test asserts this stays empty
+            errors.append(e)
+
+    threads = [_threading.Thread(target=hammer) for _ in range(16)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=3)
+
+    assert not errors, f"hit-path race produced exceptions: {errors[:3]}"

@@ -15,6 +15,7 @@ accidentally swallow these much smaller lookups.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 from flask import Blueprint, jsonify, request
@@ -31,6 +32,15 @@ roster_bp = Blueprint("roster", __name__)
 # hammering the DB on every wizard step navigation.
 _CACHE_TTL_SECONDS = 300
 _cache: dict[str, tuple[float, object]] = {}
+# Lock protecting ``_cache``. Gunicorn's default ``sync`` worker is
+# single-threaded per-process, but ``gthread`` / ``gevent`` / future
+# tuning can switch to multi-threaded workers without warning — at
+# which point an unsynchronised dict yields stale reads, lost writes,
+# and ``RuntimeError: dictionary changed size during iteration`` under
+# contention. Holding the lock across the read-check-build-write
+# sequence also coalesces concurrent cache misses so we only do the
+# underlying SQL query once per TTL window.
+_cache_lock = threading.Lock()
 
 # Cap locations to keep the payload under a few KB and the picker fast.
 # 200 was the PRD's acceptance criterion ("returns ≤ 200 entries").
@@ -53,14 +63,26 @@ def _cors_headers() -> dict:
 
 
 def _cached(key: str, builder):
-    """Tiny TTL cache so repeated wizard navigations don't re-hit SQLite."""
+    """Tiny TTL cache so repeated wizard navigations don't re-hit SQLite.
+
+    Thread-safe. The fast path (a fresh hit) holds the lock only for
+    the dict read + timestamp compare — microseconds — so contention
+    is negligible at the request rates we expect. On a miss, the lock
+    is held across the ``builder()`` call so only ONE concurrent request
+    runs the underlying SQL; the rest wait and then see the cached
+    result. That tradeoff (longer-held lock vs. duplicate work) is the
+    right one here because the SQL queries are expensive (full table
+    scan with COUNT) and the wizard tends to fire all three roster
+    endpoints in parallel on mount.
+    """
     now = time.monotonic()
-    hit = _cache.get(key)
-    if hit and now - hit[0] < _CACHE_TTL_SECONDS:
-        return hit[1]
-    val = builder()
-    _cache[key] = (now, val)
-    return val
+    with _cache_lock:
+        hit = _cache.get(key)
+        if hit and now - hit[0] < _CACHE_TTL_SECONDS:
+            return hit[1]
+        val = builder()
+        _cache[key] = (now, val)
+        return val
 
 
 @roster_bp.route("/api/role-taxonomy", methods=["GET", "OPTIONS"])
