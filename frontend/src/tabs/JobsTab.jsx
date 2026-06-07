@@ -24,7 +24,7 @@ export function JobsTab({ state }) {
     opts, selRoles, setSelRoles, selExp, setSelExp,
     selStates, setSelStates, selCities, setSelCities, selATS, setSelATS,
     defaultResumeVersion, defaultHintDismissed, dismissDefaultHint, setTab,
-    fj, allJobs, xJ, JOB_FIT_VISIBLE_SLICE,
+    fj, allJobs, xJ, visibleCount, setVisibleCount, PAGE_SIZE,
     apps, coHistoryByCompany, bestMatchByJob, jobFitByJob,
     vdMapByJob, expandedByJob, pdfStateByJob,
     toggleCardOpen, saveApp, removeApp, markApplied,
@@ -124,11 +124,12 @@ export function JobsTab({ state }) {
 
       {/* Job cards */}
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
-        {fj.slice(0, JOB_FIT_VISIBLE_SLICE).map(j => {
+        {fj.slice(0, visibleCount).map((j, idx) => {
           const coKey = (j.company || "").toLowerCase();
           return (
             <JobCard
               key={j.external_id}
+              rank={idx + 1}
               j={j}
               t={t}
               open={xJ === j.external_id}
@@ -149,9 +150,21 @@ export function JobsTab({ state }) {
             />
           );
         })}
-        {fj.length > JOB_FIT_VISIBLE_SLICE && (
-          <div style={{textAlign:"center",padding:18,color:t.txM,fontSize:15}}>
-            Showing {JOB_FIT_VISIBLE_SLICE} of {fj.length} — use filters to narrow results
+        {fj.length > 0 && (
+          <div style={{textAlign:"center",padding:"18px 0",display:"flex",flexDirection:"column",alignItems:"center",gap:10}}>
+            <span style={{color:t.txM,fontSize:14}}>
+              {visibleCount >= fj.length
+                ? `Showing all ${fj.length} job${fj.length !== 1 ? "s" : ""} ✓`
+                : `Showing ${visibleCount} of ${fj.length} jobs`}
+            </span>
+            {visibleCount < fj.length && (
+              <button
+                onClick={() => setVisibleCount(v => Math.min(v + PAGE_SIZE, fj.length))}
+                style={{padding:"10px 32px",borderRadius:9,border:`1.5px solid ${t.ac}`,background:"none",color:t.ac,fontWeight:700,fontSize:15,cursor:"pointer",fontFamily:"inherit",width:"100%",maxWidth:320}}
+              >
+                Load More ({Math.min(PAGE_SIZE, fj.length - visibleCount)} more)
+              </button>
+            )}
           </div>
         )}
         {fj.length===0 && (

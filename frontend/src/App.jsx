@@ -525,11 +525,12 @@ export default function App() {
   //  - MAX_JOB_FIT_CONCURRENCY: enough that the top of a freshly-mounted
   //    Jobs tab fills in within ~2-3 seconds, low enough that we don't
   //    trip Render's free-tier worker pool.
-  //  - JOB_FIT_VISIBLE_SLICE: matches the same `.slice(0, N)` used to render
-  //    JobCards below, so we only fetch fits for cards the user can see.
-  //    Must stay in sync with the render slice.
+  //  - PAGE_SIZE / visibleCount: how many job cards are rendered at once.
+  //    PAGE_SIZE is the initial value; visibleCount grows via Load More.
+  //    The prefetch batch uses visibleCount so new cards get chips too.
   const MAX_JOB_FIT_CONCURRENCY = 5;
-  const JOB_FIT_VISIBLE_SLICE = 60;
+  const PAGE_SIZE = 60;
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
 
   // Fetches a single job-fit result. Designed to be invoked from the
   // batch effect — pre-checks cache + inflight set so the effect can
@@ -1597,6 +1598,9 @@ export default function App() {
     return j;
   }, [enriched,selRoles,selExp,selStates,selCities,selATS,remoteOnly,h1bOnly,platinumOnly,highCompOnly,selSalary,selPosted,q,so]);
 
+  // Reset visible card count when filters change so rank #1 is always at the top.
+  useEffect(() => { setVisibleCount(PAGE_SIZE); }, [fj]);
+
   // Latest-cache ref so the batch effect below can read the current
   // jobFitByJob without subscribing to it as a dep (which would tear
   // down + rebuild the interval on every single fit result writing
@@ -1627,7 +1631,7 @@ export default function App() {
       jobFitPumpRef.current = () => {};
       return;
     }
-    const visible = fj.slice(0, JOB_FIT_VISIBLE_SLICE);
+    const visible = fj.slice(0, visibleCount);
     let cancelled = false;
     const pump = () => {
       if (cancelled) return;
@@ -1655,7 +1659,7 @@ export default function App() {
       // abandoning doesn't trigger queueing into the wrong context.
       jobFitPumpRef.current = () => {};
     };
-  }, [fj, defaultResumeVersion, tab, fetchJobFit]);
+  }, [fj, visibleCount, defaultResumeVersion, tab, fetchJobFit]);
 
   const activeN = [selRoles,selStates,selCities,selATS,selExp].reduce((n,a)=>n+a.length,0)
     +(remoteOnly?1:0)+(h1bOnly?1:0)+(platinumOnly?1:0)+(highCompOnly?1:0)+(selSalary!=="All"?1:0)+(selPosted!=="All"?1:0);
@@ -1913,7 +1917,7 @@ export default function App() {
             opts, selRoles, setSelRoles, selExp, setSelExp,
             selStates, setSelStates, selCities, setSelCities, selATS, setSelATS,
             defaultResumeVersion, defaultHintDismissed, dismissDefaultHint, setTab,
-            fj, allJobs, xJ, JOB_FIT_VISIBLE_SLICE,
+            fj, allJobs, xJ, visibleCount, setVisibleCount, PAGE_SIZE,
             apps, coHistoryByCompany, bestMatchByJob, jobFitByJob,
             vdMapByJob, expandedByJob, pdfStateByJob,
             toggleCardOpen, saveApp, removeApp, markApplied,

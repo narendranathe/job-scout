@@ -61,6 +61,7 @@ function _JobCard({
   onFetchBestMatch,
   onToggleVersionRow,
   onDownloadResumePdf,
+  rank,
 }) {
   const sc = j.relevance_score || 0;
   const ats = ATS_META[j.ats] || ATS_META.unknown;
@@ -129,6 +130,7 @@ function _JobCard({
           <LogoImg name={j.company} size={40} t={t}/>
           <div style={JC_STYLES.titleInner}>
             <div style={JC_STYLES.titleLine}>
+              {rank != null && <span style={{fontSize:11,fontWeight:700,color:t.txM,flexShrink:0}}>#{rank}</span>}
               <span style={{fontSize:17,fontWeight:700,color:t.tx,fontFamily:"'Playfair Display',serif"}}>{j.title}</span>
               {isApplied && <Pill ch={ST_LABEL.applied} c={ST_COLOR.applied} t={t}/>}
               <Pill ch={catLbl} c={t.bl} t={t}/>
@@ -150,7 +152,7 @@ function _JobCard({
         <div style={JC_STYLES.scoreCluster}>
           {fitChip}
           <div style={{width:52,height:52,borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",background:t.sBg(sc)}}>
-            <span style={{fontSize:20,fontWeight:800,color:t.sTx(sc),fontFamily:"'Playfair Display',serif"}}>{(sc*100).toFixed(0)}</span>
+            <span style={{fontSize:20,fontWeight:800,color:t.sTx(sc),fontFamily:"'Playfair Display',serif"}}>{(sc*100).toFixed(0)}%</span>
           </div>
           <span style={{fontSize:18,color:t.txM,transform:open?"rotate(180deg)":"",transition:"transform .2s"}}>▾</span>
         </div>

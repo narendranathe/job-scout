@@ -3,6 +3,7 @@
  * Surfaced separately so the main relevance score stays interpretable
  * on a small corpus.
  */
+import { useState, useEffect } from "react";
 import { LogoImg } from "../components/LogoImg.jsx";
 import { ATS_META } from "../lib/jobConstants.js";
 import { fmtSal, timeAgo } from "../lib/format.js";
@@ -12,6 +13,10 @@ export function RareTab({ state }) {
   const rareJobs = enriched
     .filter(j => (j.rare_skill_hits||[]).length > 0)
     .sort((a,b) => (b.rare_skill_hits.length - a.rare_skill_hits.length) || ((b.relevance_score||0) - (a.relevance_score||0)));
+
+  const RARE_PAGE_SIZE = 80;
+  const [visibleRareCount, setVisibleRareCount] = useState(RARE_PAGE_SIZE);
+  useEffect(() => { setVisibleRareCount(RARE_PAGE_SIZE); }, [enriched]);
 
   return (
     <div>
@@ -29,7 +34,7 @@ export function RareTab({ state }) {
         </div>
       ) : (
         <div style={{display:"flex",flexDirection:"column",gap:10}}>
-          {rareJobs.slice(0,80).map(j => {
+          {rareJobs.slice(0, visibleRareCount).map(j => {
             const sc = j.relevance_score || 0;
             const ats = ATS_META[j.ats] || ATS_META.unknown;
             return (
@@ -58,7 +63,7 @@ export function RareTab({ state }) {
                   </div>
                   <div style={{display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
                     <div style={{width:44,height:44,borderRadius:10,display:"flex",alignItems:"center",justifyContent:"center",background:t.sBg(sc)}}>
-                      <span style={{fontSize:16,fontWeight:800,color:t.sTx(sc),fontFamily:"'Playfair Display',serif"}}>{(sc*100).toFixed(0)}</span>
+                      <span style={{fontSize:16,fontWeight:800,color:t.sTx(sc),fontFamily:"'Playfair Display',serif"}}>{(sc*100).toFixed(0)}%</span>
                     </div>
                     <a href={j.url} target="_blank" rel="noopener noreferrer"
                       style={{padding:"9px 16px",borderRadius:8,background:t.gP,color:"#fff",fontSize:13,fontWeight:700,textDecoration:"none",whiteSpace:"nowrap"}}>
@@ -69,9 +74,21 @@ export function RareTab({ state }) {
               </div>
             );
           })}
-          {rareJobs.length > 80 && (
-            <div style={{textAlign:"center",padding:18,color:t.txM,fontSize:14}}>
-              Showing 80 of {rareJobs.length}.
+          {rareJobs.length > 0 && (
+            <div style={{textAlign:"center",padding:"18px 0",display:"flex",flexDirection:"column",alignItems:"center",gap:10}}>
+              <span style={{color:t.txM,fontSize:14}}>
+                {visibleRareCount >= rareJobs.length
+                  ? `Showing all ${rareJobs.length} rare-skill job${rareJobs.length !== 1 ? "s" : ""} ✓`
+                  : `Showing ${visibleRareCount} of ${rareJobs.length} rare-skill jobs`}
+              </span>
+              {visibleRareCount < rareJobs.length && (
+                <button
+                  onClick={() => setVisibleRareCount(v => Math.min(v + RARE_PAGE_SIZE, rareJobs.length))}
+                  style={{padding:"10px 32px",borderRadius:9,border:`1.5px solid ${t.vi}`,background:"none",color:t.vi,fontWeight:700,fontSize:15,cursor:"pointer",fontFamily:"inherit",width:"100%",maxWidth:320}}
+                >
+                  Load More ({Math.min(RARE_PAGE_SIZE, rareJobs.length - visibleRareCount)} more)
+                </button>
+              )}
             </div>
           )}
         </div>
