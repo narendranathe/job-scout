@@ -100,6 +100,104 @@ export function likelySponsor(job){
   return["uber","meta","google","amazon","apple","microsoft","netflix","stripe","anthropic","openai","datadog","snowflake","databricks","two sigma","citadel","bloomberg","capital one","palantir","coinbase"].includes((job.company||"").toLowerCase());
 }
 
+// ─── Dream company ranking (41 entries, personal priority order) ─────────────
+export const DREAM_COMPANY_RANK = Object.freeze({
+  "anthropic": 1, "openai": 2, "stripe": 3, "databricks": 4, "snowflake": 5,
+  "goldman sachs": 6, "walmart": 7, "apple": 8, "nvidia": 9, "google": 10,
+  "microsoft": 11, "disney": 12, "citadel": 13, "citadel securities": 14,
+  "aqr capital": 15, "hudson river trading": 16, "jane street": 17,
+  "two sigma": 18, "jump trading": 19, "sig": 20, "imc trading": 21,
+  "bridgewater associates": 22, "flow traders": 23, "tower research capital": 24,
+  "millennium management": 25, "point72": 26, "optiver": 27,
+  "virtu financial": 28, "pimco": 29, "netflix": 30, "meta": 31,
+  "spotify": 32, "fidelity": 33, "uber": 34, "bloomberg": 35,
+  "morgan stanley": 36, "blackrock": 37, "doordash": 38, "amazon": 39,
+  "salesforce": 40, "jp morgan chase": 41,
+});
+
+export function getDreamRank(company) {
+  return DREAM_COMPANY_RANK[(company || "").toLowerCase()] ?? null;
+}
+
+// ─── Skill lists mirroring backend/core/relevance.py weights ─────────────────
+export const CORE_SKILLS = [
+  "python","sql","spark","pyspark","kafka","airflow","etl","data pipeline",
+  "data lake","data warehouse","azure","aws","databricks","delta lake","microsoft fabric",
+];
+
+export const SECONDARY_SKILLS = [
+  "docker","kubernetes","terraform","ci/cd","dbt","snowflake","redshift","bigquery",
+  "postgresql","sql server","mongodb","fastapi","flask","rest api","git","linux","bash",
+  "mlflow","mlops","machine learning","pytorch","tensorflow","scikit-learn","tableau",
+  "powerbi","looker","flink","kinesis","data mesh","numpy","pandas","scipy",
+  "quantitative","statistical modeling","backtesting",
+];
+
+// Score weights (mirrors relevance.py)
+const W = { core:0.36, secondary:0.17, title:0.15, location:0.10, experience:0.10, sponsorship:0.08, salary:0.04, platinum:0.08 };
+
+/**
+ * Estimate the contribution of each scoring component for a job row.
+ * Returns an array of rows ready to render as mini-bar breakdown.
+ * Frontend-only: uses matched_skills + job fields; never calls the backend.
+ */
+export function estimateScoreBreakdown(j) {
+  const matched = (j.matched_skills || []).map(s => s.toLowerCase());
+  const title = (j.title || "").toLowerCase();
+  const desc = (j.description || "").toLowerCase();
+  const loc = ((j._loc && j._loc.display) || j.location || "").toLowerCase();
+
+  const coreHits = CORE_SKILLS.filter(s => matched.some(m => m.includes(s)));
+  const secHits = SECONDARY_SKILLS.filter(s => matched.some(m => m.includes(s)));
+
+  const coreEst = Math.min(W.core, (coreHits.length / 15) * W.core);
+
+  const secEst = Math.min(W.secondary, (secHits.length / 35) * W.secondary);
+
+  let titleEst = 0; let titleDriver = "no match";
+  if (/data engineer/.test(title))       { titleEst = W.title;       titleDriver = "data engineer"; }
+  else if (/ml engineer|machine learning engineer/.test(title)) { titleEst = W.title * (14/15); titleDriver = "ml engineer"; }
+  else if (/quant/.test(title))          { titleEst = W.title * (13/15); titleDriver = "quant"; }
+  else if (/analytics engineer/.test(title)) { titleEst = W.title * (12/15); titleDriver = "analytics engineer"; }
+  else if (/platform engineer/.test(title))  { titleEst = W.title * (8/15);  titleDriver = "platform engineer"; }
+  else if (/engineer|scientist/.test(title)) { titleEst = W.title * (5/15);  titleDriver = "engineer/scientist"; }
+
+  let locEst = 0; let locDriver = "no match";
+  if (/remote/.test(loc) || j._loc?.isRemote) { locEst = W.location; locDriver = "remote"; }
+  else if (/dallas|austin|tx|texas/.test(loc)) { locEst = W.location * 0.8; locDriver = "TX metro"; }
+
+  let expEst = 0; let expDriver = "none";
+  const expText = title + " " + desc;
+  if (/\bstaff\b|\bprincipal\b|\blead\b/.test(expText))    { expEst = W.experience;       expDriver = "staff/principal/lead"; }
+  else if (/\bsenior\b|\bsr\.?\b/.test(expText))           { expEst = W.experience * 0.9; expDriver = "senior"; }
+  else if (/4\+\s*years|5\+\s*years/.test(expText))        { expEst = W.experience * 0.7; expDriver = "4+ years"; }
+
+  const sponsorFlag = j.sponsorship;
+  let sponsEst = 0; let sponsDriver = "neutral";
+  if (sponsorFlag === 1)  { sponsEst =  W.sponsorship; sponsDriver = "H1B positive"; }
+  else if (sponsorFlag === -1) { sponsEst = -W.sponsorship; sponsDriver = "no sponsorship"; }
+
+  let salEst = 0; let salDriver = "no salary";
+  const smax = j.salary_max || 0;
+  if (smax >= 300000)      { salEst = W.salary;       salDriver = `$${Math.round(smax/1000)}K max`; }
+  else if (smax >= 220000) { salEst = W.salary * 0.8; salDriver = `$${Math.round(smax/1000)}K max`; }
+  else if (smax >= 150000) { salEst = W.salary * 0.5; salDriver = `$${Math.round(smax/1000)}K max`; }
+
+  const platEst = isPlatinum(j) ? W.platinum : 0;
+
+  const rows = [
+    { label:"Core skills",      maxPct:36, estPct:Math.round(coreEst*100),    driver: coreHits.length ? `${coreHits.length}/15: ${coreHits.slice(0,4).join(", ")}` : "none matched" },
+    { label:"Secondary skills", maxPct:17, estPct:Math.round(secEst*100),     driver: secHits.length  ? `${secHits.length}/35: ${secHits.slice(0,3).join(", ")}` : "none matched" },
+    { label:"Title relevance",  maxPct:15, estPct:Math.round(titleEst*100),   driver: titleDriver },
+    { label:"Location",         maxPct:10, estPct:Math.round(locEst*100),     driver: locDriver },
+    { label:"Experience level", maxPct:10, estPct:Math.round(expEst*100),     driver: expDriver },
+    { label:"Sponsorship",      maxPct: 8, estPct:Math.round(sponsEst*100),   driver: sponsDriver },
+    { label:"Salary tier",      maxPct: 4, estPct:Math.round(salEst*100),     driver: salDriver },
+    { label:"Platinum boost",   maxPct: 8, estPct:Math.round(platEst*100),    driver: isPlatinum(j) ? "Tier 0 company" : "not tier 0" },
+  ];
+  return rows;
+}
+
 /**
  * JobCard's inline style record. Frozen so React.memo never gets a new
  * identity from a recompute — every card shares the same prototype.

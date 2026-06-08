@@ -124,12 +124,11 @@ export function JobsTab({ state }) {
 
       {/* Job cards */}
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
-        {fj.slice(0, visibleCount).map((j, idx) => {
+        {fj.slice(0, visibleCount).map(j => {
           const coKey = (j.company || "").toLowerCase();
           return (
             <JobCard
               key={j.external_id}
-              rank={idx + 1}
               j={j}
               t={t}
               open={xJ === j.external_id}

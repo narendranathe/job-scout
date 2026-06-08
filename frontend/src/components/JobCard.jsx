@@ -39,6 +39,8 @@ import {
   likelySponsor,
   jobFitTone,
   stopProp,
+  getDreamRank,
+  estimateScoreBreakdown,
 } from "../lib/jobConstants.js";
 import { LogoImg } from "./LogoImg.jsx";
 import { Pill } from "./Pill.jsx";
@@ -61,12 +63,12 @@ function _JobCard({
   onFetchBestMatch,
   onToggleVersionRow,
   onDownloadResumePdf,
-  rank,
 }) {
   const sc = j.relevance_score || 0;
   const ats = ATS_META[j.ats] || ATS_META.unknown;
   const catLbl = ROLE_CATS.find(r => r.id === j._cat)?.label || "Other";
   const isApplied = j.application_status === 'applied';
+  const dreamRank = getDreamRank(j.company);
 
   const cardStyle = {
     background:t.cd,borderRadius:12,border:`1px solid ${t.bd}`,
@@ -130,7 +132,6 @@ function _JobCard({
           <LogoImg name={j.company} size={40} t={t}/>
           <div style={JC_STYLES.titleInner}>
             <div style={JC_STYLES.titleLine}>
-              {rank != null && <span style={{fontSize:11,fontWeight:700,color:t.txM,flexShrink:0}}>#{rank}</span>}
               <span style={{fontSize:17,fontWeight:700,color:t.tx,fontFamily:"'Playfair Display',serif"}}>{j.title}</span>
               {isApplied && <Pill ch={ST_LABEL.applied} c={ST_COLOR.applied} t={t}/>}
               <Pill ch={catLbl} c={t.bl} t={t}/>
@@ -139,6 +140,13 @@ function _JobCard({
             <div className="job-meta" style={{...JC_STYLES.metaRow, color:t.txS}}>
               <span style={{fontWeight:700}}>{j.company}</span>
               {isPlatinum(j) && <span style={JC_STYLES.platinum}>PLATINUM</span>}
+              {dreamRank != null && (
+                <span style={{fontSize:11,fontWeight:700,padding:"2px 7px",borderRadius:4,
+                  background:"#b8860b18",color:"#b8860b",border:"1px solid #b8860b40",
+                  whiteSpace:"nowrap",letterSpacing:".02em"}}>
+                  ★ Dream #{dreamRank}
+                </span>
+              )}
               <span>{j._loc.display||"—"}</span>
               {j._loc.state && <span style={{color:t.bl,fontWeight:600}}>📍 {j._loc.state}</span>}
               {j._loc.isRemote && <span style={{color:t.ok,fontWeight:700}}>🏠 Remote</span>}
@@ -151,14 +159,46 @@ function _JobCard({
         </div>
         <div style={JC_STYLES.scoreCluster}>
           {fitChip}
-          <div style={{width:52,height:52,borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",background:t.sBg(sc)}}>
-            <span style={{fontSize:20,fontWeight:800,color:t.sTx(sc),fontFamily:"'Playfair Display',serif"}}>{(sc*100).toFixed(0)}%</span>
+          <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+            <span style={{fontSize:10,fontWeight:600,color:t.txM,textTransform:"uppercase",letterSpacing:".06em"}}>Score</span>
+            <div style={{width:52,height:52,borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",background:t.sBg(sc)}}>
+              <span style={{fontSize:20,fontWeight:800,color:t.sTx(sc),fontFamily:"'Playfair Display',serif"}}>{(sc*100).toFixed(0)}%</span>
+            </div>
           </div>
           <span style={{fontSize:18,color:t.txM,transform:open?"rotate(180deg)":"",transition:"transform .2s"}}>▾</span>
         </div>
       </div>
       {open && (
         <div style={{padding:"0 20px 18px",borderTop:`1px solid ${t.bd}`}}>
+          {/* Score breakdown panel */}
+          {(() => {
+            const rows = estimateScoreBreakdown(j);
+            const total = rows.reduce((s,r) => s + r.estPct, 0);
+            return (
+              <div style={{margin:"14px 0 12px",padding:"12px 14px",borderRadius:10,background:`${t.bd}30`,border:`1px solid ${t.bd}`}}>
+                <div style={{fontSize:11,fontWeight:700,color:t.txM,textTransform:"uppercase",letterSpacing:".06em",marginBottom:10}}>
+                  Estimated score breakdown
+                </div>
+                <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                  {rows.map(row => (
+                    <div key={row.label} style={{display:"flex",alignItems:"center",gap:8,fontSize:11}}>
+                      <span style={{width:110,color:t.txM,flexShrink:0}}>{row.label}</span>
+                      <div style={{flex:1,height:6,borderRadius:3,background:`${t.bd}80`,overflow:"hidden"}}>
+                        <div style={{width:`${row.maxPct > 0 ? Math.min(100,(row.estPct/row.maxPct)*100) : 0}%`,height:"100%",background:t.ac,borderRadius:3,transition:"width .25s"}}/>
+                      </div>
+                      <span style={{width:30,textAlign:"right",fontWeight:700,color:t.tx,flexShrink:0}}>{row.estPct}%</span>
+                      <span style={{color:t.txM,flex:"0 1 140px",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={row.driver}>{row.driver}</span>
+                    </div>
+                  ))}
+                </div>
+                <div style={{marginTop:8,fontSize:11,color:t.txM,borderTop:`1px solid ${t.bd}`,paddingTop:6}}>
+                  Est. total: <strong style={{color:t.tx}}>{total}%</strong>
+                  {" "}· Stored: <strong style={{color:t.tx}}>{Math.round(sc*100)}%</strong>
+                  {" "}· <span style={{fontStyle:"italic"}}>Breakdown is an estimate; stored score is authoritative</span>
+                </div>
+              </div>
+            );
+          })()}
           <div style={JC_STYLES.skillsRow}>
             {(j.matched_skills||[]).map(s => <Pill key={s} ch={s} t={t} big/>)}
             {(j.sponsorship||likelySponsor(j)) && <Pill ch="🛂 Likely H1B" c={t.vi} t={t} big/>}
