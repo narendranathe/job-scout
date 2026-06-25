@@ -72,14 +72,18 @@ def _profile_auth():
 def api_get_profile():
     """Get user profile (preferences + default_resume_version + onboarding flags).
 
-    Auth: deliberately left open. The payload is the user's own
-    preferences — not credentials. The pin_hash is stripped in
-    ``get_profile`` so readers can't even mount an offline brute-force.
+    Auth: uses _profile_auth() so Supabase JWT / Bearer / session-cookie
+    callers get their own user-scoped row. Unauthenticated callers fall
+    through to the "legacy" row (dev-mode passthrough when API_SECRET
+    is unset) matching the existing single-user behaviour.
     """
+    deny, user_id = _profile_auth()
+    if deny is not None:
+        return deny
     try:
         from storage.profile_manager import init_profile_tables, get_profile
         init_profile_tables(_config.DB_PATH)
-        return jsonify(get_profile(db_path=_config.DB_PATH)), 200, {"Access-Control-Allow-Origin": "*"}
+        return jsonify(get_profile(user_id=user_id, db_path=_config.DB_PATH)), 200, {"Access-Control-Allow-Origin": "*"}
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

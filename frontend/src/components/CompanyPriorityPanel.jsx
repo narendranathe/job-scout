@@ -169,6 +169,7 @@ export default function CompanyPriorityPanel({
           >
             {dialOpen ? '▲' : '▼'} Tune score weights
           </button>
+          {/* weights stored and displayed but not yet applied to scoring */}
           {dialOpen && <ScoreWeightDials weights={weights} onChange={onWeightsChange} />}
         </div>
       )}

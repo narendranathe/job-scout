@@ -370,6 +370,7 @@ function getPriorityGroup(companyName, priorityCompanies, mode) {
   return idx === -1 ? 999 : idx
 }
 
+// normalizeWeights: reserved for future weighted scoring — currently scores use fixed rank multipliers
 function normalizeWeights(raw) {
   const total = Object.values(raw).reduce((a, b) => a + b, 0)
   if (!total) return { skills: 0.53, role_fit: 0.25, logistics: 0.22, company_tier: 0.08 }
@@ -382,10 +383,12 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true)
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setUser(data?.session?.user ?? null)
-      setAuthLoading(false)
-    })
+    supabase.auth.getSession()
+      .then(({ data }) => {
+        setUser(data?.session?.user ?? null)
+        setAuthLoading(false)
+      })
+      .catch(() => setAuthLoading(false))
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => {
       setUser(session?.user ?? null)
     })
@@ -507,6 +510,7 @@ export default function App() {
     (async () => {
       try {
         const r = await fetch(`${RENDER_API}/api/profile`, {
+          headers: authHeaders(),
           signal: AbortSignal.timeout(8000),
         });
         if (!r.ok || cancelled) return;
