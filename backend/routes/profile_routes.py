@@ -46,7 +46,7 @@ def api_get_profile():
     try:
         from storage.profile_manager import init_profile_tables, get_profile
         init_profile_tables(_config.DB_PATH)
-        return jsonify(get_profile(_config.DB_PATH)), 200, {"Access-Control-Allow-Origin": "*"}
+        return jsonify(get_profile(db_path=_config.DB_PATH)), 200, {"Access-Control-Allow-Origin": "*"}
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -87,13 +87,13 @@ def api_update_profile():
         if "tracked_companies" in payload:
             try:
                 prior_tracked = list(
-                    get_profile(_config.DB_PATH).get("tracked_companies", [])
+                    get_profile(db_path=_config.DB_PATH).get("tracked_companies", [])
                 )
             except Exception:
                 prior_tracked = []
 
         try:
-            update_profile(payload, _config.DB_PATH)
+            update_profile(updates=payload, db_path=_config.DB_PATH)
         except ProfileValidationError as ve:
             # Validation failures (e.g. unknown default_resume_version key,
             # negative min_total_comp) are client errors → 400 lets the
@@ -148,7 +148,7 @@ def api_upload_resume():
         resume_text = data.get("resume_text", "").strip()
         if not resume_text:
             return jsonify({"error": "resume_text field required"}), 400
-        skills = upload_resume(resume_text, _config.DB_PATH)
+        skills = upload_resume(resume_text=resume_text, db_path=_config.DB_PATH)
         return jsonify({
             "status": "ok",
             "skills_extracted": len(skills),
@@ -173,7 +173,7 @@ def api_verify_pin():
         from storage.profile_manager import init_profile_tables, verify_pin
         init_profile_tables(_config.DB_PATH)
         pin = (request.get_json() or {}).get("pin", "")
-        return jsonify({"verified": verify_pin(pin, _config.DB_PATH)}), 200, {
+        return jsonify({"verified": verify_pin(pin=pin, db_path=_config.DB_PATH)}), 200, {
             "Access-Control-Allow-Origin": "*"
         }
     except Exception as e:
@@ -195,7 +195,7 @@ def api_set_pin():
         pin = (request.get_json() or {}).get("pin", "")
         if len(pin) < 4:
             return jsonify({"error": "PIN must be at least 4 characters"}), 400
-        set_pin(pin, _config.DB_PATH)
+        set_pin(pin=pin, db_path=_config.DB_PATH)
         return jsonify({"status": "pin_set"}), 200, {"Access-Control-Allow-Origin": "*"}
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -243,7 +243,7 @@ def api_login():
         # semantics), which would otherwise let an unauthenticated
         # attacker mint a 30-day session cookie + CSRF on a fresh
         # install before the owner has run the wizard.
-        if not has_pin(_config.DB_PATH):
+        if not has_pin(db_path=_config.DB_PATH):
             # 412 Precondition Failed is semantically more accurate than
             # 403 here: it's not that the caller lacks permission, it's
             # that the prerequisite resource (the PIN) doesn't exist yet.
@@ -253,7 +253,7 @@ def api_login():
                 "Access-Control-Allow-Origin": "*"
             }
         pin = (request.get_json(silent=True) or {}).get("pin", "")
-        if not verify_pin(pin, _config.DB_PATH):
+        if not verify_pin(pin=pin, db_path=_config.DB_PATH):
             # Constant-ish delay path: verify_pin already does the pbkdf2
             # work for both correct and incorrect PINs, so this 401 has
             # the same timing profile as a 200.
