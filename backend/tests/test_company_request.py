@@ -48,7 +48,7 @@ def test_files_github_issue(monkeypatch):
     fake_response.__enter__ = lambda s: s
     fake_response.__exit__ = mock.MagicMock(return_value=False)
 
-    with mock.patch("urllib.request.urlopen", return_value=fake_response):
+    with mock.patch("routes.company_request_routes.urllib.request.urlopen", return_value=fake_response):
         with _app().test_client() as c:
             resp = c.post(
                 "/api/companies/request",

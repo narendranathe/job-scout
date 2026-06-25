@@ -45,6 +45,11 @@ def request_company():
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             result = json.loads(resp.read())
-        return flask.jsonify({"issue_url": result["html_url"]}), 201
+        issue_url = result.get("html_url", "")
+        if not issue_url:
+            return flask.jsonify({"error": "GitHub response missing issue URL"}), 502
+        return flask.jsonify({"issue_url": issue_url}), 201
     except urllib.error.HTTPError as e:
         return flask.jsonify({"error": f"GitHub API error: {e.code}"}), 502
+    except (urllib.error.URLError, OSError):
+        return flask.jsonify({"error": "GitHub unreachable"}), 502
