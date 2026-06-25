@@ -48,3 +48,37 @@ def test_api_secret_passthrough(monkeypatch):
         resp = c.get("/protected", headers={"Authorization": "Bearer my-scraper-secret"})
         assert resp.status_code == 200
         assert resp.json["user_id"] == "scraper"
+
+
+def test_check_auth_valid_jwt():
+    """check_auth() sets flask.g and returns None on valid JWT."""
+    from middleware.supabase_auth import check_auth
+    app = flask.Flask(__name__)
+
+    @app.route("/check-protected")
+    def check_protected():
+        result = check_auth()
+        if result is not None:
+            return result
+        return flask.jsonify({"user_id": flask.g.user_id})
+
+    with app.test_client() as c:
+        resp = c.get("/check-protected", headers={"Authorization": f"Bearer {_token()}"})
+        assert resp.status_code == 200
+        assert resp.json["user_id"] == "user-abc"
+
+
+def test_check_auth_missing_header():
+    from middleware.supabase_auth import check_auth
+    app = flask.Flask(__name__)
+
+    @app.route("/check-protected2")
+    def check_protected2():
+        result = check_auth()
+        if result is not None:
+            return result
+        return flask.jsonify({"ok": True})
+
+    with app.test_client() as c:
+        resp = c.get("/check-protected2")
+        assert resp.status_code == 401

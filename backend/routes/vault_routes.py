@@ -212,23 +212,34 @@ def _vault_require_auth():
         return None
     if request.path == "/api/vault/parse-filename":
         return None
-    # Local import so a circular dependency between routes._auth and
-    # routes.vault_routes can't accidentally creep in via top-level imports.
-    from routes._auth import require_auth
-    deny = require_auth(request)
+    # Primary check: the legacy routes._auth gate handles dev-mode
+    # passthrough (API_SECRET unset), API_SECRET Bearer + Origin safety,
+    # and session-cookie + CSRF.  Most requests take this path.
+    # Local import avoids circular dependency between routes._auth and
+    # routes.vault_routes at module load time.
+    from routes._auth import require_auth as _legacy_require_auth
+    deny = _legacy_require_auth(request)
     if deny is None:
         return None
-    body, status = deny
-    # Log the failure so operators can detect brute-force attempts.
-    # Deliberately DO NOT log the offending token — that would shovel
-    # near-miss guesses into log aggregators, defeating the secret.
+    # Legacy gate rejected the request. If it was because neither a valid
+    # API_SECRET Bearer nor a session cookie was present (status 401 with
+    # "unauthorized"), check whether the caller supplied a Supabase JWT.
+    # This allows Supabase-authenticated users to call vault endpoints
+    # without also setting an API_SECRET. Supabase JWTs are not handled
+    # by the legacy gate, so check_auth() is the correct secondary path.
+    _body, _status = deny
+    if _status == 401 and _body.get("error") == "unauthorized":
+        from middleware.supabase_auth import check_auth
+        result = check_auth()
+        if result is None:
+            return None
+    # All auth paths rejected.
     log.warning(
-        "vault auth rejected (%s) from %s for %s",
-        body.get("error", "unauthorized"),
+        "vault auth rejected from %s for %s",
         request.remote_addr,
         request.path,
     )
-    return jsonify(body), status
+    return jsonify(_body), _status
 
 _TOP_N_CAP = 50
 
