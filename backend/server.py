@@ -104,6 +104,10 @@ app.register_blueprint(resume_version_bp)
 # pickers. /api/role-taxonomy, /api/companies-roster, /api/locations-roster.
 from routes.roster_routes import roster_bp
 app.register_blueprint(roster_bp)
+# Company request endpoint — POST /api/companies/request
+# Files GitHub Issues via GITHUB_TOKEN for unknown companies.
+from routes.company_request_routes import company_request_bp
+app.register_blueprint(company_request_bp)
 
 
 # State + state singleton are imported above from core.state (PR 2/8).

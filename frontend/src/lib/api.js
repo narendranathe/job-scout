@@ -1,3 +1,5 @@
+import { currentAccessToken } from './supabase'
+
 /**
  * API URL + auth-token helpers — extracted from App.jsx (CLAUDE.md
  * tech-debt #1, App.jsx split).
@@ -54,6 +56,8 @@ export const apiToken = () => {
 };
 
 export const authHeaders = () => {
-  const t = apiToken();
-  return t ? { Authorization: `Bearer ${t}` } : {};
-};
+  if (currentAccessToken) return { Authorization: `Bearer ${currentAccessToken}` }
+  // Fallback to legacy vault_token during transition period
+  const t = apiToken()
+  return t ? { Authorization: `Bearer ${t}` } : {}
+}
