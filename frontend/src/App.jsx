@@ -56,6 +56,8 @@ import { RareTab } from "./tabs/RareTab.jsx";
 import { TrackerTab } from "./tabs/TrackerTab.jsx";
 import { VaultTab } from "./tabs/VaultTab.jsx";
 import { JobsTab } from "./tabs/JobsTab.jsx";
+import { supabase } from './lib/supabase'
+import LoginPage from './components/LoginPage'
 
 // ATS_META imported from ./lib/jobConstants.js (top of file).
 
@@ -353,6 +355,20 @@ function useApplications() {
    ═══════════════════════════════════════════════════════════════════ */
 export default function App() {
   const [mode,setMode] = useState("light");
+  const [user, setUser] = useState(null)
+  const [authLoading, setAuthLoading] = useState(true)
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setUser(data?.session?.user ?? null)
+      setAuthLoading(false)
+    })
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => {
+      setUser(session?.user ?? null)
+    })
+    return () => subscription.unsubscribe()
+  }, [])
+
   const t = TH[mode];
   const {data,loading,error,source,health,lastUpdated,refetch} = useJobData();
   const [tab,setTab] = useState("jobs");
@@ -1727,6 +1743,13 @@ export default function App() {
   // the wizard is active (the wizard owns the no-cookie flow itself).
   const loginNeeded = !wizardActive && shouldShowLogin(profile);
   const dashboardMode = deriveMode(profile);
+
+  if (authLoading) return (
+    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
+      Loading…
+    </div>
+  )
+  if (!user) return <LoginPage />
 
   return (
     <div style={{minHeight:"100vh",background:t.bg,fontFamily:"'Source Sans 3',sans-serif",color:t.tx,fontSize:16}}>
