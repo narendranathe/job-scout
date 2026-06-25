@@ -2029,6 +2029,13 @@ export default function App() {
             vdMapByJob, expandedByJob, pdfStateByJob,
             toggleCardOpen, saveApp, removeApp, markApplied,
             fetchBestMatch, toggleVersionRow, downloadResumePdf,
+            roster: companiesRoster,
+            priorityCompanies,
+            onCompaniesChange: handleCompaniesChange,
+            priorityMode,
+            onModeChange: handleModeChange,
+            scoreWeights,
+            onWeightsChange: handleWeightsChange,
           }} />
         )}
 
