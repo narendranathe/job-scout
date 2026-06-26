@@ -58,6 +58,8 @@ import { VaultTab } from "./tabs/VaultTab.jsx";
 import { JobsTab } from "./tabs/JobsTab.jsx";
 import { supabase } from './lib/supabase'
 import LoginPage from './components/LoginPage'
+import UserChip from './components/UserChip'
+import { ProfileTab } from './tabs/ProfileTab'
 
 // ATS_META imported from ./lib/jobConstants.js (top of file).
 
@@ -500,6 +502,10 @@ export default function App() {
   // freshly-vacated slot. Mutating a ref doesn't trigger a re-render.
   const jobFitPumpRef = useRef(() => {});
   const prioritySaveTimer = useRef(null)
+  const [dreamRoleKeywords, setDreamRoleKeywords] = useState([])
+  const [preferredLocations, setPreferredLocations] = useState([])
+  const rolesTimer = useRef(null)
+  const locationsTimer = useRef(null)
 
   // Fetch the profile once on mount so we know whether to render chips.
   // No retry/backoff — if /api/profile is offline, we just don't show
@@ -529,6 +535,14 @@ export default function App() {
           setScoreWeights(sw)
         } else if (typeof sw === 'string') {
           try { setScoreWeights(JSON.parse(sw)) } catch {}
+        }
+        const drk = d.dream_role_keywords
+        if (drk) {
+          setDreamRoleKeywords(Array.isArray(drk) ? drk : (typeof drk === 'string' ? (() => { try { return JSON.parse(drk) } catch { return [] } })() : []))
+        }
+        const pl = d.preferred_locations
+        if (pl) {
+          setPreferredLocations(Array.isArray(pl) ? pl : (typeof pl === 'string' ? (() => { try { return JSON.parse(pl) } catch { return [] } })() : []))
         }
       } catch (_e) { /* offline / 5xx — silently no chip */ }
     })();
@@ -579,6 +593,36 @@ export default function App() {
   const handleWeightsChange = (next) => {
     setScoreWeights(next)
     savePriorityToProfile(priorityCompanies, priorityMode, next)
+  }
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut().catch(() => {})
+  }
+
+  const handleRolesChange = (next) => {
+    setDreamRoleKeywords(next)
+    clearTimeout(rolesTimer.current)
+    rolesTimer.current = setTimeout(async () => {
+      if (!RENDER_API) return
+      await fetch(`${RENDER_API}/api/profile`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ dream_role_keywords: JSON.stringify(next) }),
+      }).catch(() => {})
+    }, 300)
+  }
+
+  const handleLocationsChange = (next) => {
+    setPreferredLocations(next)
+    clearTimeout(locationsTimer.current)
+    locationsTimer.current = setTimeout(async () => {
+      if (!RENDER_API) return
+      await fetch(`${RENDER_API}/api/profile`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ preferred_locations: JSON.stringify(next) }),
+      }).catch(() => {})
+    }, 300)
   }
 
   const fetchBestMatch = useCallback(async (job) => {
@@ -1824,7 +1868,7 @@ export default function App() {
   );
 
   const trackerCount = Object.keys(apps).length;
-  const TABS = ["jobs","rare","analytics","companies","trends","tracker","vault","pipeline","monitor"];
+  const TABS = ["jobs","rare","analytics","companies","trends","tracker","vault","pipeline","monitor","profile"];
 
   // Slice 4 gate: returning user with a PIN but no session cookie →
   // full-page LoginScreen blocking everything else. We skip this when
@@ -1881,7 +1925,7 @@ export default function App() {
                   color:tab===tb?"#fff":t.txM,
                   fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit",
                   textTransform:"capitalize",transition:"all .15s",flexShrink:0}}>
-                {tb==="monitor"?"🖥 Monitor":tb==="tracker"?`📋 Tracker${trackerCount?" ("+trackerCount+")":""}`:tb==="pipeline"?`🗂 Pipeline${applications.length?" ("+applications.length+")":""}`:tb==="rare"?`🎯 Rare${stats.rare_skills?" ("+stats.rare_skills+")":""}`:tb==="vault"?`📁 Vault${vaultFiles.length?" ("+vaultFiles.length+")":""}`:tb}
+                {tb==="monitor"?"🖥 Monitor":tb==="tracker"?`📋 Tracker${trackerCount?" ("+trackerCount+")":""}`:tb==="pipeline"?`🗂 Pipeline${applications.length?" ("+applications.length+")":""}`:tb==="rare"?`🎯 Rare${stats.rare_skills?" ("+stats.rare_skills+")":""}`:tb==="vault"?`📁 Vault${vaultFiles.length?" ("+vaultFiles.length+")":""}`:tb==="profile"?"👤 Profile":tb}
               </button>
             ))}
           </div>
@@ -1891,6 +1935,7 @@ export default function App() {
             style={{padding:"8px 12px",borderRadius:8,border:`1px solid ${t.bd}`,background:"transparent",color:t.txS,fontSize:16,cursor:"pointer",flexShrink:0,marginRight:6}}>
             ⚙️{!RENDER_API && <span style={{marginLeft:4, fontSize:12, color:t.wm}}>setup</span>}
           </button>
+          <UserChip user={user} onLogout={handleLogout} onOpenProfile={() => setTab('profile')} t={t} />
           {/* Theme toggle */}
           <button onClick={()=>setMode(m=>m==="light"?"dark":"light")}
             style={{padding:"8px 14px",borderRadius:8,border:`1px solid ${t.bd}`,background:"transparent",color:t.txS,fontSize:16,cursor:"pointer",flexShrink:0}}>
@@ -2040,6 +2085,20 @@ export default function App() {
             onModeChange: handleModeChange,
             scoreWeights,
             onWeightsChange: handleWeightsChange,
+            onOpenProfile: () => setTab('profile'),
+          }} />
+        )}
+
+        {/* ════════════ PROFILE ════════════ */}
+        {tab==='profile' && (
+          <ProfileTab state={{
+            t, user, onLogout: handleLogout,
+            companiesRoster,
+            priorityCompanies, onCompaniesChange: handleCompaniesChange,
+            priorityMode, onModeChange: handleModeChange,
+            scoreWeights, onWeightsChange: handleWeightsChange,
+            dreamRoleKeywords, onRolesChange: handleRolesChange,
+            preferredLocations, onLocationsChange: handleLocationsChange,
           }} />
         )}
 
