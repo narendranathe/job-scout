@@ -9,7 +9,7 @@ function avatarColor(email) {
   return palette[Math.abs(h) % palette.length]
 }
 
-function ChipEditor({ chips, onChange, placeholder }) {
+function ChipEditor({ chips = [], onChange, placeholder }) {
   const [input, setInput] = useState('')
 
   const add = (raw) => {

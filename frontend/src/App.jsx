@@ -25,7 +25,7 @@ import { MissingPinBanner } from "./components/MissingPinBanner.jsx";
 // Slice 4 — login + preview mode + admin reset hook.
 import { LoginScreen } from "./components/LoginScreen.jsx";
 import { PreviewModeBanner } from "./components/PreviewModeBanner.jsx";
-import { shouldShowLogin, deriveMode, setCsrf } from "./lib/auth.js";
+import { shouldShowLogin, deriveMode, setCsrf, logout } from "./lib/auth.js";
 // Vault tab row (memoized, PR 6/N).
 import { VaultRow } from "./components/VaultRow.jsx";
 // Shared job constants + helpers (PR 7/N + PR 8/N).
@@ -512,6 +512,7 @@ export default function App() {
   // chips, which is the same as "no default configured".
   useEffect(() => {
     if (!RENDER_API) return;
+    if (!user) return;
     let cancelled = false;
     (async () => {
       try {
@@ -547,7 +548,7 @@ export default function App() {
       } catch (_e) { /* offline / 5xx — silently no chip */ }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [user]);
 
   // Fetch companies roster for autocomplete suggestions
   useEffect(() => {
@@ -596,6 +597,7 @@ export default function App() {
   }
 
   const handleLogout = async () => {
+    await logout(RENDER_API).catch(() => {})
     await supabase.auth.signOut().catch(() => {})
   }
 
@@ -624,6 +626,14 @@ export default function App() {
       }).catch(() => {})
     }, 300)
   }
+
+  useEffect(() => {
+    return () => {
+      clearTimeout(prioritySaveTimer.current)
+      clearTimeout(rolesTimer.current)
+      clearTimeout(locationsTimer.current)
+    }
+  }, [])
 
   const fetchBestMatch = useCallback(async (job) => {
     const key = job.external_id;
