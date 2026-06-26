@@ -33,6 +33,7 @@ export function JobsTab({ state }) {
     fetchBestMatch, toggleVersionRow, downloadResumePdf,
     roster, priorityCompanies, onCompaniesChange,
     priorityMode, onModeChange, scoreWeights, onWeightsChange,
+    onOpenProfile,
   } = state;
 
   return (
@@ -108,7 +109,7 @@ export function JobsTab({ state }) {
             weights={scoreWeights || { skills: 53, role_fit: 25, logistics: 22, company_tier: 8 }}
             onWeightsChange={onWeightsChange}
             roster={roster || []}
-            onOpenAddSearch={() => {}}
+            onOpenAddSearch={onOpenProfile}
           />
           <Chips label="Role Category"   options={opts.roles}  selected={selRoles}  onChange={setSelRoles}  t={t}/>
           <Chips label="Experience Level" options={opts.exp}    selected={selExp}    onChange={setSelExp}    t={t}/>

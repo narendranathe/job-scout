@@ -241,8 +241,6 @@ class ProfileValidationError(ValueError):
 
 
 def update_profile(user_id: str = "legacy", updates: dict = None, db_path: str = DB_PATH):
-    if updates is None:
-        updates = {}
     """Update allowed profile fields.
 
     ``default_resume_version`` is validated against the resume_versions
@@ -259,6 +257,8 @@ def update_profile(user_id: str = "legacy", updates: dict = None, db_path: str =
     * ``onboarded_at`` — ISO-8601 timestamp the wizard sets on completion
     * ``skip_pin_acknowledged`` — bool; user accepted the no-PIN warning
     """
+    if updates is None:
+        updates = {}
     LIST_FIELDS = {
         "custom_skills", "preferred_locations",
         "dream_companies", "dream_role_keywords",
