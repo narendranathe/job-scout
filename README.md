@@ -12,10 +12,13 @@ Zero-cost, real-time job scraper + intelligent React dashboard built for data en
 | **Smart scheduling** | Skips 12am–5:30am CST — no new roles overnight |
 | **Dream job alerts** | Discord webhook + Telegram Bot — free forever, fires instantly |
 | **Ranked search** | Exact title → title contains → company (alias-aware) → skills → description |
+| **Search autocomplete** | Ranked company suggestions dropdown — prefix first, then substring, tier badges |
+| **Company priority panel** | Drag-to-reorder priority list with Score Boost (×1.5→×1.05 multipliers) or Hard Sort (pin to top) |
 | **Resume versions** | Store _DE, _GS, _SWE, _AI, custom — extract skills from each |
 | **Application memory** | Track status, resume used, notes; see full history per company |
 | **"Applied here" badge** | Expand any job card to see your history at that company |
-| **Profile & PIN** | Store preferences, dream companies, access PIN via Render API |
+| **Multi-user Supabase auth** | GitHub + Google OAuth + email magic link; each user gets their own profile, priorities, and preferences |
+| **Profile & PIN** | Legacy PIN auth still works alongside Supabase for dev/scraper use |
 | **Mobile responsive** | Works on phone, tablet, desktop |
 | **Manual triggers panel** | Live progress bar + concurrency-safe scrape + 5 admin ops (Doctor, Purge, Re-extract, Vault Re-index, Clear Cache) |
 | **Live scrape progress** | Real-time polling: current company, completed/total, jobs found, ETA |
@@ -116,6 +119,8 @@ In GitHub: **Settings → Pages → Source: GitHub Actions**
 Add secrets (**Settings → Secrets → Actions**):
 - `RENDER_URL` — your Render URL
 - `API_SECRET` — optional auth token
+- `VITE_SUPABASE_URL` — Supabase project URL (required for auth)
+- `VITE_SUPABASE_ANON_KEY` — Supabase anon key (required for auth)
 
 **6. Set up alerts (Discord + Telegram — free forever)**
 
@@ -411,10 +416,30 @@ GitHub free tier: **2,000 min/month** — well within budget.
 
 ---
 
+## Authentication Setup (Supabase)
+
+JobScout uses Supabase for multi-user auth. Add these to your Render service environment and GitHub Actions secrets:
+
+| Variable | Where | Value |
+|----------|-------|-------|
+| `SUPABASE_JWT_SECRET` | Render env | Supabase Settings → API → JWT Settings → JWT Secret |
+| `GITHUB_TOKEN` | Render env | GitHub PAT with `repo` scope — enables auto-filing issues for unknown companies |
+| `VITE_SUPABASE_URL` | GitHub Actions secret | Supabase Settings → API → Project URL |
+| `VITE_SUPABASE_ANON_KEY` | GitHub Actions secret | Supabase Settings → API → `anon / public` key |
+
+In Supabase → Authentication → Providers: enable GitHub and/or Google (each needs an OAuth App from that platform with the Supabase callback URL).
+
+In Supabase → Authentication → URL Configuration → Site URL: set to your GitHub Pages URL (e.g. `https://yourusername.github.io/job-scout/`).
+
+---
+
 ## Roadmap
 
 Features intentionally deferred (not in scope for free-tier personal use):
 
+- **Score weight dial wiring** — ScoreWeightDials UI is live and persisted; multiply each relevance component by the normalized weight to make sliders affect ranking
+- **CompanyPriorityPanel add-company modal** — connect the "+" button to an overlay using CompanyAutocomplete; unify the two "add to priority" paths
+- **LinkedIn OAuth** — LoginPage has the button; Supabase provider setup needed
 - **Vector embeddings** — sentence-transformers for true semantic job matching (needs ML model runtime)
 - **AI resume tailoring** — Claude API to rewrite bullets targeting a specific JD
 - **PDF auto-import** — read local PDF resume files server-side (security boundary)
