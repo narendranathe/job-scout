@@ -9,6 +9,8 @@
 import { Chips } from "../components/Chips.jsx";
 import { JobCard } from "../components/JobCard.jsx";
 import { EMPTY_ARR, EMPTY_OBJ } from "../lib/jobConstants.js";
+import CompanyAutocomplete from '../components/CompanyAutocomplete'
+import CompanyPriorityPanel from '../components/CompanyPriorityPanel'
 
 const PREFERRED_STATES = ["TX","CA","NY","WA","CO","IL","GA","MA"];
 const PREFERRED_CITIES = ["Remote","Dallas","Austin","Plano","Houston","San Francisco","New York","Seattle"];
@@ -29,14 +31,26 @@ export function JobsTab({ state }) {
     vdMapByJob, expandedByJob, pdfStateByJob,
     toggleCardOpen, saveApp, removeApp, markApplied,
     fetchBestMatch, toggleVersionRow, downloadResumePdf,
+    roster, priorityCompanies, onCompaniesChange,
+    priorityMode, onModeChange, scoreWeights, onWeightsChange,
   } = state;
 
   return (
     <div>
       {/* Filter bar */}
       <div className="filter-bar">
-        <input placeholder="Search jobs, skills, companies..." value={q} onChange={e=>sQ(e.target.value)}
-          style={{...iS,flex:"1 1 200px",maxWidth:340}}/>
+        <CompanyAutocomplete
+          value={q}
+          onChange={sQ}
+          roster={roster || []}
+          style={{ flex: '1 1 200px', maxWidth: 340 }}
+          onAddToPriority={(name) => {
+            if (priorityCompanies && !priorityCompanies.find(c => c.name === name)) {
+              const inRoster = (roster || []).some(r => r.name.toLowerCase() === name.toLowerCase())
+              onCompaniesChange([...priorityCompanies, { name, status: inRoster ? 'active' : 'pending' }])
+            }
+          }}
+        />
         <button onClick={()=>setRemoteOnly(r=>!r)}
           style={{padding:"10px 14px",borderRadius:8,border:`1.5px solid ${remoteOnly?t.ac:t.bd}`,background:remoteOnly?t.acL:"transparent",color:remoteOnly?t.ac:t.txM,fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
           🏠 Remote
@@ -86,6 +100,16 @@ export function JobsTab({ state }) {
       {/* Expanded filters */}
       {showFilters && (
         <div style={{background:t.cd,borderRadius:14,padding:22,border:`1px solid ${t.bd}`,marginBottom:18,display:"flex",flexDirection:"column",gap:18,boxShadow:t.shS}}>
+          <CompanyPriorityPanel
+            companies={priorityCompanies || []}
+            onCompaniesChange={onCompaniesChange}
+            mode={priorityMode || 'score_boost'}
+            onModeChange={onModeChange}
+            weights={scoreWeights || { skills: 53, role_fit: 25, logistics: 22, company_tier: 8 }}
+            onWeightsChange={onWeightsChange}
+            roster={roster || []}
+            onOpenAddSearch={() => {}}
+          />
           <Chips label="Role Category"   options={opts.roles}  selected={selRoles}  onChange={setSelRoles}  t={t}/>
           <Chips label="Experience Level" options={opts.exp}    selected={selExp}    onChange={setSelExp}    t={t}/>
           <Chips label="State"           options={opts.states} selected={selStates} onChange={setSelStates} t={t} pinned={PREFERRED_STATES}/>

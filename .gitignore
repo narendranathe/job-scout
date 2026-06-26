@@ -81,3 +81,7 @@ resume_narendranath.tex
 backend/resume_vault/
 .claude-memory.md
 .claude/worktrees/
+
+# ── Supabase / feature-branch env files ───────────────────────────────────────
+backend/.env
+frontend/.env.local

@@ -77,7 +77,7 @@ def test_migration_is_idempotent(db):
 
 
 def test_get_profile_returns_new_field_defaults(db):
-    p = get_profile(db)
+    p = get_profile(db_path=db)
     assert p["tracked_companies"] == []
     assert p["min_total_comp"] == 0
     assert p["show_unsalaried"] is True  # coerced from SQLite int
@@ -89,57 +89,57 @@ def test_get_profile_returns_new_field_defaults(db):
 
 def test_update_tracked_companies_round_trip(db):
     update_profile(
-        {"tracked_companies": ["Acme Corp", "Beta Inc"]}, db
+        updates={"tracked_companies": ["Acme Corp", "Beta Inc"]}, db_path=db
     )
-    p = get_profile(db)
+    p = get_profile(db_path=db)
     assert p["tracked_companies"] == ["Acme Corp", "Beta Inc"]
 
 
 def test_update_min_total_comp_validates_negative(db):
     with pytest.raises(ProfileValidationError, match=r"min_total_comp.*>= 0"):
-        update_profile({"min_total_comp": -1}, db)
+        update_profile(updates={"min_total_comp": -1}, db_path=db)
 
 
 def test_update_min_total_comp_validates_non_integer(db):
     with pytest.raises(ProfileValidationError):
-        update_profile({"min_total_comp": "twelve"}, db)
+        update_profile(updates={"min_total_comp": "twelve"}, db_path=db)
 
 
 def test_update_min_total_comp_accepts_int_string(db):
     """JSON sends numbers as numbers, but sloppy clients send strings."""
-    update_profile({"min_total_comp": "150000"}, db)
-    assert get_profile(db)["min_total_comp"] == 150000
+    update_profile(updates={"min_total_comp": "150000"}, db_path=db)
+    assert get_profile(db_path=db)["min_total_comp"] == 150000
 
 
 def test_update_show_unsalaried_bool_coercion(db):
-    update_profile({"show_unsalaried": False}, db)
-    assert get_profile(db)["show_unsalaried"] is False
-    update_profile({"show_unsalaried": 1}, db)
-    assert get_profile(db)["show_unsalaried"] is True
-    update_profile({"show_unsalaried": "false"}, db)
-    assert get_profile(db)["show_unsalaried"] is False
+    update_profile(updates={"show_unsalaried": False}, db_path=db)
+    assert get_profile(db_path=db)["show_unsalaried"] is False
+    update_profile(updates={"show_unsalaried": 1}, db_path=db)
+    assert get_profile(db_path=db)["show_unsalaried"] is True
+    update_profile(updates={"show_unsalaried": "false"}, db_path=db)
+    assert get_profile(db_path=db)["show_unsalaried"] is False
 
 
 def test_update_onboarded_at_stores_iso_timestamp(db):
     iso = "2026-05-17T12:34:56+00:00"
-    update_profile({"onboarded_at": iso}, db)
-    assert get_profile(db)["onboarded_at"] == iso
+    update_profile(updates={"onboarded_at": iso}, db_path=db)
+    assert get_profile(db_path=db)["onboarded_at"] == iso
 
 
 def test_update_onboarded_at_can_be_cleared(db):
-    update_profile({"onboarded_at": "2026-05-17T12:00:00+00:00"}, db)
-    update_profile({"onboarded_at": None}, db)
-    assert get_profile(db)["onboarded_at"] is None
+    update_profile(updates={"onboarded_at": "2026-05-17T12:00:00+00:00"}, db_path=db)
+    update_profile(updates={"onboarded_at": None}, db_path=db)
+    assert get_profile(db_path=db)["onboarded_at"] is None
 
 
 def test_skip_pin_acknowledged_flag(db):
-    update_profile({"skip_pin_acknowledged": True}, db)
-    assert get_profile(db)["skip_pin_acknowledged"] is True
+    update_profile(updates={"skip_pin_acknowledged": True}, db_path=db)
+    assert get_profile(db_path=db)["skip_pin_acknowledged"] is True
 
 
 def test_has_pin_flips_true_after_set_pin(db):
     from storage.profile_manager import set_pin
-    set_pin("1234", db)
-    p = get_profile(db)
+    set_pin(pin="1234", db_path=db)
+    p = get_profile(db_path=db)
     assert p["has_pin"] is True
     assert "pin_hash" not in p

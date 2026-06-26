@@ -57,7 +57,7 @@ def client_with_pin(client):
     """Set a PIN on the server so login flows have something to validate."""
     from storage.profile_manager import set_pin
     # Tests use DB_PATH from env; set_pin honours that.
-    set_pin("1234", os.environ["DB_PATH"])
+    set_pin(pin="1234", db_path=os.environ["DB_PATH"])
     return client
 
 

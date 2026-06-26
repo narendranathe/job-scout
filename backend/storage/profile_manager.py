@@ -117,6 +117,7 @@ def init_profile_tables(db_path: str = DB_PATH):
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS user_profile (
             id INTEGER PRIMARY KEY,
+            user_id TEXT NOT NULL DEFAULT 'legacy',
             pin_hash TEXT DEFAULT '',
             resume_text TEXT DEFAULT '',
             extracted_skills TEXT DEFAULT '[]',
@@ -130,6 +131,9 @@ def init_profile_tables(db_path: str = DB_PATH):
             onboarded_at TEXT,
             skip_pin_acknowledged INTEGER DEFAULT 0,
             default_resume_version TEXT,
+            priority_companies TEXT DEFAULT '[]',
+            priority_mode TEXT DEFAULT 'score_boost',
+            score_weights TEXT DEFAULT '{"skills":53,"role_fit":25,"logistics":22,"company_tier":8}',
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
@@ -150,6 +154,10 @@ def init_profile_tables(db_path: str = DB_PATH):
         ("show_unsalaried", "INTEGER DEFAULT 1"),
         ("onboarded_at", "TEXT"),
         ("skip_pin_acknowledged", "INTEGER DEFAULT 0"),
+        ("user_id", "TEXT NOT NULL DEFAULT 'legacy'"),
+        ("priority_companies", "TEXT DEFAULT '[]'"),
+        ("priority_mode", "TEXT DEFAULT 'score_boost'"),
+        ("score_weights", """TEXT DEFAULT '{"skills":53,"role_fit":25,"logistics":22,"company_tier":8}'"""),
     ]
     for col, decl in _MIGRATIONS:
         try:
@@ -157,6 +165,18 @@ def init_profile_tables(db_path: str = DB_PATH):
         except sqlite3.OperationalError as e:
             if "duplicate column" not in str(e).lower():
                 raise
+    # Ensure the legacy row has user_id='legacy' (covers DBs migrated from the
+    # old id=1 single-user schema where the column was just added with DEFAULT).
+    conn.execute(
+        "UPDATE user_profile SET user_id = 'legacy' WHERE id = 1 AND (user_id IS NULL OR user_id = '')"
+    )
+    # Create the unique index after the column is guaranteed to exist.
+    try:
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_profile_user_id ON user_profile(user_id)"
+        )
+    except sqlite3.OperationalError:
+        pass  # index already exists on a re-opened DB
     conn.commit()
     conn.close()
     log.info("Profile tables ready")
@@ -164,7 +184,7 @@ def init_profile_tables(db_path: str = DB_PATH):
 
 # ─── Public API ──────────────────────────────────────────────────
 
-def get_profile(db_path: str = DB_PATH) -> dict:
+def get_profile(user_id: str = "legacy", db_path: str = DB_PATH) -> dict:
     """Return profile dict (PIN hash excluded).
 
     Surfaces ``has_pin: bool`` so the wizard / login screen know whether a
@@ -172,7 +192,12 @@ def get_profile(db_path: str = DB_PATH) -> dict:
     deserialised so callers receive native Python lists.
     """
     conn = get_conn(db_path)
-    row = conn.execute("SELECT * FROM user_profile WHERE id = 1").fetchone()
+    row = conn.execute("SELECT * FROM user_profile WHERE user_id = ?", (user_id,)).fetchone()
+    if row is None:
+        # Auto-create profile row for new Supabase user
+        conn.execute("INSERT INTO user_profile (user_id) VALUES (?)", (user_id,))
+        conn.commit()
+        row = conn.execute("SELECT * FROM user_profile WHERE user_id = ?", (user_id,)).fetchone()
     conn.close()
     if not row:
         return {}
@@ -188,6 +213,18 @@ def get_profile(db_path: str = DB_PATH) -> dict:
                 p[field] = json.loads(p[field])
             except Exception:
                 p[field] = []
+    # Deserialize new priority fields
+    if isinstance(p.get("priority_companies"), str):
+        try:
+            p["priority_companies"] = json.loads(p["priority_companies"])
+        except Exception:
+            p["priority_companies"] = []
+    if isinstance(p.get("score_weights"), str):
+        try:
+            p["score_weights"] = json.loads(p["score_weights"])
+        except Exception:
+            p["score_weights"] = {"skills": 53, "role_fit": 25, "logistics": 22, "company_tier": 8}
+    # priority_mode is a plain string — no deserialization needed
     # Coerce numeric/bool columns from SQLite ints to native shapes.
     p["min_total_comp"] = int(p.get("min_total_comp") or 0)
     p["show_unsalaried"] = bool(p.get("show_unsalaried", 1))
@@ -203,7 +240,9 @@ class ProfileValidationError(ValueError):
     """
 
 
-def update_profile(updates: dict, db_path: str = DB_PATH):
+def update_profile(user_id: str = "legacy", updates: dict = None, db_path: str = DB_PATH):
+    if updates is None:
+        updates = {}
     """Update allowed profile fields.
 
     ``default_resume_version`` is validated against the resume_versions
@@ -227,9 +266,12 @@ def update_profile(updates: dict, db_path: str = DB_PATH):
     }
     BOOL_FIELDS = {"show_unsalaried", "skip_pin_acknowledged"}
     INT_FIELDS = {"min_total_comp"}
-    TEXT_FIELDS = {"onboarded_at"}
+    TEXT_FIELDS = {"onboarded_at", "priority_companies", "priority_mode", "score_weights"}
     ALLOWED = LIST_FIELDS | BOOL_FIELDS | INT_FIELDS | TEXT_FIELDS | {
         "default_resume_version",
+        "priority_companies",
+        "priority_mode",
+        "score_weights",
     }
     conn = get_conn(db_path)
     now = datetime.now(timezone.utc).isoformat()
@@ -285,11 +327,13 @@ def update_profile(updates: dict, db_path: str = DB_PATH):
             sets.append(f"{key} = ?")
             values.append(json.dumps(val) if isinstance(val, list) else val)
     if sets:
+        # ensure row exists for this user
+        get_profile(user_id, db_path)
         sets.append("updated_at = ?")
         values.append(now)
-        values.append(1)
+        values.append(user_id)
         conn.execute(
-            f"UPDATE user_profile SET {', '.join(sets)} WHERE id = ?", values
+            f"UPDATE user_profile SET {', '.join(sets)} WHERE user_id = ?", values
         )
         conn.commit()
     conn.close()
@@ -306,7 +350,7 @@ def _coerce_bool(val) -> bool:
     return bool(val)
 
 
-def verify_pin(pin: str, db_path: str = DB_PATH) -> bool:
+def verify_pin(user_id: str = "legacy", pin: str = "", db_path: str = DB_PATH) -> bool:
     """Verify PIN. Returns True if no PIN is set (open access).
 
     NOTE: callers that mint session cookies (``/api/login``) MUST gate
@@ -316,14 +360,14 @@ def verify_pin(pin: str, db_path: str = DB_PATH) -> bool:
     30-day write-scoped session if blindly trusted in login flows.
     """
     conn = get_conn(db_path)
-    row = conn.execute("SELECT pin_hash FROM user_profile WHERE id = 1").fetchone()
+    row = conn.execute("SELECT pin_hash FROM user_profile WHERE user_id = ?", (user_id,)).fetchone()
     conn.close()
     if not row or not row["pin_hash"]:
         return True  # No PIN set — open access
     return _hash_pin(pin) == row["pin_hash"]
 
 
-def has_pin(db_path: str = DB_PATH) -> bool:
+def has_pin(user_id: str = "legacy", db_path: str = DB_PATH) -> bool:
     """Return True iff a non-empty PIN hash is stored on this server.
 
     Distinct from ``verify_pin`` — this is the predicate session-issuing
@@ -333,32 +377,34 @@ def has_pin(db_path: str = DB_PATH) -> bool:
     refuse to mint a cookie until the owner sets a PIN via the wizard.
     """
     conn = get_conn(db_path)
-    row = conn.execute("SELECT pin_hash FROM user_profile WHERE id = 1").fetchone()
+    row = conn.execute("SELECT pin_hash FROM user_profile WHERE user_id = ?", (user_id,)).fetchone()
     conn.close()
     if not row:
         return False
     return bool(row["pin_hash"])
 
 
-def set_pin(pin: str, db_path: str = DB_PATH):
+def set_pin(user_id: str = "legacy", pin: str = "", db_path: str = DB_PATH):
     """Set or change the access PIN."""
     conn = get_conn(db_path)
+    get_profile(user_id, db_path)  # ensure row exists
     conn.execute(
-        "UPDATE user_profile SET pin_hash = ?, updated_at = ? WHERE id = 1",
-        (_hash_pin(pin), datetime.now(timezone.utc).isoformat()),
+        "UPDATE user_profile SET pin_hash = ?, updated_at = ? WHERE user_id = ?",
+        (_hash_pin(pin), datetime.now(timezone.utc).isoformat(), user_id),
     )
     conn.commit()
     conn.close()
     log.info("PIN updated")
 
 
-def upload_resume(resume_text: str, db_path: str = DB_PATH) -> list[str]:
+def upload_resume(user_id: str = "legacy", resume_text: str = "", db_path: str = DB_PATH) -> list[str]:
     """Store resume text and extract skills. Returns extracted skill list."""
     skills = extract_skills_from_resume(resume_text)
     conn = get_conn(db_path)
+    get_profile(user_id, db_path)  # ensure row exists
     conn.execute(
-        "UPDATE user_profile SET resume_text = ?, extracted_skills = ?, updated_at = ? WHERE id = 1",
-        (resume_text, json.dumps(skills), datetime.now(timezone.utc).isoformat()),
+        "UPDATE user_profile SET resume_text = ?, extracted_skills = ?, updated_at = ? WHERE user_id = ?",
+        (resume_text, json.dumps(skills), datetime.now(timezone.utc).isoformat(), user_id),
     )
     conn.commit()
     conn.close()
@@ -378,7 +424,7 @@ def extract_skills_from_resume(text: str) -> list[str]:
 
 def get_all_skills(db_path: str = DB_PATH) -> list[str]:
     """Combined skill list: resume-extracted + manually added (deduplicated)."""
-    profile = get_profile(db_path)
+    profile = get_profile("legacy", db_path)
     extracted = profile.get("extracted_skills", [])
     custom = profile.get("custom_skills", [])
     return list(dict.fromkeys(extracted + custom))

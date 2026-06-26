@@ -8,3 +8,5 @@ playwright>=1.40.0
 # (routes/_auth.py). Pinning means a future Flask release that drops
 # the transitive dep won't break login.
 itsdangerous>=2.0.0
+PyJWT>=2.8.0
+cryptography>=42.0.0

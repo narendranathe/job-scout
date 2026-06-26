@@ -52,9 +52,9 @@ def test_reset_onboarding_clears_flags(client):
     # Seed: mark onboarded + acknowledge skip-PIN
     from storage.profile_manager import update_profile
     update_profile(
-        {"onboarded_at": "2026-05-17T10:00:00+00:00",
-         "skip_pin_acknowledged": True},
-        db_path,
+        updates={"onboarded_at": "2026-05-17T10:00:00+00:00",
+                 "skip_pin_acknowledged": True},
+        db_path=db_path,
     )
 
     resp = c.post("/api/admin/reset-onboarding")
@@ -62,7 +62,7 @@ def test_reset_onboarding_clears_flags(client):
     assert resp.get_json()["status"] == "reset"
 
     from storage.profile_manager import get_profile
-    p = get_profile(db_path)
+    p = get_profile(db_path=db_path)
     assert p["onboarded_at"] is None
     assert p["skip_pin_acknowledged"] is False
 
@@ -72,20 +72,20 @@ def test_reset_onboarding_preserves_roles_companies(client):
     c, db_path = client
     from storage.profile_manager import update_profile, set_pin
     update_profile(
-        {
+        updates={
             "dream_role_keywords": ["data engineer"],
             "dream_companies": ["Anthropic"],
             "tracked_companies": ["Acme Corp"],
             "onboarded_at": "2026-05-17T10:00:00+00:00",
         },
-        db_path,
+        db_path=db_path,
     )
-    set_pin("9999", db_path)
+    set_pin(pin="9999", db_path=db_path)
 
     c.post("/api/admin/reset-onboarding")
 
     from storage.profile_manager import get_profile
-    p = get_profile(db_path)
+    p = get_profile(db_path=db_path)
     assert p["onboarded_at"] is None
     assert p["dream_role_keywords"] == ["data engineer"]
     assert p["dream_companies"] == ["Anthropic"]
@@ -120,7 +120,7 @@ def test_doctor_onboarded_users_counter_increments(client):
     assert initial["detail"] == "0"
 
     from storage.profile_manager import update_profile
-    update_profile({"onboarded_at": "2026-05-17T10:00:00+00:00"}, db_path)
+    update_profile(updates={"onboarded_at": "2026-05-17T10:00:00+00:00"}, db_path=db_path)
 
     after = next(
         (chk for chk in c.get("/api/admin/doctor").get_json()["checks"]
@@ -135,8 +135,8 @@ def test_doctor_tracked_but_unscraped_counts_only_unknown(client):
     from storage.profile_manager import update_profile
     # Anthropic IS scraped (in COMPANIES); Acme Corp is NOT.
     update_profile(
-        {"tracked_companies": ["Anthropic", "Acme Corp", "Beta Inc"]},
-        db_path,
+        updates={"tracked_companies": ["Anthropic", "Acme Corp", "Beta Inc"]},
+        db_path=db_path,
     )
 
     chk = next(

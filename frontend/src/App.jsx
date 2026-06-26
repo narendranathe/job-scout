@@ -56,6 +56,8 @@ import { RareTab } from "./tabs/RareTab.jsx";
 import { TrackerTab } from "./tabs/TrackerTab.jsx";
 import { VaultTab } from "./tabs/VaultTab.jsx";
 import { JobsTab } from "./tabs/JobsTab.jsx";
+import { supabase } from './lib/supabase'
+import LoginPage from './components/LoginPage'
 
 // ATS_META imported from ./lib/jobConstants.js (top of file).
 
@@ -351,12 +353,56 @@ function useApplications() {
 /* ═══════════════════════════════════════════════════════════════════
    MAIN DASHBOARD
    ═══════════════════════════════════════════════════════════════════ */
+function getCompanyMultiplier(companyName, priorityCompanies, mode) {
+  if (mode !== 'score_boost' || !companyName) return 1.0
+  const idx = priorityCompanies.findIndex(
+    c => c.status === 'active' && c.name.toLowerCase() === companyName.toLowerCase()
+  )
+  if (idx === -1) return 1.0
+  return ([1.5, 1.4, 1.3, 1.2, 1.1, 1.05][idx] ?? 1.05)
+}
+
+function getPriorityGroup(companyName, priorityCompanies, mode) {
+  if (mode !== 'hard_sort' || !companyName) return 999
+  const idx = priorityCompanies.findIndex(
+    c => c.status === 'active' && c.name.toLowerCase() === companyName.toLowerCase()
+  )
+  return idx === -1 ? 999 : idx
+}
+
+// normalizeWeights: reserved for future weighted scoring — currently scores use fixed rank multipliers
+function normalizeWeights(raw) {
+  const total = Object.values(raw).reduce((a, b) => a + b, 0)
+  if (!total) return { skills: 0.53, role_fit: 0.25, logistics: 0.22, company_tier: 0.08 }
+  return Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, v / total]))
+}
+
 export default function App() {
   const [mode,setMode] = useState("light");
+  const [user, setUser] = useState(null)
+  const [authLoading, setAuthLoading] = useState(true)
+
+  useEffect(() => {
+    supabase.auth.getSession()
+      .then(({ data }) => {
+        setUser(data?.session?.user ?? null)
+        setAuthLoading(false)
+      })
+      .catch(() => setAuthLoading(false))
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => {
+      setUser(session?.user ?? null)
+    })
+    return () => subscription.unsubscribe()
+  }, [])
+
   const t = TH[mode];
   const {data,loading,error,source,health,lastUpdated,refetch} = useJobData();
   const [tab,setTab] = useState("jobs");
   const [xJ,setXJ] = useState(null);
+  const [priorityCompanies, setPriorityCompanies] = useState([])
+  const [priorityMode, setPriorityMode] = useState('score_boost')
+  const [scoreWeights, setScoreWeights] = useState({ skills: 53, role_fit: 25, logistics: 22, company_tier: 8 })
+  const [companiesRoster, setCompaniesRoster] = useState([])
   // Setup panel: shows blocking when no Render URL is configured;
   // user can also re-open from the header ⚙️ button to edit.
   const [setupOpen, setSetupOpen] = useState(() => !RENDER_API);
@@ -453,6 +499,7 @@ export default function App() {
   // fetchJobFit()'s finally block can immediately try to fill the
   // freshly-vacated slot. Mutating a ref doesn't trigger a re-render.
   const jobFitPumpRef = useRef(() => {});
+  const prioritySaveTimer = useRef(null)
 
   // Fetch the profile once on mount so we know whether to render chips.
   // No retry/backoff — if /api/profile is offline, we just don't show
@@ -463,6 +510,7 @@ export default function App() {
     (async () => {
       try {
         const r = await fetch(`${RENDER_API}/api/profile`, {
+          headers: authHeaders(),
           signal: AbortSignal.timeout(8000),
         });
         if (!r.ok || cancelled) return;
@@ -470,10 +518,31 @@ export default function App() {
         if (cancelled) return;
         setDefaultResumeVersion(d.default_resume_version || null);
         setProfile(d);
+        // Parse priority fields — backend may return arrays/objects (already parsed) or strings
+        const pc = d.priority_companies
+        if (pc) {
+          setPriorityCompanies(Array.isArray(pc) ? pc : (typeof pc === 'string' ? (() => { try { return JSON.parse(pc) } catch { return [] } })() : []))
+        }
+        if (d.priority_mode) setPriorityMode(d.priority_mode)
+        const sw = d.score_weights
+        if (sw && typeof sw === 'object' && !Array.isArray(sw)) {
+          setScoreWeights(sw)
+        } else if (typeof sw === 'string') {
+          try { setScoreWeights(JSON.parse(sw)) } catch {}
+        }
       } catch (_e) { /* offline / 5xx — silently no chip */ }
     })();
     return () => { cancelled = true; };
   }, []);
+
+  // Fetch companies roster for autocomplete suggestions
+  useEffect(() => {
+    if (!RENDER_API) return
+    fetch(`${RENDER_API}/api/companies-roster`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => d?.companies && setCompaniesRoster(d.companies))
+      .catch(() => {})
+  }, [])
 
   // Wipe the job-fit cache when the user changes default resume — stale
   // percentages against the OLD resume would mislead. The parent batch
@@ -482,6 +551,35 @@ export default function App() {
     setJobFitByJob({});
     jobFitPendingRef.current = new Set();
   }, [defaultResumeVersion]);
+
+  const savePriorityToProfile = (companies, mode, weights) => {
+    clearTimeout(prioritySaveTimer.current)
+    prioritySaveTimer.current = setTimeout(async () => {
+      if (!RENDER_API) return
+      await fetch(`${RENDER_API}/api/profile`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({
+          priority_companies: JSON.stringify(companies),
+          priority_mode: mode,
+          score_weights: JSON.stringify(weights),
+        }),
+      }).catch(() => {})
+    }, 300)
+  }
+
+  const handleCompaniesChange = (next) => {
+    setPriorityCompanies(next)
+    savePriorityToProfile(next, priorityMode, scoreWeights)
+  }
+  const handleModeChange = (next) => {
+    setPriorityMode(next)
+    savePriorityToProfile(priorityCompanies, next, scoreWeights)
+  }
+  const handleWeightsChange = (next) => {
+    setScoreWeights(next)
+    savePriorityToProfile(priorityCompanies, priorityMode, next)
+  }
 
   const fetchBestMatch = useCallback(async (job) => {
     const key = job.external_id;
@@ -1405,15 +1503,19 @@ export default function App() {
     // Original relevance_score is preserved for tracker/applications usage.
     const base = j.relevance_score || 0;
     const decay = ageDays == null ? 1 : Math.max(0.5, 1 - Math.max(0, ageDays - 14) / 60);
+    const _display_score = base * decay;
+    const multiplier = getCompanyMultiplier(j.company, priorityCompanies, priorityMode);
     return {
       ...j,
       _loc: normLoc(j.location, j.is_remote),
       _cat: catOf(j.title),
       _exp: expOf(j.title),
       _age_days: ageDays,
-      _display_score: base * decay,
+      _display_score,
+      _boosted_score: _display_score * multiplier,
+      _priority_group: getPriorityGroup(j.company, priorityCompanies, priorityMode),
     };
-  }), [allJobs]);
+  }), [allJobs, priorityCompanies, priorityMode]);
 
   // Build company → applications map for "already applied here" intelligence
   const companyApps = useMemo(() => {
@@ -1565,7 +1667,8 @@ export default function App() {
         if (bTarget !== aTarget) return bTarget - aTarget;
         const aSr = isSeniorFn(a.title)?1:0, bSr = isSeniorFn(b.title)?1:0;
         if (bSr !== aSr) return bSr - aSr;
-        return (b._display_score||0)-(a._display_score||0);
+        if (a._priority_group !== b._priority_group) return a._priority_group - b._priority_group;
+        return (b._boosted_score||0)-(a._boosted_score||0);
       });
     } else {
       // Default browse: salary/date as selected, or relevance with dream-company boost
@@ -1592,7 +1695,8 @@ export default function App() {
         const aApplied = a.application_status === 'applied' ? 1 : 0;
         const bApplied = b.application_status === 'applied' ? 1 : 0;
         if (aApplied !== bApplied) return aApplied - bApplied;
-        return bScore - aScore;
+        if (a._priority_group !== b._priority_group) return a._priority_group - b._priority_group;
+        return (b._boosted_score||0)-(a._boosted_score||0);
       });
     }
     return j;
@@ -1727,6 +1831,13 @@ export default function App() {
   // the wizard is active (the wizard owns the no-cookie flow itself).
   const loginNeeded = !wizardActive && shouldShowLogin(profile);
   const dashboardMode = deriveMode(profile);
+
+  if (authLoading) return (
+    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}>
+      Loading…
+    </div>
+  )
+  if (!user) return <LoginPage />
 
   return (
     <div style={{minHeight:"100vh",background:t.bg,fontFamily:"'Source Sans 3',sans-serif",color:t.tx,fontSize:16}}>
@@ -1922,6 +2033,13 @@ export default function App() {
             vdMapByJob, expandedByJob, pdfStateByJob,
             toggleCardOpen, saveApp, removeApp, markApplied,
             fetchBestMatch, toggleVersionRow, downloadResumePdf,
+            roster: companiesRoster,
+            priorityCompanies,
+            onCompaniesChange: handleCompaniesChange,
+            priorityMode,
+            onModeChange: handleModeChange,
+            scoreWeights,
+            onWeightsChange: handleWeightsChange,
           }} />
         )}
 

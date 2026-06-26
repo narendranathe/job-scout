@@ -106,3 +106,5 @@ export async function logout(apiBase) {
     clearCsrf();
   }
 }
+
+export { supabase } from './supabase'
