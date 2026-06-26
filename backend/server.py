@@ -172,6 +172,8 @@ def add_cors(response):
 
 # ─── Startup ──────────────────────────────────────────────────────
 init_db(DB_PATH)
+from storage.migrate_add_user_id import migrate as _migrate_user_id
+_migrate_user_id(DB_PATH)
 
 if _should_run_bg_scraper():
     threading.Thread(
