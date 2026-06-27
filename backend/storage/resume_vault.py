@@ -425,6 +425,7 @@ def save_pdf_to_vault(
     original_filename: str = None,
     db_path: str = None,
     submitted_at: str = None,
+    user_id: str = "legacy",
 ) -> dict:
     """
     Save a PDF to the local vault + extract text + register in DB.
@@ -480,10 +481,10 @@ def save_pdf_to_vault(
             f"refusing to write outside vault: {resolved!r} not under {vault_pdf_dir!r}"
         )
 
-    # Write PDF
+    # Write PDF locally (used for text extraction and as a fallback cache)
     with open(vault_path, "wb") as f:
         f.write(pdf_bytes)
-    log.info("Saved PDF: %s (%d bytes)", vault_path, len(pdf_bytes))
+    log.info("Saved PDF locally: %s (%d bytes)", vault_path, len(pdf_bytes))
 
     # Extract text
     text = extract_text_from_pdf(vault_path)
@@ -507,6 +508,12 @@ def save_pdf_to_vault(
             os.utime(text_path, (ts, ts))
         except (ValueError, OSError) as e:
             log.warning("Failed to apply submitted_at=%r: %s", submitted_at, e)
+
+    # Upload to Supabase Storage (persistent across Render restarts).
+    # Local file stays as a read-cache. Failure is non-fatal — the vault
+    # still works with local-only storage.
+    from storage import supabase_storage
+    supabase_storage.upload(f"{user_id}/{version_key}.pdf", pdf_bytes)
 
     # Extract skills
     from storage.profile_manager import extract_skills_from_resume

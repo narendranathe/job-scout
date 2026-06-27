@@ -49,7 +49,7 @@ import re
 import secrets
 import threading
 
-from flask import Blueprint, jsonify, request, send_file
+from flask import Blueprint, jsonify, redirect, request, send_file
 
 log = logging.getLogger(__name__)
 
@@ -349,6 +349,9 @@ def vault_upload():
     if not pdf_bytes.startswith(b"%PDF-"):
         return jsonify({"error": "not a PDF (missing %PDF- magic bytes)"}), 400
 
+    import flask
+    user_id = getattr(flask.g, "user_id", "legacy") or "legacy"
+
     try:
         result = save_pdf_to_vault(
             pdf_bytes=pdf_bytes,
@@ -357,6 +360,7 @@ def vault_upload():
             original_filename=filename,
             db_path=DB_PATH,
             submitted_at=submitted_at,
+            user_id=user_id,
         )
     except ValueError as e:
         # canonical_filename rejects fully-sanitized-to-empty names, and
@@ -557,6 +561,9 @@ def vault_version(version_key):
                 "already_gone": True,
             }), 200
 
+        import flask
+        user_id = getattr(flask.g, "user_id", "legacy") or "legacy"
+
         try:
             result = delete_vault_version(version_key, db_path=DB_PATH)
         except ValueError as e:
@@ -584,6 +591,10 @@ def vault_version(version_key):
         # it" signal, and leaking server paths (e.g. /opt/render/project/...)
         # exposes internal structure to clients. Surface only the basename of
         # the PDF for UX (which file was removed), nothing else.
+        # Also remove from Supabase Storage (non-fatal if missing or unavailable).
+        from storage import supabase_storage
+        supabase_storage.remove(f"{user_id}/{version_key}.pdf")
+
         pdf_path = result.pop("pdf_path", None)
         result.pop("text_path", None)
         result["pdf_filename"] = os.path.basename(pdf_path) if pdf_path else None
@@ -658,6 +669,16 @@ def vault_version_pdf(version_key):
             vault_root,
         )
         return jsonify({"error": "Invalid version_key"}), 400
+
+    # Try Supabase Storage first — persistent across Render restarts.
+    # Fall back to local disk if Supabase is not configured or the file
+    # hasn't been migrated yet.
+    from storage import supabase_storage
+    import flask
+    user_id = getattr(flask.g, "user_id", "legacy") or "legacy"
+    url = supabase_storage.signed_url(f"{user_id}/{version_key}.pdf")
+    if url:
+        return redirect(url, code=302)
 
     if not os.path.exists(target):
         return jsonify({"error": "Version not found"}), 404
@@ -773,6 +794,56 @@ def vault_parse_filename():
         # leak the semaphore lease (which would shrink the effective
         # cap until the process restarts).
         _parse_filename_semaphore.release()
+
+
+@vault_bp.route("/api/vault/migrate-to-supabase", methods=["POST", "OPTIONS"])
+def vault_migrate_to_supabase():
+    """One-time migration: upload all local vault PDFs to Supabase Storage.
+
+    Safe to call multiple times — upload uses upsert so existing files
+    are overwritten with the same content. Returns a summary of what was
+    uploaded vs skipped vs failed.
+
+    Auth: covered by the blueprint's before_request gate (same as upload).
+    """
+    if request.method == "OPTIONS":
+        return "", 200
+
+    from storage import supabase_storage
+    from storage.resume_vault import list_vault
+
+    if not supabase_storage.available():
+        return jsonify({
+            "error": "Supabase Storage not configured",
+            "hint": "Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY on Render",
+        }), 503
+
+    import flask
+    user_id = getattr(flask.g, "user_id", "legacy") or "legacy"
+
+    uploaded, skipped, failed = [], [], []
+    for entry in list_vault():
+        vk = entry.get("version_key")
+        path = entry.get("vault_path")
+        if not vk or not path or not os.path.exists(path):
+            skipped.append(vk or path)
+            continue
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+            ok = supabase_storage.upload(f"{user_id}/{vk}.pdf", data)
+            (uploaded if ok else failed).append(vk)
+        except Exception as exc:
+            log.error("Migration failed for %s: %s", vk, exc)
+            failed.append(vk)
+
+    return jsonify({
+        "uploaded": len(uploaded),
+        "skipped": len(skipped),
+        "failed": len(failed),
+        "uploaded_keys": uploaded,
+        "failed_keys": failed,
+    }), 200
 
 
 @vault_bp.after_request
