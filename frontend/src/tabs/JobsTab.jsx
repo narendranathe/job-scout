@@ -45,6 +45,7 @@ export function JobsTab({ state }) {
           onChange={sQ}
           roster={roster || []}
           style={{ flex: '1 1 200px', maxWidth: 340 }}
+          inputStyle={iS}
           onAddToPriority={(name) => {
             if (priorityCompanies && !priorityCompanies.find(c => c.name === name)) {
               const inRoster = (roster || []).some(r => r.name.toLowerCase() === name.toLowerCase())
