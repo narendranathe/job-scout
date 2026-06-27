@@ -54,19 +54,19 @@ export function JobsTab({ state }) {
           }}
         />
         <button onClick={()=>setRemoteOnly(r=>!r)}
-          style={{padding:"10px 14px",borderRadius:8,border:`1.5px solid ${remoteOnly?t.ac:t.bd}`,background:remoteOnly?t.acL:"transparent",color:remoteOnly?t.ac:t.txM,fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
+          style={{padding:"12px 14px",borderRadius:9,border:`1.5px solid ${remoteOnly?t.ac:t.bd}`,background:remoteOnly?t.acL:"transparent",color:remoteOnly?t.ac:t.txM,fontSize:15,fontWeight:600,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
           🏠 Remote
         </button>
         <button onClick={()=>setH1bOnly(r=>!r)}
-          style={{padding:"10px 14px",borderRadius:8,border:`1.5px solid ${h1bOnly?t.vi:t.bd}`,background:h1bOnly?`${t.vi}12`:"transparent",color:h1bOnly?t.vi:t.txM,fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
+          style={{padding:"12px 14px",borderRadius:9,border:`1.5px solid ${h1bOnly?t.vi:t.bd}`,background:h1bOnly?`${t.vi}12`:"transparent",color:h1bOnly?t.vi:t.txM,fontSize:15,fontWeight:600,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
           🛂 H1B
         </button>
         <button onClick={()=>setPlatinumOnly(r=>!r)}
-          style={{padding:"10px 14px",borderRadius:8,border:`1.5px solid ${platinumOnly?"#b8860b":t.bd}`,background:platinumOnly?"#b8860b18":"transparent",color:platinumOnly?"#b8860b":t.txM,fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
+          style={{padding:"12px 14px",borderRadius:9,border:`1.5px solid ${platinumOnly?"#b8860b":t.bd}`,background:platinumOnly?"#b8860b18":"transparent",color:platinumOnly?"#b8860b":t.txM,fontSize:15,fontWeight:600,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
           ✦ Platinum
         </button>
         <button onClick={()=>setHighCompOnly(r=>!r)}
-          style={{padding:"10px 14px",borderRadius:8,border:`1.5px solid ${highCompOnly?t.ok:t.bd}`,background:highCompOnly?`${t.ok}12`:"transparent",color:highCompOnly?t.ok:t.txM,fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
+          style={{padding:"12px 14px",borderRadius:9,border:`1.5px solid ${highCompOnly?t.ok:t.bd}`,background:highCompOnly?`${t.ok}12`:"transparent",color:highCompOnly?t.ok:t.txM,fontSize:15,fontWeight:600,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
           💰 $220K+
         </button>
         <select value={selPosted} onChange={e=>setSelPosted(e.target.value)} style={selS}>
@@ -85,12 +85,12 @@ export function JobsTab({ state }) {
           <option value="date">↓ Newest</option>
         </select>
         <button onClick={()=>setShowFilters(f=>!f)}
-          style={{padding:"10px 14px",borderRadius:8,border:`1.5px solid ${activeN?t.ac:t.bd}`,background:activeN?t.acL:"transparent",color:activeN?t.ac:t.txM,fontSize:14,fontWeight:600,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
+          style={{padding:"12px 14px",borderRadius:9,border:`1.5px solid ${activeN?t.ac:t.bd}`,background:activeN?t.acL:"transparent",color:activeN?t.ac:t.txM,fontSize:15,fontWeight:600,cursor:"pointer",fontFamily:"inherit",whiteSpace:"nowrap"}}>
           🎛 Filters{activeN?` (${activeN})`:""}
         </button>
         {activeN>0 && (
           <button onClick={clearAll}
-            style={{padding:"10px 12px",borderRadius:8,border:`1.5px solid ${t.er}30`,background:"transparent",color:t.er,fontSize:13,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>
+            style={{padding:"12px 12px",borderRadius:9,border:`1.5px solid ${t.er}30`,background:"transparent",color:t.er,fontSize:15,fontWeight:600,cursor:"pointer",fontFamily:"inherit"}}>
             ✕ Clear
           </button>
         )}

@@ -1942,15 +1942,15 @@ export default function App() {
           {/* Server settings */}
           <button onClick={() => setSetupOpen(true)} aria-label="Server settings"
             title={RENDER_API ? `Connected to ${RENDER_API}` : "Not connected — click to set up"}
-            style={{padding:"8px 12px",borderRadius:8,border:`1px solid ${t.bd}`,background:"transparent",color:t.txS,fontSize:16,cursor:"pointer",flexShrink:0,marginRight:6}}>
+            style={{padding:"8px 12px",borderRadius:8,border:`1px solid ${t.bd}`,background:"transparent",color:t.txS,fontSize:16,cursor:"pointer",flexShrink:0}}>
             ⚙️{!RENDER_API && <span style={{marginLeft:4, fontSize:12, color:t.wm}}>setup</span>}
           </button>
-          <UserChip user={user} onLogout={handleLogout} onOpenProfile={() => setTab('profile')} t={t} />
           {/* Theme toggle */}
           <button onClick={()=>setMode(m=>m==="light"?"dark":"light")}
             style={{padding:"8px 14px",borderRadius:8,border:`1px solid ${t.bd}`,background:"transparent",color:t.txS,fontSize:16,cursor:"pointer",flexShrink:0}}>
             {mode==="light"?"🌙":"☀️"}
           </button>
+          <UserChip user={user} onLogout={handleLogout} onOpenProfile={() => setTab('profile')} t={t} />
         </div>
       </nav>
       {setupOpen && (
