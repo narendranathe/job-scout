@@ -1878,7 +1878,7 @@ export default function App() {
   );
 
   const trackerCount = Object.keys(apps).length;
-  const TABS = ["jobs","rare","analytics","companies","trends","tracker","vault","pipeline","monitor","profile"];
+  const TABS = ["jobs","rare","analytics","companies","trends","tracker","vault","pipeline","monitor"];
 
   // Slice 4 gate: returning user with a PIN but no session cookie →
   // full-page LoginScreen blocking everything else. We skip this when
@@ -2197,6 +2197,7 @@ export default function App() {
         .two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px}
         .trends-col{display:grid;grid-template-columns:2fr 1fr;gap:16px}
         .filter-bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center}
+        .filter-bar input,.filter-bar select,.filter-bar button{height:46px;box-sizing:border-box;}
 
         @media(max-width:1024px){
           .two-col{grid-template-columns:1fr}
