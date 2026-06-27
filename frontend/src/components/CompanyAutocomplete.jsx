@@ -24,7 +24,7 @@ function Bold({ text, query }) {
   return <>{text.slice(0, i)}<strong>{text.slice(i, i + query.length)}</strong>{text.slice(i + query.length)}</>
 }
 
-export default function CompanyAutocomplete({ value, onChange, roster = [], style, inputStyle, onAddToPriority }) {
+export default function CompanyAutocomplete({ value, onChange, roster = [], style, inputStyle, onAddToPriority, t }) {
   const [open, setOpen] = useState(false)
   const [hi, setHi] = useState(-1)
   const ref = useRef(null)
@@ -56,15 +56,23 @@ export default function CompanyAutocomplete({ value, onChange, roster = [], styl
     }
   }
 
+  const bg = t?.cd || '#fff'
+  const border = t?.bd || '#e0e0e0'
+  const tx = t?.tx || '#111'
+  const txS = t?.txS || '#555'
+  const hover = t?.acL || '#f5f5f5'
+  const sh = t?.shS || '0 6px 16px rgba(0,0,0,0.1)'
+
   const dropStyle = {
     position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 1000,
-    background: '#fff', border: '1px solid #e0e0e0', borderRadius: 8,
+    background: bg, border: `1px solid ${border}`, borderRadius: 8,
     listStyle: 'none', margin: '4px 0 0', padding: '4px 0',
-    boxShadow: '0 6px 16px rgba(0,0,0,0.1)', maxHeight: 340, overflowY: 'auto',
+    boxShadow: sh, maxHeight: 340, overflowY: 'auto',
   }
   const rowStyle = (active) => ({
     padding: '7px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8,
-    background: active ? '#f5f5f5' : 'transparent',
+    background: active ? hover : 'transparent',
+    color: tx,
   })
 
   return (
@@ -93,10 +101,10 @@ export default function CompanyAutocomplete({ value, onChange, roster = [], styl
               }}>
                 {co.name[0].toUpperCase()}
               </span>
-              <span style={{ flex: 1, fontSize: 13 }}><Bold text={co.name} query={value} /></span>
-              {co.job_count > 0 && <span style={{ fontSize: 11, color: '#999' }}>{co.job_count} jobs</span>}
+              <span style={{ flex: 1, fontSize: 13, color: tx }}><Bold text={co.name} query={value} /></span>
+              {co.job_count > 0 && <span style={{ fontSize: 11, color: txS }}>{co.job_count} jobs</span>}
               {co.tier !== undefined && (
-                <span style={{ fontSize: 10, color: '#777', border: '1px solid #e0e0e0', borderRadius: 3, padding: '1px 4px' }}>
+                <span style={{ fontSize: 10, color: txS, border: `1px solid ${border}`, borderRadius: 3, padding: '1px 4px' }}>
                   {TIER_LABELS[co.tier] ?? `T${co.tier}`}
                 </span>
               )}

@@ -1828,7 +1828,7 @@ export default function App() {
   };
 
   const iS={width:"100%",padding:"12px 16px",borderRadius:9,border:`1px solid ${t.bd}`,background:t.inp,color:t.tx,fontSize:15,fontFamily:"'Source Sans 3',sans-serif",outline:"none"};
-  const selS={...iS,cursor:"pointer",width:"auto",minWidth:130};
+  const selS={...iS,cursor:"pointer",width:"auto",minWidth:130,appearance:"none",WebkitAppearance:"none",MozAppearance:"none",paddingRight:32,backgroundImage:"url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23888'/%3E%3C/svg%3E\")",backgroundRepeat:"no-repeat",backgroundPosition:"right 10px center",backgroundSize:"10px 6px"};
   const ttS={background:t.cd,border:`1px solid ${t.bd}`,borderRadius:8,fontSize:13,color:t.tx,boxShadow:t.sh};
 
   const SourceBadge = () => {
