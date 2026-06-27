@@ -24,7 +24,7 @@ function Bold({ text, query }) {
   return <>{text.slice(0, i)}<strong>{text.slice(i, i + query.length)}</strong>{text.slice(i + query.length)}</>
 }
 
-export default function CompanyAutocomplete({ value, onChange, roster = [], style, onAddToPriority }) {
+export default function CompanyAutocomplete({ value, onChange, roster = [], style, inputStyle, onAddToPriority }) {
   const [open, setOpen] = useState(false)
   const [hi, setHi] = useState(-1)
   const ref = useRef(null)
@@ -75,7 +75,7 @@ export default function CompanyAutocomplete({ value, onChange, roster = [], styl
         onChange={e => { onChange(e.target.value); setOpen(true); setHi(-1) }}
         onFocus={() => { if (value) setOpen(true) }}
         onKeyDown={keyDown}
-        style={{ width: '100%', boxSizing: 'border-box' }}
+        style={{ width: '100%', boxSizing: 'border-box', ...inputStyle }}
       />
       {open && itemCount > 0 && (
         <ul style={dropStyle}>
